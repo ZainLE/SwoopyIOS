@@ -29,9 +29,22 @@
 		8E7AB9322E68ACEB002CC686 /* TrashPickerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TrashPickerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		8E3792822E68E40A00D80AD9 /* Exceptions for "TrashPicker" folder in "TrashPicker" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 8E7AB91A2E68ACE8002CC686 /* TrashPicker */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		8E7AB91D2E68ACE8002CC686 /* TrashPicker */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				8E3792822E68E40A00D80AD9 /* Exceptions for "TrashPicker" folder in "TrashPicker" target */,
+			);
 			path = TrashPicker;
 			sourceTree = "<group>";
 		};
@@ -400,11 +413,17 @@
 				DEVELOPMENT_TEAM = SS76JYRJ56;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TrashPicker/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "We use the camera to take photos of trash reports.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We use your location to pin reports on the map";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = " We save captured photos to your library";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "We need access to pick photos from your library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -428,11 +447,17 @@
 				DEVELOPMENT_TEAM = SS76JYRJ56;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = TrashPicker/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "We use the camera to take photos of trash reports.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We use your location to pin reports on the map";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = " We save captured photos to your library";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "We need access to pick photos from your library.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -454,7 +479,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = SS76JYRJ56;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.zainlatif.TrashPickerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -473,7 +498,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = SS76JYRJ56;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 18.5;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.zainlatif.TrashPickerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -491,6 +516,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = SS76JYRJ56;
 				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.zainlatif.TrashPickerUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -508,6 +534,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = SS76JYRJ56;
 				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.zainlatif.TrashPickerUITests;
 				PRODUCT_NAME = "$(TARGET_NAME)";

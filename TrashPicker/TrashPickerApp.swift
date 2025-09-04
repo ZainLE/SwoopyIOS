@@ -9,9 +9,14 @@ import SwiftUI
 
 @main
 struct TrashPickerApp: App {
+    @StateObject private var ck = CKTrashService.shared
+    @StateObject private var loc = LocationManager()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environmentObject(ck)
+                .environmentObject(loc)
         }
     }
 }
