@@ -9,8 +9,12 @@ struct TrashListView: View {
             List {
                 ForEach(ck.feed.filter { query.isEmpty ? true : $0.title.lowercased().contains(query.lowercased()) }) { item in
                     HStack(spacing: 12) {
-                        if let url = item.photoURL, let img = UIImage(contentsOfFile: url.path) {
-                            Image(uiImage: img).resizable().scaledToFill().frame(width: 56, height: 56).clipped().cornerRadius(8)
+                        if let url = item.photoURL {
+                            DownsampledImage(url: url, maxDimension: 80)
+                                .scaledToFill()
+                                .frame(width: 56, height: 56)
+                                .clipped()
+                                .cornerRadius(8)
                         } else {
                             RoundedRectangle(cornerRadius: 8).fill(.thinMaterial).frame(width: 56, height: 56)
                         }

@@ -1,14 +1,12 @@
-//This was the previous working one with all the CTA before changes
 import SwiftUI
 import MapKit
 import CloudKit
 
 struct SwipeDeckView: View {
     @EnvironmentObject var ck: CKTrashService
+    @EnvironmentObject var loc: LocationManager
 
     @State private var hidden: Set<CKRecord.ID> = []
-
-    // reserve sheet (two-step)
     @State private var showReserveSheet = false
     @State private var sheetMode: ReserveSheet.Mode = .prompt
     @State private var sheetItem: TrashDTO?
@@ -22,24 +20,21 @@ struct SwipeDeckView: View {
             GeometryReader { geo in
                 let maxWidth  = geo.size.width - 32
                 let cardWidth = min(maxWidth, 420)
-                let idealH    = cardWidth * 1.25   // 4:5 style
+                let idealH    = cardWidth * 1.25
                 let cardHeight = min(idealH, geo.size.height - 180)
 
                 ZStack {
                     if visible.isEmpty {
                         EmptyFeedCTA(
                             refresh: { Task { await ck.fetchFeed() } },
-                            makePost: {
-                                // handled by NavigationLink provided below
-                            }
+                            makePost: {}
                         )
                         .padding(.horizontal, 20)
-                        // Floating camera shortcut (also visible on empty)
                         .overlay(alignment: .topTrailing) {
                             NavigationLink {
                                 AddTrashView()
                                     .environmentObject(ck)
-                                    .environmentObject(LocationManager())
+                                    .environmentObject(loc)
                             } label: {
                                 Image(systemName: "camera")
                                     .font(.title3)
@@ -55,25 +50,22 @@ struct SwipeDeckView: View {
                         DeckStack(
                             items: Array(visible.prefix(3)),
                             width: cardWidth,
-                            height: cardHeight,
-                            onSwipe: { item, dir in
-                                if dir == .right {
-                                    // Step 1: show prompt (no map yet)
-                                    sheetItem = item
-                                    sheetMode = .prompt
-                                    withAnimation(.easeOut(duration: 0.18)) { showReserveSheet = true }
-                                } else {
-                                    hidden.insert(item.id)
-                                }
+                            height: cardHeight
+                        ) { item, dir in
+                            if dir == .right {
+                                sheetItem = item
+                                sheetMode = .prompt
+                                withAnimation(.easeOut(duration: 0.18)) { showReserveSheet = true }
+                            } else {
+                                hidden.insert(item.id)
                             }
-                        )
+                        }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                        // Floating camera button
                         .overlay(alignment: .topTrailing) {
                             NavigationLink {
                                 AddTrashView()
                                     .environmentObject(ck)
-                                    .environmentObject(LocationManager())
+                                    .environmentObject(loc)
                             } label: {
                                 Image(systemName: "camera")
                                     .font(.title3)
@@ -87,7 +79,6 @@ struct SwipeDeckView: View {
                         }
                     }
 
-                    // Reservation sheet
                     if showReserveSheet, let item = sheetItem {
                         ReserveSheet(
                             mode: sheetMode,
@@ -119,13 +110,14 @@ struct SwipeDeckView: View {
             .navigationTitle("Feed")
             .navigationBarTitleDisplayMode(.inline)
             .task {
-                await ck.fetchFeed()
-                for i in ck.feed { await ck.releaseIfReservationExpired(i); await ck.expireIfPast24h(i) }
+                // Single refresh; housekeeping happens inside the service
                 await ck.fetchFeed()
             }
         }
     }
 }
+
+/* the rest (EmptyFeedCTA, DeckStack, SwipeCard, ActionCircle, ReserveSheet) stays the same as your last working version */
 
 //
 // MARK: - Empty State CTA
