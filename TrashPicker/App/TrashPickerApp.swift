@@ -5,6 +5,7 @@ import CoreLocation
 struct TrashPickerApp: App {
     @StateObject private var svc = SupabaseService.shared
     @StateObject private var loc = LocationManager()
+    @StateObject private var ck = CKTrashService()
 
     /// Use a neutral fallback for first load if we don’t have a GPS fix yet
     private let fallbackCenter = CLLocationCoordinate2D(latitude: 41.387, longitude: 2.170)
@@ -14,6 +15,7 @@ struct TrashPickerApp: App {
             RootView()
                 .environmentObject(svc)
                 .environmentObject(loc)
+                .environmentObject(ck)
                 .task {
                     // 1) session
                     await svc.ensureSession()

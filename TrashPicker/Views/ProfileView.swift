@@ -1,118 +1,128 @@
-//
-//  ProfileView.swift
-//  TrashPicker
-//
-
 import SwiftUI
 import MapKit
 
 struct ProfileView: View {
-    @EnvironmentObject var svc: SupabaseService
+    @EnvironmentObject var ck: CKTrashService
 
     var body: some View {
         NavigationStack {
             List {
-                // MARK: My uploads (24h)
                 Section("My uploads (24h)") {
-                    if svc.myUploads.isEmpty {
-                        ContentUnavailableView(
-                            "No uploads yet",
-                            systemImage: "tray",
-                            description: Text("Make a post from the Feed.")
-                        )
-                        .listRowInsets(.init())
-                    } else {
-                        ForEach(svc.myUploads) { item in
-                            UploadRow(item: item)
-                        }
+                    ForEach(ck.myUploads) { item in
+                        UploadRow(item: item)   // or generic row version you adopted
                     }
                 }
-
-                // MARK: My reservations
                 Section("My reservations") {
-                    if svc.myReservations.isEmpty {
-                        ContentUnavailableView(
-                            "No reservations",
-                            systemImage: "clock",
-                            description: Text("Reserve an item from the Feed.")
-                        )
-                        .listRowInsets(.init())
-                    } else {
-                        ForEach(svc.myReservations) { item in
-                            ReservationMini(item: item)
-                        }
+                    ForEach(ck.myReservations) { item in
+                        ReservationRow(item: item)
                     }
                 }
             }
-            .listStyle(.insetGrouped)
             .navigationTitle("Profile")
-            .task { await svc.fetchMyStuff() }
-            .refreshable { await svc.fetchMyStuff() }
+            .task { await ck.fetchFeed() }
+            .refreshable { await ck.fetchFeed() }
+        }
+    }
+}
+
+private struct UploadRow: View {
+    let item: CKTrashItem
+    @State private var expanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    let rem = max(0, Int(item.expiresAt.timeIntervalSince(ctx.date)))
+                    Text("Expires in \(fmt(rem))")
+                        .font(.title3.monospacedDigit())
+                }
+//                Text("Interested: \(item.interestedCount)")
+                if let until = item.reservedUntil, until > Date() {
+                    Text("Reserved until \(until, style: .time)")
+                } else {
+                    Text("Not reserved")
+                }
+                Button("Open in Maps") {
+                    let mapItem = MKMapItem(placemark: MKPlacemark(coordinate: item.coordinate))
+                    mapItem.name = item.title
+                    mapItem.openInMaps(
+                        launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeTransit]
+                    )
+                }
+            }
+            .font(.subheadline)
+        } label: {
+            HStack(spacing: 12) {
+                if let url = item.photoURL, let img = UIImage(contentsOfFile: url.path) {
+                    Image(uiImage: img)
+                        .resizable().scaledToFill()
+                        .frame(width: 56, height: 56)
+                        .clipped()
+                        .cornerRadius(8)
+                }
+                VStack(alignment: .leading) {
+                    Text(item.title).font(.headline)
+                    Text(item.city).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
         }
     }
 
-    // MARK: - Rows
+    private func fmt(_ seconds: Int) -> String {
+        let h = seconds / 3600
+        let m = (seconds % 3600) / 60
+        let s = seconds % 60
+        return String(format: "%02dh %02dm %02ds", h, m, s)
+    }
+}
 
-    private struct UploadRow: View {
-        let item: TrashDTO
+private struct ReservationRow: View {
+    let item: CKTrashItem
 
-        var body: some View {
-            HStack(spacing: 12) {
-                if let url = item.heroImageURL {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        case .failure:
-                            Color.gray.opacity(0.2)
-                        case .empty:
-                            ProgressView()
-                        @unknown default:
-                            Color.gray.opacity(0.2)
-                        }
-                    }
+    var body: some View {
+        HStack(spacing: 12) {
+            if let url = item.photoURL, let img = UIImage(contentsOfFile: url.path) {
+                Image(uiImage: img)
+                    .resizable().scaledToFill()
                     .frame(width: 56, height: 56)
                     .clipped()
                     .cornerRadius(8)
-                } else {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(.secondary.opacity(0.15))
-                        .frame(width: 56, height: 56)
-                }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.title).font(.headline)
-                    Text(locationLabel)
-                        .font(.caption)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.title).font(.headline)
+                TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                    let rem = max(0, Int((item.reservedUntil ?? Date()).timeIntervalSince(ctx.date)))
+                    Text("Time left: \(fmt(rem))")
+                        .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-
-                Spacer()
-
-                Text(item.createdAt, style: .time)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Button {
+                    let mi = MKMapItem(placemark: MKPlacemark(coordinate: item.coordinate))
+                    mi.name = item.title
+                    mi.openInMaps(
+                        launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeTransit]
+                    )
+                } label: {
+                    Label("Open in Maps", systemImage: "map")
+                }
+                .buttonStyle(.bordered)
             }
-        }
-
-        private var locationLabel: String {
-            if let c = item.city, !c.isEmpty { return c }
-            return item.mode == "home" ? "Home area" : "Street"
+            Spacer()
         }
     }
 
-    private struct ReservationMini: View {
-        let item: TrashDTO
-        var body: some View {
-            HStack {
-                Text(item.title)
-                Spacer()
-                if let until = item.reservedUntil {
-                    Text(until, style: .timer)
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
+    private func fmt(_ s: Int) -> String {
+        let h = s / 3600, m = (s % 3600) / 60, sec = s % 60
+        return String(format: "%02dh %02dm %02ds", h, m, sec)
     }
+}
+
+
+// MARK: Convenience helpers (align with TrashDTO)
+
+extension CKTrashItem {
+    var cityText: String { city }
+    var mapCoordinate: CLLocationCoordinate2D? { coordinate }
 }
