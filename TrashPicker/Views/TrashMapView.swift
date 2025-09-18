@@ -2,25 +2,23 @@ import SwiftUI
 import MapKit
 
 struct TrashMapView: View {
-    @EnvironmentObject var ck: CKTrashService
+    @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var loc: LocationManager
+
+    // Use a neutral default until GPS arrives
+    private let fallback = CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686)
 
     @State private var region = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
         span: .init(latitudeDelta: 0.05, longitudeDelta: 0.05)
     )
 
-    // Combine open items + your reservations (no images = low memory)
-    private var mapItems: [(TrashDTO, Bool)] { // Bool = isReservedByMe
-        let reservedIDs = Set(ck.myReservations.map(\.id))
-        let opens       = ck.feed.map { ($0, false) }
-        let reserves    = ck.myReservations.map { ($0, true) }
-        // If some feed items are also in reservations, the reserve entry will represent them.
-        // In practice feed excludes reserved, but this guards against duplicates.
-        let merged = (opens + reserves).reduce(into: [(TrashDTO,Bool)]()) { acc, pair in
-            if !acc.contains(where: { $0.0.id == pair.0.id }) { acc.append(pair) }
-        }
-        return merged
+    /// Merge feed + my reservations (unique by id) and drop items without a coordinate
+    private var mapItems: [TrashDTO] {
+        var byId: [UUID: TrashDTO] = [:]
+        svc.feed.forEach { byId[$0.id] = $0 }
+        svc.myReservations.forEach { byId[$0.id] = $0 }
+        return byId.values.compactMap { $0.mapCoordinate == nil ? nil : $0 }
     }
 
     var body: some View {
@@ -29,45 +27,48 @@ struct TrashMapView: View {
                 coordinateRegion: $region,
                 interactionModes: .all,
                 showsUserLocation: true,
-                annotationItems: mapItems.map { $0.0 }
+                annotationItems: mapItems
             ) { item in
-                MapAnnotation(coordinate: item.coordinate) {
-                    let isReserved = ck.myReservations.contains(where: { $0.id == item.id })
+                // Safe force-unwrap because we filtered nils above
+                MapAnnotation(coordinate: item.mapCoordinate!) {
+                    let isMine = svc.myReservations.contains { $0.id == item.id }
                     VStack(spacing: 2) {
                         Image(systemName: "mappin.circle.fill")
                             .font(.title2)
-                            .foregroundStyle(isReserved ? .yellow : .red)
+                            .foregroundStyle(isMine ? .yellow : .red)
                             .shadow(radius: 1)
-                        Text(item.city)
+                        Text(item.cityText)
                             .font(.caption2)
                             .fixedSize()
                     }
                 }
             }
-            .transaction { $0.disablesAnimations = true } // ✅ cut animation churn while panning
+            .transaction { $0.disablesAnimations = true } // smoother pan/zoom
             .navigationTitle("Map")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         loc.requestOnce { c in
-                            if let c {
-                                region = MKCoordinateRegion(center: c,
-                                                            span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02))
-                            }
+                            guard let c else { return }
+                            region = MKCoordinateRegion(
+                                center: c,
+                                span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                            )
                         }
                     } label: { Image(systemName: "location") }
                 }
             }
             .task {
-                // Single refresh at appear — no loops (keeps memory stable)
-                await ck.fetchFeed()
-                await ck.fetchMyStuff()
-                if let c = loc.userLocation?.coordinate {
-                    region.center = c
-                } else {
-                    loc.request()
-                }
+                let c = loc.userLocation?.coordinate ?? fallback
+                await svc.fetchFeed(near: c)
+                await svc.fetchMyStuff()
+                if loc.userLocation == nil { loc.request() }
+            }
+            .refreshable {
+                let c = loc.userLocation?.coordinate ?? region.center
+                await svc.fetchFeed(near: c)
+                await svc.fetchMyStuff()
             }
         }
     }

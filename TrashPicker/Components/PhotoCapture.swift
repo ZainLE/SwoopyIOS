@@ -4,7 +4,7 @@ import AVFoundation
 import ImageIO
 import MobileCoreServices
 
-// Downsample large images off-main so UI never draws 12–48MP bitmaps.
+// Downsample images on the main menu 
 private func downsample(data: Data, maxPixel: Int) -> UIImage? {
     let srcOpts: [CFString: Any] = [
         kCGImageSourceShouldCache: false,

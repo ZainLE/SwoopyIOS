@@ -3,7 +3,7 @@ import ImageIO
 
 struct DownsampledImage: View {
     let url: URL
-    let maxDimension: CGFloat         // in points (we multiply by screen scale)
+    let maxDimension: CGFloat         
     @State private var image: UIImage?
 
     var body: some View {

@@ -5,13 +5,15 @@ struct RootView: View {
         TabView {
             SwipeDeckView()
                 .tabItem { Label("Feed", systemImage: "rectangle.on.rectangle") }
-            TrashMapView()
-                .tabItem { Label("Map", systemImage: "map") }
+
+            ReservationsView()
+                .tabItem { Label("Reservations", systemImage: "clock.badge.checkmark") }
+
             AddTrashView()
                 .tabItem { Label("Add", systemImage: "plus.app") }
+
             ProfileView()
                 .tabItem { Label("Profile", systemImage: "person") }
         }
     }
 }
-

@@ -1,10 +1,7 @@
 import Foundation
 import CoreLocation
 
-/// Safer manager:
-/// - No continuous updates unless you explicitly start them
-/// - One-shot requests stop immediately
-/// - Reasonable accuracy + distance filter to avoid UI churn
+@MainActor
 final class LocationManager: NSObject, ObservableObject {
     @Published private(set) var authorization: CLAuthorizationStatus = .notDetermined
     @Published private(set) var userLocation: CLLocation?
@@ -19,9 +16,9 @@ final class LocationManager: NSObject, ObservableObject {
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         manager.distanceFilter = 50
         manager.pausesLocationUpdatesAutomatically = true
+        if #available(iOS 14.0, *) { authorization = manager.authorizationStatus }
     }
 
-    /// Ask permission (does NOT auto-start continuous updates).
     func request() {
         if #available(iOS 14.0, *) { authorization = manager.authorizationStatus }
         if authorization == .notDetermined {
@@ -29,15 +26,18 @@ final class LocationManager: NSObject, ObservableObject {
         }
     }
 
-    /// Get one location, then stop. Use this for "Use Current Location".
+    /// Get one fix then stop. Returns nil immediately if permission is denied/restricted.
     func requestOnce(_ block: @escaping (CLLocationCoordinate2D?) -> Void) {
+        if #available(iOS 14.0, *),
+           authorization == .denied || authorization == .restricted {
+            block(nil); return
+        }
         request()
         oneShot = block
-        manager.startUpdatingLocation()   // start briefly; we'll stop on first fix
+        manager.startUpdatingLocation()   // stop on first fix
         isContinuous = false
     }
 
-    /// Only call these on screens that truly need live tracking (e.g. a live map).
     func startContinuous() {
         request()
         manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
@@ -50,33 +50,41 @@ final class LocationManager: NSObject, ObservableObject {
         manager.stopUpdatingLocation()
         isContinuous = false
     }
+
+    /// Convenience for `fetchFeed(near:)`
+    func bestCoordinate(fallback: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+        userLocation?.coordinate ?? fallback
+    }
 }
 
 extension LocationManager: CLLocationManagerDelegate {
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        if #available(iOS 14.0, *) { authorization = manager.authorizationStatus }
-        // Do NOT auto-start here; caller decides when to startUpdatingLocation().
-    }
-
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let loc = locations.last else { return }
-
-        // Publish only meaningful changes (avoid rerender storms)
-        if let prev = userLocation, prev.distance(from: loc) < 10 { return }
-        DispatchQueue.main.async { self.userLocation = loc }
-
-        if !isContinuous {
-            oneShot?(loc.coordinate)
-            oneShot = nil
-            manager.stopUpdatingLocation()
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor in
+            if #available(iOS 14.0, *) { authorization = manager.authorizationStatus }
+            // caller decides when to startUpdatingLocation()
         }
     }
 
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        if !isContinuous {
-            oneShot?(nil)
-            oneShot = nil
-            manager.stopUpdatingLocation()
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let loc = locations.last else { return }
+        Task { @MainActor in
+            if let prev = userLocation, prev.distance(from: loc) < 10 { return }
+            userLocation = loc
+            if !isContinuous {
+                oneShot?(loc.coordinate)
+                oneShot = nil
+                manager.stopUpdatingLocation()
+            }
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        Task { @MainActor in
+            if !isContinuous {
+                oneShot?(nil)
+                oneShot = nil
+                manager.stopUpdatingLocation()
+            }
         }
         #if DEBUG
         print("Location error:", error.localizedDescription)
