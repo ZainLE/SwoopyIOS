@@ -6,8 +6,13 @@ import Supabase
 enum ImageStorage {
 
     /// Upload one JPEG and return (storage path, signed URL string).
-    static func uploadJPEG(client: SupabaseClient, data: Data, uploader: UUID) async throws -> (path: String, publicURL: String) {
-        let path = "\(uploader.uuidString)/\(UUID().uuidString).jpg"
+    static func uploadJPEG(
+        client: SupabaseClient,
+        data: Data,
+        uploader: UUID
+    ) async throws -> (path: String, publicURL: String) {
+
+        let path = "items/\(uploader.uuidString)/\(UUID().uuidString).jpg"
         let options = FileOptions(cacheControl: "3600", contentType: "image/jpeg", upsert: false)
 
         _ = try await client
@@ -25,9 +30,14 @@ enum ImageStorage {
     }
 
     /// Upload up to 3 JPEGs and return their signed URL strings (ordered).
-    static func uploadJPEGs(client: SupabaseClient, images: [UIImage], uploader: UUID) async throws -> [String] {
+    static func uploadJPEGs(
+        client: SupabaseClient,
+        images: [UIImage],
+        uploader: UUID
+    ) async throws -> [String] {
+
         var urls: [String] = []
-        let folder = uploader.uuidString
+        let folder = "items/\(uploader.uuidString)"
         let options = FileOptions(cacheControl: "3600", contentType: "image/jpeg", upsert: false)
 
         for (i, img) in images.prefix(3).enumerated() {
@@ -47,5 +57,35 @@ enum ImageStorage {
             urls.append(url.absoluteString)
         }
         return urls
+    }
+
+    /// Upload a file from disk and return a signed URL (7 days). Uses JPEG content type, upsert disabled.
+    static func uploadFileURL(
+        client: SupabaseClient,
+        fileURL: URL,
+        uploader: UUID
+    ) async throws -> String {
+
+        let folder = "items/\(uploader.uuidString)"
+        let filename = fileURL.lastPathComponent.isEmpty
+            ? "upload-\(UUID().uuidString).jpg"
+            : fileURL.lastPathComponent
+        let path = "\(folder)/\(filename)"
+        let options = FileOptions(cacheControl: "3600", contentType: "image/jpeg", upsert: false)
+
+        // Efficiently map file into memory if possible
+        let data = try Data(contentsOf: fileURL, options: [.mappedIfSafe])
+
+        _ = try await client
+            .storage
+            .from(SupabaseConfig.photosBucket)
+            .upload(path: path, file: data, options: options)
+
+        let url = try await client
+            .storage
+            .from(SupabaseConfig.photosBucket)
+            .createSignedURL(path: path, expiresIn: 60 * 60 * 24 * 7)
+
+        return url.absoluteString
     }
 }

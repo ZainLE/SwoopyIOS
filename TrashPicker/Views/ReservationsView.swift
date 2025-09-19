@@ -28,6 +28,7 @@ struct ReservationsView: View {
                 }
             }
             .navigationTitle("Reservations")
+            .navigationBarTitleDisplayMode(.inline)
             .task { await svc.fetchMyStuff() }
         }
     }
@@ -41,12 +42,12 @@ struct ReservationsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text(item.title)
-                        .font(.headline)
+                        .font(AppFont.h3)
                     Spacer()
                     if let until = item.reservedUntil {
                         Text("⏱ \(until, style: .timer)")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .font(AppFont.sub.monospacedDigit())
+                            .foregroundColor(AppColor.muted)
                     }
                 }
 
@@ -54,26 +55,23 @@ struct ReservationsView: View {
                     Button {
                         Task { try? await svc.confirmPickup(item) }
                     } label: {
-                        Label("Picked up", systemImage: "checkmark.circle.fill")
-                            .frame(maxWidth: .infinity)
+                        Label("Picked up", systemImage: "checkmark.circle.fill").frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PrimaryCTA())
 
                     Button(role: .destructive) {
                         Task { await svc.cancelReservation(item) }
                     } label: {
-                        Label("Cancel", systemImage: "xmark.circle.fill")
-                            .frame(maxWidth: .infinity)
+                        Label("Cancel", systemImage: "xmark.circle.fill").frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(OutlinePill())
 
                     Button {
                         openMaps()
                     } label: {
-                        Label("Map", systemImage: "map")
-                            .frame(maxWidth: .infinity)
+                        Label("Map", systemImage: "map").frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(OutlinePill())
                     .disabled(item.mapCoordinate == nil)
                     .alert("No location available",
                            isPresented: $showNoLocationAlert) {
@@ -99,3 +97,4 @@ struct ReservationsView: View {
         }
     }
 }
+

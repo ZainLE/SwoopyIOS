@@ -43,16 +43,28 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				Views/AppleSignInbutton.swift,
 			);
 			target = 8E7AB91A2E68ACE8002CC686 /* TrashPicker */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		8E6F55D82E7CD57100DB5FD6 /* Exceptions for "TrashPicker" folder in "Copy Bundle Resources" phase from "TrashPicker" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = 8E7AB9192E68ACE8002CC686 /* Resources */;
+			membershipExceptions = (
+				Views/AppleSignInbutton.swift,
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		8E7AB91D2E68ACE8002CC686 /* TrashPicker */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				8E3792822E68E40A00D80AD9 /* Exceptions for "TrashPicker" folder in "TrashPicker" target */,
+				8E6F55D82E7CD57100DB5FD6 /* Exceptions for "TrashPicker" folder in "Copy Bundle Resources" phase from "TrashPicker" target */,
 			);
 			path = TrashPicker;
 			sourceTree = "<group>";
@@ -432,12 +444,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = TrashPicker/TrashPicker.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = SS76JYRJ56;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TrashPicker/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Swoopy;
 				INFOPLIST_KEY_NSCameraUsageDescription = "We use the camera to take photos of trash reports.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We use your location to pin reports on the map";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = " We save captured photos to your library";
@@ -447,7 +461,7 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -466,12 +480,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = TrashPicker/TrashPicker.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = SS76JYRJ56;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TrashPicker/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Swoopy;
 				INFOPLIST_KEY_NSCameraUsageDescription = "We use the camera to take photos of trash reports.";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We use your location to pin reports on the map";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = " We save captured photos to your library";
@@ -481,7 +497,7 @@
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				IPHONEOS_DEPLOYMENT_TARGET = 18;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",

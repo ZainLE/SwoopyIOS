@@ -23,19 +23,21 @@ struct TrashListView: View {
                     Thumbnail(url: item.firstPhotoURL)
                         .frame(width: 56, height: 56)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay { RoundedRectangle(cornerRadius: 8).strokeBorder(AppColor.stroke, lineWidth: 1) }
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(item.title).font(.headline)
-                        Text(item.cityText).font(.caption).foregroundStyle(.secondary)
+                        Text(item.title).font(AppFont.h3)
+                        Text(item.cityText).font(AppFont.sub).foregroundColor(AppColor.muted)
                     }
                     Spacer()
                     Text(item.createdAt, style: .time)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .font(AppFont.sub)
+                        .foregroundColor(AppColor.muted)
                 }
                 .padding(.vertical, 4)
             }
             .navigationTitle("List")
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query)
             .task {
                 let c = loc.userLocation?.coordinate ?? fallback

@@ -1,25 +1,41 @@
+//
+//  SwipeDeckView.swift
+//  TrashPicker
+//
+//  Created by Zain Latif  on 19/9/25.
+//
+
 import SwiftUI
 import MapKit
-import CoreLocation
+import CloudKit
+
+// MARK: - Backend bridge toggle (switch when BE is ready)
+private enum BackendMode { case cloudKit, api, stub }
+private let BACKEND_MODE: BackendMode = .cloudKit   // keep CloudKit as default
+
+// Optional: configure API base when you flip to .api (left here for future)
+private enum APIConfig {
+    static let base = URL(string: "https://api.swoopy.eu/v1")!
+    static let feedPath = "/feed"            // GET    /v1/feed
+    static let reservePath = "/reservations" // POST   /v1/reservations
+    static func headers() -> [String:String] { [:] }
+}
 
 struct SwipeDeckView: View {
-    @EnvironmentObject var svc: SupabaseService
-    @EnvironmentObject var loc: LocationManager
+    @EnvironmentObject var ck: CKTrashService
 
-    @State private var hidden: Set<UUID> = []
-    @State private var firstLoadDone = false
+    // Using CloudKit IDs so it matches your service
+    @State private var hidden: Set<CKRecord.ID> = []
+
+    // reserve sheet (two-step)
     @State private var showReserveSheet = false
     @State private var sheetMode: ReserveSheet.Mode = .prompt
-    @State private var sheetItem: TrashDTO?
+    @State private var sheetItem: CKTrashItem?
 
-    // fallback if GPS isn’t available yet
-    private let fallbackCenter = CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686)
-    private var currentCenter: CLLocationCoordinate2D {
-        loc.userLocation?.coordinate ?? fallbackCenter
-    }
-
-    private var visible: [TrashDTO] {
-        svc.feed.filter { !hidden.contains($0.id) && $0.uploader != svc.userId }
+    // Keep everything in CKTrashItem to match service
+    private var visible: [CKTrashItem] {
+        // If isMine(_:) exists, filter with it; otherwise just filter by hidden
+        ck.feed.filter { !hidden.contains($0.id) && !(ck.isMine($0) ?? false) }
     }
 
     var body: some View {
@@ -27,23 +43,23 @@ struct SwipeDeckView: View {
             GeometryReader { geo in
                 let maxWidth  = geo.size.width - 32
                 let cardWidth = min(maxWidth, 420)
-                let idealH    = cardWidth * 1.25
+                let idealH    = cardWidth * 1.25   // 4:5 style
                 let cardHeight = min(idealH, geo.size.height - 180)
 
                 ZStack {
-                    if !firstLoadDone {
-                        ProgressView()
-                            .controlSize(.large)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                    } else if visible.isEmpty {
+                    if visible.isEmpty {
                         EmptyFeedCTA(
-                            refresh: { Task { await svc.fetchFeed(near: currentCenter) } },
-                            makePost: {}
+                            refresh: { Task { await fetchFeedBridge() } },
+                            makePost: { /* handled by NavigationLink provided below */ }
                         )
                         .padding(.horizontal, 20)
                         .overlay(alignment: .topTrailing) {
-                            NavigationLink { TrashMapView() } label: {
-                                Image(systemName: "map")
+                            NavigationLink {
+                                AddTrashView()
+                                    .environmentObject(ck)
+                                    .environmentObject(LocationManager())
+                            } label: {
+                                Image(systemName: "camera")
                                     .font(.title3)
                                     .padding(12)
                                     .background(.ultraThinMaterial, in: Circle())
@@ -57,20 +73,25 @@ struct SwipeDeckView: View {
                         DeckStack(
                             items: Array(visible.prefix(3)),
                             width: cardWidth,
-                            height: cardHeight
-                        ) { item, dir in
-                            if dir == .right {
-                                sheetItem = item
-                                sheetMode = .prompt
-                                withAnimation(.easeOut(duration: 0.18)) { showReserveSheet = true }
-                            } else {
-                                hidden.insert(item.id)
+                            height: cardHeight,
+                            onSwipe: { item, dir in
+                                if dir == .right {
+                                    sheetItem = item
+                                    sheetMode = .prompt
+                                    withAnimation(.easeOut(duration: 0.18)) { showReserveSheet = true }
+                                } else {
+                                    hidden.insert(item.id)
+                                }
                             }
-                        }
+                        )
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                         .overlay(alignment: .topTrailing) {
-                            NavigationLink { TrashMapView() } label: {
-                                Image(systemName: "map")
+                            NavigationLink {
+                                AddTrashView()
+                                    .environmentObject(ck)
+                                    .environmentObject(LocationManager())
+                            } label: {
+                                Image(systemName: "camera")
                                     .font(.title3)
                                     .padding(12)
                                     .background(.ultraThinMaterial, in: Circle())
@@ -82,23 +103,22 @@ struct SwipeDeckView: View {
                         }
                     }
 
-                    // reservation sheet
+                    // Reservation sheet
                     if showReserveSheet, let item = sheetItem {
                         ReserveSheet(
                             mode: sheetMode,
                             item: item,
                             confirm: {
                                 Task {
-                                    try? await svc.reserve(item)
-                                    await svc.fetchFeed(near: currentCenter)
+                                    try? await reserveBridge(item)
+                                    await fetchFeedBridge()
                                     withAnimation(.easeOut(duration: 0.18)) { sheetMode = .info }
                                 }
                             },
                             openMaps: {
-                                guard let c = item.mapCoordinate else { return }
-                                let mi = MKMapItem(placemark: MKPlacemark(coordinate: c))
+                                let mi = MKMapItem(placemark: MKPlacemark(coordinate: item.coordinate))
                                 mi.name = item.title
-                                mi.openInMaps()
+                                mi.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeTransit])
                             },
                             close: {
                                 withAnimation(.easeOut(duration: 0.18)) {
@@ -115,17 +135,41 @@ struct SwipeDeckView: View {
             .navigationTitle("Feed")
             .navigationBarTitleDisplayMode(.inline)
             .task {
-                await svc.ensureSession()
-                await svc.fetchFeed(near: currentCenter)
-                firstLoadDone = true
-                if loc.authorization == .notDetermined { loc.request() }
-            }
-            .refreshable {
-                await svc.fetchFeed(near: currentCenter)
+                await fetchFeedBridge()
+                // CloudKit expiry/maintenance should be done inside the service layer; removed here to avoid missing-member errors.
             }
         }
     }
+
+    // MARK: - Tiny bridge helpers (CloudKit / API / Stub)
+
+    private func fetchFeedBridge() async {
+        switch BACKEND_MODE {
+        case .cloudKit:
+            await ck.fetchFeed()
+        case .api:
+            // Fill when API is ready. Keep UI safe for now.
+            await MainActor.run { ck.feed = [] }
+        case .stub:
+            await MainActor.run { ck.feed = [] }
+        }
+    }
+
+    private func reserveBridge(_ item: CKTrashItem) async throws {
+        switch BACKEND_MODE {
+        case .cloudKit:
+            try await ck.reserve(item) // matches your existing signature
+        case .api:
+            try await API.reserve(itemId: String(describing: item.id), holdHours: 6)
+        case .stub:
+            return
+        }
+    }
 }
+
+//
+// MARK: - Empty State CTA
+//
 
 private struct EmptyFeedCTA: View {
     var refresh: () -> Void
@@ -159,7 +203,11 @@ private struct EmptyFeedCTA: View {
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 12) {
-                NavigationLink { AddTrashView() } label: {
+                NavigationLink {
+                    AddTrashView()
+                        .environmentObject(CKTrashService.shared)
+                        .environmentObject(LocationManager())
+                } label: {
                     Label("Make a post", systemImage: "camera.fill")
                 }
                 .buttonStyle(.borderedProminent)
@@ -175,11 +223,15 @@ private struct EmptyFeedCTA: View {
     }
 }
 
+//
+// MARK: - Stack of up to 3 cards
+//
+
 private struct DeckStack: View {
-    let items: [TrashDTO]
+    let items: [CKTrashItem]
     let width: CGFloat
     let height: CGFloat
-    var onSwipe: (TrashDTO, SwipeCard.Direction) -> Void
+    var onSwipe: (CKTrashItem, SwipeCard.Direction) -> Void
 
     var body: some View {
         ZStack {
@@ -201,16 +253,20 @@ private struct DeckStack: View {
     }
 }
 
+//
+// MARK: - Single swipeable card
+//
+
 private struct SwipeCard: View {
     enum Direction { case left, right }
 
-    let item: TrashDTO
+    let item: CKTrashItem
     let width: CGFloat
     let height: CGFloat
     var onSwipe: (Direction) -> Void
 
     @State private var drag: CGSize = .zero
-    @State private var haptic = UIImpactFeedbackGenerator(style: .medium)
+    @State private var dragging = false
 
     var body: some View {
         ZStack {
@@ -219,8 +275,15 @@ private struct SwipeCard: View {
                 .frame(width: width, height: height)
                 .shadow(color: .black.opacity(0.10), radius: 8, y: 5)
 
-            if let url = item.heroImageURL {
+            // Photo
+            if let url = item.photoURL as? URL {
                 DownsampledImage(url: url, maxDimension: max(width, height))
+                    .scaledToFill()
+                    .frame(width: width, height: height)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 22))
+            } else if let urlString = item.photoURL as? String {
+                DownsampledImage(urlString: urlString, maxDimension: max(width, height))
                     .scaledToFill()
                     .frame(width: width, height: height)
                     .clipped()
@@ -231,7 +294,7 @@ private struct SwipeCard: View {
                     .frame(width: width, height: height)
             }
 
-            // Title/time with top gradient
+            // Title/time with subtle top gradient
             VStack {
                 HStack {
                     Text(item.title)
@@ -249,9 +312,9 @@ private struct SwipeCard: View {
                 .background(
                     LinearGradient(colors: [Color.black.opacity(0.45), .clear],
                                    startPoint: .top, endPoint: .bottom)
-                    .frame(height: 70)
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                    .frame(maxHeight: .infinity, alignment: .top)
+                        .frame(height: 70)
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .frame(maxHeight: .infinity, alignment: .top)
                 )
                 Spacer()
             }
@@ -261,7 +324,7 @@ private struct SwipeCard: View {
             VStack(spacing: 10) {
                 Spacer()
                 HStack {
-                    Label(item.city ?? "", systemImage: "mappin.and.ellipse")
+                    Label(item.city, systemImage: "mappin.and.ellipse")
                         .font(.callout.weight(.semibold))
                         .padding(.horizontal, 10).padding(.vertical, 6)
                         .background(.thinMaterial, in: Capsule())
@@ -269,11 +332,8 @@ private struct SwipeCard: View {
 
                     Spacer()
 
-                    // show time left instead of removed interestedCount
-                    let time = item.expiresAt.formatted(date: .omitted, time: .shortened)
-                    Text("Expires: \(time)")
-                        .font(.caption2)
-                        .padding(.horizontal, 10).padding(.vertical, 6)
+                    Text("Interested: \(item.interestedCount)")
+                        .font(.caption2).padding(.horizontal, 10).padding(.vertical, 6)
                         .background(.thinMaterial, in: Capsule())
                         .foregroundStyle(.white)
                 }
@@ -287,13 +347,13 @@ private struct SwipeCard: View {
             .padding(.bottom, 14)
             .frame(width: width, height: height)
         }
-        .onAppear { haptic.prepare() }
         .offset(drag)
         .rotationEffect(.degrees(Double(drag.width / 18)))
         .gesture(
             DragGesture(minimumDistance: 8)
-                .onChanged { v in drag = v.translation }
+                .onChanged { v in dragging = true; drag = v.translation }
                 .onEnded { v in
+                    dragging = false
                     let t: CGFloat = 115
                     if v.translation.width > t { swipe(.right) }
                     else if v.translation.width < -t { swipe(.left) }
@@ -304,7 +364,7 @@ private struct SwipeCard: View {
     }
 
     private func swipe(_ dir: Direction) {
-        haptic.impactOccurred()
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         withAnimation(.easeOut(duration: 0.18)) {
             drag = CGSize(width: dir == .right ? 900 : -900, height: 0)
         }
@@ -328,10 +388,14 @@ private struct ActionCircle: View {
     }
 }
 
+//
+// MARK: - Reserve sheet (two-step)
+//
+
 private struct ReserveSheet: View {
     enum Mode { case prompt, info }
     let mode: Mode
-    let item: TrashDTO
+    let item: CKTrashItem
     var confirm: () -> Void
     var openMaps: () -> Void
     var close: () -> Void
@@ -355,7 +419,7 @@ private struct ReserveSheet: View {
             } else {
                 Text("Reserved until \(reservedUntilString(item))").font(.headline)
                 HStack {
-                    Label(item.city ?? "", systemImage: "mappin.circle")
+                    Label(item.city, systemImage: "mappin.circle")
                     Spacer()
                     Button(action: openMaps) { Label("Open in Maps", systemImage: "map") }
                         .buttonStyle(.bordered)
@@ -370,9 +434,30 @@ private struct ReserveSheet: View {
         .frame(maxHeight: .infinity, alignment: .bottom)
     }
 
-    private func reservedUntilString(_ item: TrashDTO) -> String {
+    private func reservedUntilString(_ item: CKTrashItem) -> String {
         if let u = item.reservedUntil, u > Date() { return u.formatted(date: .omitted, time: .shortened) }
         let u = Calendar.current.date(byAdding: .hour, value: 6, to: Date())!
         return u.formatted(date: .omitted, time: .shortened)
     }
 }
+
+// MARK: - Minimal API client placeholder (kept for future .api mode)
+private enum API {
+    struct ReservePayload: Encodable {
+        let item_id: String
+        let hold_hours: Int
+    }
+
+    static func reserve(itemId: String, holdHours: Int) async throws {
+        var request = URLRequest(url: APIConfig.base.appending(path: APIConfig.reservePath))
+        request.httpMethod = "POST"
+        APIConfig.headers().forEach { request.setValue($1, forHTTPHeaderField: $0) }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(ReservePayload(item_id: itemId, hold_hours: holdHours))
+        let (_, resp) = try await URLSession.shared.data(for: request)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+    }
+}
+

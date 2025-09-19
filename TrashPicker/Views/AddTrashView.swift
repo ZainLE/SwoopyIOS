@@ -1,532 +1,680 @@
+//
+//  AddTrashView.swift
+//  TrashPicker
+//
+//  Created by Zain Latif on 19/9/25.
+//
+
 import SwiftUI
 import MapKit
-import CoreLocation
-import UIKit
 import PhotosUI
-
-// MARK: - Model saved locally
-struct TrashDraft: Codable {
-    let id: UUID
-    let description: String?
-    let condition: String                   // "needs_fix" | "usable" | "good" | "like_new"
-    let mode: String                        // "street" | "home"
-    let latitude: Double
-    let longitude: Double
-    let createdAt: Date
-    let photos: [String]                    // file names relative to the draft folder
-}
-
-// MARK: - Add View
+import CoreLocation
 
 struct AddTrashView: View {
+    @EnvironmentObject var ck: CKTrashService
     @EnvironmentObject var loc: LocationManager
     @Environment(\.dismiss) private var dismiss
 
-    // UI
-    @State private var showValidation = false
-    @State private var validationText = ""
-    @State private var showSuccess = false
-    @State private var saving = false
-
-    // Camera / library
+    // MARK: - Form State
+    @State private var slots: [UIImage?] = [nil, nil, nil]         // exactly 3 slots
+    @State private var slotMenuIndex: Int? = nil
     @State private var showCamera = false
     @State private var showLibrary = false
-    @State private var showSourceSheet = false
-    @State private var didAutoOpenCamera = false   // auto-open once on first visit
 
-    // Fields
-    @State private var photos: [UIImage] = []      // up to 3
-    @State private var wantsDescription = false
-    @State private var descriptionText = ""        // <= 100 chars
-    @State private var condition = "good"          // "needs_fix" | "usable" | "good" | "like_new"
-    @State private var mode = "street"             // "street" | "home"
+    enum ItemCondition: String, CaseIterable, Codable {
+        case needsFixing = "Needs Fixing"
+        case usable = "Usable"
+        case good = "Good"
+        case likeNew = "Like New"
+    }
+    @State private var condition: ItemCondition = .good            // required
 
-    // Map
-    @State private var coord: CLLocationCoordinate2D?
-    @State private var camera: MapCameraPosition = .region(
-        .init(center: .init(latitude: 41.387, longitude: 2.170),
-              span: .init(latitudeDelta: 0.05, longitudeDelta: 0.05))
-    )
+    @State private var descriptionText: String = ""                // optional (≤100)
+    @State private var showDescriptionExpanded = false             // description chip state
+    private let descriptionLimit = 100
+
+    enum PickupMode: String, CaseIterable, Codable {
+        case street = "Street"
+        case home = "Home"
+    }
+    @State private var pickupMode: PickupMode? = nil               // required
+
+    // Map / Location
+    @State private var coord: CLLocationCoordinate2D? = nil
+    @State private var camera: MapCameraPosition = .region(.init(
+        center: .init(latitude: 41.387, longitude: 2.170),
+        span: .init(latitudeDelta: 0.05, longitudeDelta: 0.05)
+    ))
+    @State private var homeRadiusMeters: Double = 500
+    @State private var addressLine: String = ""                    // backend/geo-derived (read-only in UI)
+
+    // UX
+    @State private var showValidation = false
+    @State private var validationText = ""
+    @State private var saving = false
+    @State private var error: String?
+    @State private var showSuccess = false
+
+    // MARK: - Computed
+    private var photos: [UIImage] { slots.compactMap { $0 } }
+    private var formIsValid: Bool {
+        guard !photos.isEmpty else { return false }
+        guard let mode = pickupMode else { return false }
+        guard coord != nil else { return false }
+        if mode == .home { return !addressLine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        return true
+    }
 
     var body: some View {
         NavigationStack {
-            Form {
-                // PHOTOS
-                Section("Photos (max 3)") {
-                    AddPhotoStrip(
-                        photos: $photos,
-                        onRequestSource: {
-                            if photos.count < 3 { showSourceSheet = true }
-                        }
-                    )
-                    .listRowInsets(EdgeInsets())
-                }
-
-                // CONDITION + MODE
-                Section {
-                    LabeledContent("Condition") {
-                        Picker("", selection: $condition) {
-                            Text("Need Fix").tag("needs_fix")
-                            Text("Usable").tag("usable")
-                            Text("Good").tag("good")
-                            Text("Like New").tag("like_new")
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(maxWidth: 420)
-                    }
-
-                    LabeledContent("Location Mode") {
-                        Picker("", selection: $mode) {
-                            Text("From Street").tag("street")
-                            Text("From Home").tag("home")
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(maxWidth: 420)
-                    }
-                }
-
-                // DESCRIPTION (click-to-expand dot)
-                Section {
-                    HStack(spacing: 12) {
-                        Button {
-                            withAnimation(.easeInOut) { wantsDescription.toggle() }
-                        } label: {
-                            Circle()
-                                .fill(wantsDescription ? .green : .secondary.opacity(0.35))
-                                .frame(width: 18, height: 18)
-                                .overlay(Circle().stroke(.quaternary, lineWidth: 1))
-                                .accessibilityLabel("Toggle description")
-                        }
-                        Text("Provide description")
-                            .font(.callout)
-                        Spacer()
-                    }
-
-                    if wantsDescription {
-                        ZStack(alignment: .topLeading) {
-                            if descriptionText.isEmpty {
-                                Text("Up to 100 characters…")
-                                    .foregroundStyle(.secondary)
-                                    .padding(.top, 8)
+            ScrollView {
+                VStack(spacing: AppTheme.Spacing.l) {
+                    // 1) Photo Upload Section with top-right camera icon
+                    VStack(alignment: .leading, spacing: AppTheme.Spacing.m) {
+                        HStack {
+                            Text("Photos")
+                                .font(AppTheme.Typography.headline)
+                                .foregroundColor(AppTheme.ColorToken.text)
+                            
+                            Spacer()
+                            
+                            // Top-right photo icon
+                            Button(action: { 
+                                // Find first empty slot or use slot 0
+                                let emptySlot = slots.firstIndex(of: nil) ?? 0
+                                slotMenuIndex = emptySlot
+                            }) {
+                                Image(systemName: "camera.fill")
+                                    .font(.system(size: 20, weight: .medium))
+                                    .foregroundColor(AppTheme.ColorToken.primary)
+                                    .frame(width: 40, height: 40)
+                                    .background(AppTheme.ColorToken.accent.opacity(0.2))
+                                    .clipShape(Circle())
                             }
-                            TextEditor(text: $descriptionText)
-                                .frame(minHeight: 80, maxHeight: 120)
-                                .onChange(of: descriptionText) { new in
-                                    if new.count > 100 { descriptionText = String(new.prefix(100)) }
-                                }
+                        }
+                        
+                        // 3 photo tiles (4:3 aspect ratio, 12pt radius, dashed border)
+                        PhotoTilesView(
+                            slots: $slots,
+                            openMenu: { index in slotMenuIndex = index }
+                        )
+                        
+                        if photos.isEmpty && saving == false && showValidation {
+                            Text("At least one photo is required.")
+                                .font(AppTheme.Typography.footnote)
+                                .foregroundStyle(.red)
                         }
                     }
-                }
+                    .padding(.horizontal, AppTheme.Spacing.m)
+                    
+                    // 2) Condition Selector Pills
+                    VStack(alignment: .leading, spacing: AppTheme.Spacing.s) {
+                        Text("Condition")
+                            .font(AppTheme.Typography.headline)
+                            .foregroundColor(AppTheme.ColorToken.text)
+                            .padding(.horizontal, AppTheme.Spacing.m)
+                        
+                        ConditionPillsView(selection: $condition)
+                            .padding(.horizontal, AppTheme.Spacing.m)
+                    }
+                    
+                    // 3) Description Chip
+                    VStack(alignment: .leading, spacing: AppTheme.Spacing.s) {
+                        Text("Description (Optional)")
+                            .font(AppTheme.Typography.headline)
+                            .foregroundColor(AppTheme.ColorToken.text)
+                            .padding(.horizontal, AppTheme.Spacing.m)
+                        
+                        DescriptionChipView(
+                            text: $descriptionText,
+                            isExpanded: $showDescriptionExpanded,
+                            limit: descriptionLimit
+                        )
+                        .padding(.horizontal, AppTheme.Spacing.m)
+                    }
+                    
+                    // 4) Pickup Location Segmented Control
+                    VStack(alignment: .leading, spacing: AppTheme.Spacing.m) {
+                        Text("Pickup Location")
+                            .font(AppTheme.Typography.headline)
+                            .foregroundColor(AppTheme.ColorToken.text)
+                            .padding(.horizontal, AppTheme.Spacing.m)
+                        
+                        Picker("Pickup Location", selection: Binding(
+                            get: { pickupMode },
+                            set: { newValue in
+                                pickupMode = newValue
+                                guard let new = newValue else { return }
+                                // Auto-center & auto-select to user location
+                                if loc.authorization == .notDetermined { loc.request() }
+                                let fallback = CLLocationCoordinate2D(latitude: 41.387, longitude: 2.170)
+                                let c = loc.userLocation?.coordinate ?? fallback
+                                coord = c
+                                withAnimation(.easeInOut(duration: 0.35)) {
+                                    camera = .region(.init(center: c, span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)))
+                                }
+                                if new == .home {
+                                    Task { addressLine = await reverseGeocodeCity(for: c) ?? "" }
+                                }
+                            }
+                        )) {
+                            Text(PickupMode.street.rawValue).tag(PickupMode?.some(.street))
+                            Text(PickupMode.home.rawValue).tag(PickupMode?.some(.home))
+                        }
+                        .pickerStyle(.segmented)
+                        .tint(AppTheme.ColorToken.primary)
+                        .padding(.horizontal, AppTheme.Spacing.m)
+                        
+                        if pickupMode == nil && saving == false && showValidation {
+                            Text("Please choose where pickup is from.")
+                                .font(AppTheme.Typography.footnote)
+                                .foregroundStyle(.red)
+                                .padding(.horizontal, AppTheme.Spacing.m)
+                        }
+                        
+                        // Map Preview
+                        if let mode = pickupMode {
+                            VStack(spacing: AppTheme.Spacing.s) {
+                                InlineMap(
+                                    mode: mode,
+                                    camera: $camera,
+                                    coord: $coord,
+                                    radius: $homeRadiusMeters,
+                                    colorCircle: AppTheme.ColorToken.accent
+                                )
+                                .frame(height: 200)
+                                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.card))
+                                .overlay(RoundedRectangle(cornerRadius: AppTheme.Radius.card).stroke(.quaternary))
+                                .padding(.horizontal, AppTheme.Spacing.m)
 
-                // MAP
-                AddLocationSection(camera: $camera, coord: $coord, mode: $mode)
-                    .environmentObject(loc)
-
-                // SUBMIT
-                Section {
-                    Button(action: validateAndSave) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "tray.and.arrow.up.fill")
-                            Text("Upload")
-                                .font(.headline)
+                                if mode == .home {
+                                    VStack(alignment: .leading, spacing: AppTheme.Spacing.s) {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "house.fill")
+                                                .foregroundStyle(AppTheme.ColorToken.mutedGray)
+                                            Text(addressLine.isEmpty ? "Approximate address will appear here" : addressLine)
+                                                .font(AppTheme.Typography.body)
+                                                .foregroundStyle(addressLine.isEmpty ? AppTheme.ColorToken.mutedGray : AppTheme.ColorToken.text)
+                                        }
+                                        Text("Your exact address stays private. We show a 500m radius to nearby users.")
+                                            .font(AppTheme.Typography.footnote)
+                                            .foregroundStyle(AppTheme.ColorToken.mutedGray)
+                                    }
+                                    .padding(.horizontal, AppTheme.Spacing.m)
+                                }
+                            }
+                        }
+                    }
+                    
+                    // 5) Share Your Find Button
+                    Button(action: submit) {
+                        HStack(spacing: AppTheme.Spacing.s) {
+                            if saving { 
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: AppTheme.ColorToken.textInv))
+                                    .scaleEffect(0.8)
+                            }
+                            Text("Share Your Find")
+                                .font(AppTheme.Typography.body.weight(.semibold))
                         }
                         .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(formIsValid && !saving ? AppTheme.ColorToken.primary : AppTheme.ColorToken.mutedGray)
+                        .foregroundColor(AppTheme.ColorToken.textInv)
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.button))
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.blue)
-                    .disabled(saving)
-                }
-            }
-            .scrollDismissesKeyboard(.interactively)
-            .overlay(alignment: .top) {
-                if showSuccess {
-                    Label("Saved locally", systemImage: "checkmark.circle.fill")
-                        .padding(.horizontal, 14).padding(.vertical, 10)
-                        .background(.thinMaterial, in: Capsule())
-                        .padding(.top, 8)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                }
-            }
-            .animation(.spring(), value: showSuccess)
-            .navigationTitle("Add Spot")
+                    .disabled(!formIsValid || saving)
+                    .padding(.horizontal, AppTheme.Spacing.m)
+                    .padding(.bottom, AppTheme.Spacing.xl)
 
-            // Camera: true full screen
-            .fullScreenCover(isPresented: $showCamera) {
-                AddCameraCapture { image in
-                    if let image, photos.count < 3 { photos.append(image) }
+                    if let e = error {
+                        Text(e)
+                            .foregroundStyle(.red)
+                            .font(AppTheme.Typography.footnote)
+                            .padding(.horizontal, AppTheme.Spacing.m)
+                    }
+                }
+            }
+            .navigationTitle("Share Your Find")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button("Cancel") { dismiss() }
+                        .foregroundColor(AppTheme.ColorToken.primary)
+                }
+            }
+            .confirmationDialog(menuTitle, isPresented: Binding(
+                get: { slotMenuIndex != nil },
+                set: { if !$0 { slotMenuIndex = nil } }
+            ), titleVisibility: .visible) {
+                if let idx = slotMenuIndex {
+                    if slots[idx] == nil {
+                        Button("Take Photo") { showCamera = true }
+                        Button("Choose from Library") { showLibrary = true }
+                    } else {
+                        Button("Replace Photo") { showLibrary = true }
+                        Button("Remove Photo", role: .destructive) {
+                            slots[idx] = nil
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                }
+            }
+            .sheet(isPresented: $showCamera) {
+                CameraPicker { image in
+                    if let idx = slotMenuIndex, let img = image {
+                        slots[idx] = img
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    }
+                    showCamera = false
                 }
                 .ignoresSafeArea()
             }
-
-            // Library (multi-select up to remaining)
             .sheet(isPresented: $showLibrary) {
-                AddPhotoLibraryPicker(selectionLimit: max(0, 3 - photos.count)) { imgs in
-                    let space = max(0, 3 - photos.count)
-                    photos.append(contentsOf: imgs.prefix(space))
+                LibraryPicker(limit: 1) { images in
+                    if let idx = slotMenuIndex, let img = images.first {
+                        slots[idx] = img
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    }
+                    showLibrary = false
                 }
             }
-
-            // Source chooser
-            .confirmationDialog("Add a photo", isPresented: $showSourceSheet, titleVisibility: .visible) {
-                Button("Take Photo") { showCamera = true }
-                Button("Choose from Library") { showLibrary = true }
-                Button("Cancel", role: .cancel) {}
+            .overlay(alignment: .top) {
+                if showSuccess {
+                    Label("Your find was shared!", systemImage: "checkmark.circle.fill")
+                        .padding(.horizontal, AppTheme.Spacing.m)
+                        .padding(.vertical, AppTheme.Spacing.s)
+                        .background(.thinMaterial, in: Capsule())
+                        .overlay(Capsule().stroke(AppTheme.ColorToken.accent.opacity(0.5)))
+                        .padding(.top, AppTheme.Spacing.s)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: showSuccess)
+            .alert("Can't Share", isPresented: $showValidation) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(validationText)
             }
         }
-        .onAppear {
-            if loc.authorization == .notDetermined { loc.request() }
-            if let c = loc.userLocation?.coordinate {
-                camera = .region(.init(center: c, span: .init(latitudeDelta: 0.03, longitudeDelta: 0.03)))
-            }
-            // Auto-open camera once on first visit to Add tab
-            if !didAutoOpenCamera && photos.isEmpty {
-                didAutoOpenCamera = true
-                showCamera = true
-            }
-        }
-        .alert("Can't Save", isPresented: $showValidation) {
-            Button("OK", role: .cancel) {}
-        } message: { Text(validationText) }
     }
 
-    // MARK: Validation + Local save
-
-    private func validateAndSave() {
-        guard !photos.isEmpty else {
-            validationText = "Please add at least one photo."
-            showValidation = true; return
-        }
-        guard let c = coord else {
-            validationText = "Please select a location on the map or use current location."
-            showValidation = true; return
-        }
-        Task { await saveToLocal(at: c) }
+    private var menuTitle: String {
+        if let idx = slotMenuIndex, slots[idx] == nil { return "Add Photo" }
+        return "Photo"
     }
 
-    private func saveToLocal(at coordinate: CLLocationCoordinate2D) async {
+    // MARK: - Actions
+
+    private func submit() {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        guard formIsValid else {
+            showValidation = true
+            if photos.isEmpty { validationText = "Please add at least one photo." }
+            else if pickupMode == nil { validationText = "Choose pickup location." }
+            else if coord == nil { validationText = "We couldn’t get your location yet." }
+            else if pickupMode == .some(.home), addressLine.isEmpty { validationText = "We’re still resolving your address. Try again in a moment." }
+            return
+        }
+
+        Task { await save() }
+    }
+
+    private func save() async {
+        guard let c = coord, let img = photos.first else { return }
         saving = true
+        error = nil
         defer { saving = false }
 
         do {
-            let id = UUID()
-            // Draft dir
-            let draftsDir = try draftsDirectory()
-            let draftDir = draftsDir.appendingPathComponent(id.uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: draftDir, withIntermediateDirectories: true)
-
-            // Save photos (cap at 3)
-            var photoNames: [String] = []
-            for (idx, img) in photos.prefix(3).enumerated() {
-                let name = "photo_\(idx+1).jpg"
-                let url = draftDir.appendingPathComponent(name)
-                let data = img.jpegData(compressionQuality: 0.85) ?? Data()
-                try data.write(to: url, options: .atomic)
-                photoNames.append(name)
-            }
-
-            // Build draft
-            let desc = wantsDescription ? descriptionText.trimmingCharacters(in: .whitespacesAndNewlines) : ""
-            let finalDesc = desc.isEmpty ? nil : String(desc.prefix(100))
-            let draft = TrashDraft(
-                id: id,
-                description: finalDesc,
-                condition: condition,
-                mode: mode,
-                latitude: coordinate.latitude,
-                longitude: coordinate.longitude,
-                createdAt: Date(),
-                photos: photoNames
+            // Keep CK service happy (title/category placeholders)
+            try await ck.createTrash(
+                image: img,
+                title: "Shared item",
+                category: "Other",
+                coordinate: c,
+                city: addressLine // if street, this may be locality; fine as label
             )
 
-            // Save JSON
-            let jsonURL = draftDir.appendingPathComponent("draft.json")
-            let enc = JSONEncoder()
-            enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try enc.encode(draft).write(to: jsonURL, options: .atomic)
-
-            // Reset form
-            photos.removeAll()
-            wantsDescription = false
+            // Reset + success
+            slots = [nil, nil, nil]
             descriptionText = ""
-            condition = "good"
+            pickupMode = nil
+            coord = nil
+            await ck.fetchFeed()
 
-            showSuccess = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            withAnimation { showSuccess = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                 showSuccess = false
-                dismiss()
+                dismiss() // Dismiss to feed
             }
         } catch {
-            validationText = error.localizedDescription
-            showValidation = true
+            self.error = error.localizedDescription
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
         }
     }
 
-    private func draftsDirectory() throws -> URL {
-        let docs = try FileManager.default.url(
-            for: .documentDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let dir = docs.appendingPathComponent("Drafts", isDirectory: true)
-        if !FileManager.default.fileExists(atPath: dir.path) {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    private func reverseGeocodeCity(for c: CLLocationCoordinate2D) async -> String? {
+        let geocoder = CLGeocoder()
+        do {
+            let placemarks = try await geocoder.reverseGeocodeLocation(
+                CLLocation(latitude: c.latitude, longitude: c.longitude)
+            )
+            if let p = placemarks.first {
+                // Compose a friendly, masked-ish line (locality + country code or postal code)
+                let parts = [p.subLocality, p.locality, p.postalCode, p.country].compactMap { $0 }
+                return parts.joined(separator: ", ")
+            }
+        } catch { }
+        return nil
+    }
+
+    // MARK: - Subviews
+
+    private func requiredHeader(_ title: String) -> some View {
+        HStack(spacing: 2) {
+            Text(title)
+            Text("*").foregroundStyle(AppTheme.ColorToken.primary)
         }
-        return dir
     }
 }
 
-// MARK: - Photo Strip (bigger tiles + hide "+" after 3 + chooser)
+// MARK: - Photo Tiles (3 slots with 4:3 aspect ratio)
 
-// MARK: - Photo Strip (robust: stable pairs + LazyHStack)
-
-private struct AddPhotoStrip: View {
-    @Binding var photos: [UIImage]
-    var onRequestSource: () -> Void
-
-    private let tile: CGFloat = 140 // bigger boxes
+private struct PhotoTilesView: View {
+    @Binding var slots: [UIImage?]
+    var openMenu: (Int) -> Void
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            LazyHStack(spacing: 12) {
-                // "+" tile (hidden when full)
-                if photos.count < 3 {
-                    Button(action: onRequestSource) {
-                        AddPhotoAddTile(hasPhotos: !photos.isEmpty, size: tile)
-                    }
-                    .buttonStyle(.plain)
-                }
+        GeometryReader { geo in
+            let totalSpacing: CGFloat = 2 * AppTheme.Spacing.s // two gaps
+            let tileWidth = (geo.size.width - totalSpacing) / 3
+            let tileHeight = tileWidth * 3/4 // 4:3 aspect ratio
 
-                // ✅ Use a stable value array so the compiler doesn't see us
-                // mutating the same array we're iterating.
-                ForEach(stablePairs, id: \.index) { pair in
-                    PhotoTile(image: pair.image, size: tile) {
-                        remove(at: pair.index)
-                    }
+            HStack(spacing: AppTheme.Spacing.s) {
+                ForEach(0..<3, id: \.self) { idx in
+                    PhotoTileView(
+                        image: slots[idx],
+                        width: tileWidth,
+                        height: tileHeight
+                    )
+                    .onTapGesture { openMenu(idx) }
+                    .accessibilityLabel(slots[idx] == nil
+                        ? "Add photo \(idx + 1) of 3"
+                        : "Photo \(idx + 1), tap to replace or remove")
                 }
             }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
+            .frame(height: tileHeight)
         }
-    }
-
-    // Build once per render: [(index, image)]
-    private var stablePairs: [(index: Int, image: UIImage)] {
-        var result: [(Int, UIImage)] = []
-        result.reserveCapacity(photos.count)
-        for i in photos.indices { result.append((i, photos[i])) }
-        return result
-    }
-
-    private func remove(at i: Int) {
-        guard photos.indices.contains(i) else { return }
-        withAnimation(.easeInOut) { photos.remove(at: i) }
+        .frame(height: 120)
     }
 }
 
-private struct PhotoTile: View {
-    let image: UIImage
-    let size: CGFloat
-    let remove: () -> Void
-
-    var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: size, height: size)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-
-            Button(action: remove) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(.white)
-                    .shadow(radius: 2)
-            }
-            .padding(6)
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 16))
-    }
-}
-
-private struct AddPhotoAddTile: View {
-    var hasPhotos: Bool
-    var size: CGFloat
+private struct PhotoTileView: View {
+    let image: UIImage?
+    let width: CGFloat
+    let height: CGFloat
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.secondary.opacity(0.15))
-                .frame(width: size, height: size)
-
-            Image(systemName: hasPhotos ? "plus" : "camera.fill")
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundColor(.white)
-                .padding(18)
-                .background(Circle().fill(Color.black.opacity(0.45)))
-        }
-    }
-}
-
-// MARK: - Camera (full screen, no crop UI)
-
-private struct AddCameraCapture: UIViewControllerRepresentable {
-    var onCapture: (UIImage?) -> Void
-
-    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
-        let parent: AddCameraCapture
-        init(_ parent: AddCameraCapture) { self.parent = parent }
-
-        func imagePickerController(_ picker: UIImagePickerController,
-                                   didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
-            let img = (info[.originalImage]) as? UIImage   // no square editor
-            parent.onCapture(img)
-            picker.dismiss(animated: true)
-        }
-        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            parent.onCapture(nil)
-            picker.dismiss(animated: true)
-        }
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    func makeUIViewController(context: Context) -> UIImagePickerController {
-        let p = UIImagePickerController()
-        p.delegate = context.coordinator
-        p.sourceType = .camera
-        p.allowsEditing = false
-        p.modalPresentationStyle = .fullScreen
-        return p
-    }
-
-    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
-}
-
-// MARK: - Library (multi-select up to remaining)
-
-private struct AddPhotoLibraryPicker: UIViewControllerRepresentable {
-    var selectionLimit: Int
-    var onImages: ([UIImage]) -> Void
-
-    func makeUIViewController(context: Context) -> PHPickerViewController {
-        var cfg = PHPickerConfiguration(photoLibrary: .shared())
-        cfg.filter = .images
-        cfg.selectionLimit = selectionLimit
-        let vc = PHPickerViewController(configuration: cfg)
-        vc.delegate = context.coordinator
-        return vc
-    }
-
-    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
-        let parent: AddPhotoLibraryPicker
-        init(_ parent: AddPhotoLibraryPicker) { self.parent = parent }
-
-        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-            guard !results.isEmpty else { picker.dismiss(animated: true); return }
-            let g = DispatchGroup()
-            var imgs: [UIImage] = []
-            for r in results where r.itemProvider.canLoadObject(ofClass: UIImage.self) {
-                g.enter()
-                r.itemProvider.loadObject(ofClass: UIImage.self) { obj, _ in
-                    if let img = obj as? UIImage { imgs.append(img) }
-                    g.leave()
-                }
-            }
-            g.notify(queue: .main) {
-                self.parent.onImages(imgs)
-                picker.dismiss(animated: true)
+            if let img = image {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: width, height: height)
+                    .clipped()
+            } else {
+                RoundedRectangle(cornerRadius: AppTheme.Radius.card)
+                    .fill(AppTheme.ColorToken.surface)
+                    .frame(width: width, height: height)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: AppTheme.Radius.card)
+                            .dashBorder()
+                            .foregroundStyle(AppTheme.ColorToken.mutedGray.opacity(0.5))
+                    )
+                    .overlay {
+                        Image(systemName: "camera")
+                            .font(.system(size: 20, weight: .regular))
+                            .foregroundStyle(AppTheme.ColorToken.mutedGray)
+                    }
             }
         }
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.card))
+        .shadow(color: .black.opacity(0.08), radius: 2, y: 1)
     }
 }
 
-// MARK: - Location section (500 m privacy circle in Home mode)
+// MARK: - Condition Pills
 
-private struct AddLocationSection: View {
-    @EnvironmentObject var loc: LocationManager
-    @Binding var camera: MapCameraPosition
-    @Binding var coord: CLLocationCoordinate2D?
-    @Binding var mode: String     // "street" | "home"
-
-    private var isHome: Bool { mode == "home" }
+private struct ConditionPillsView: View {
+    @Binding var selection: AddTrashView.ItemCondition
 
     var body: some View {
-        Section("Location") {
-            if !coordLabel.isEmpty {
-                Text(coordLabel)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            AddMapPicker(camera: $camera, selected: $coord, isHome: isHome, userCoord: loc.userLocation?.coordinate)
-                .frame(height: 280)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(.quaternary))
-
-            Button {
-                loc.requestOnce { c in
-                    guard let c else { return }
-                    coord = c
-                    withAnimation(.easeInOut(duration: 0.35)) {
-                        camera = .region(.init(center: c, span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)))
-                    }
+        FlowLayout(spacing: AppTheme.Spacing.s) {
+            ForEach(AddTrashView.ItemCondition.allCases, id: \.self) { item in
+                Button {
+                    selection = item
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                } label: {
+                    Text(item.rawValue)
+                        .font(AppTheme.Typography.body.weight(.medium))
+                        .padding(.horizontal, AppTheme.Spacing.m)
+                        .padding(.vertical, AppTheme.Spacing.s)
+                        .background(selection == item ? AppTheme.ColorToken.primary : AppTheme.ColorToken.surface)
+                        .foregroundStyle(selection == item ? AppTheme.ColorToken.textInv : AppTheme.ColorToken.text)
+                        .overlay(
+                            Capsule()
+                                .stroke(selection == item ? AppTheme.ColorToken.primary : AppTheme.ColorToken.mutedGray.opacity(0.3), lineWidth: 1)
+                        )
+                        .clipShape(Capsule())
+                        .shadow(color: .black.opacity(selection == item ? 0.1 : 0), radius: 2, y: 1)
                 }
-            } label: {
-                Label(isHome ? "Use Home Area" : "Use Current Location", systemImage: "location")
-            }
-
-            if isHome {
-                Text("We use your location only to show nearby users the approximate distance. Your address stays private.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                .buttonStyle(.plain)
             }
         }
     }
+}
 
-    private var coordLabel: String {
-        if mode == "home" { return "" }                                // hide label in Home mode
-        guard let c = coord else { return "Tap the map to drop a pin" }
-        return String(format: "Lat %.5f, Lon %.5f", c.latitude, c.longitude)
+// MARK: - Description Chip
+
+private struct DescriptionChipView: View {
+    @Binding var text: String
+    @Binding var isExpanded: Bool
+    let limit: Int
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.s) {
+            // Chip that expands/collapses
+            Button(action: { 
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    isExpanded.toggle()
+                }
+            }) {
+                HStack {
+                    Text(text.isEmpty ? "Add description..." : (text.count > 30 ? String(text.prefix(30)) + "..." : text))
+                        .font(AppTheme.Typography.body)
+                        .foregroundColor(text.isEmpty ? AppTheme.ColorToken.mutedGray : AppTheme.ColorToken.text)
+                    
+                    Spacer()
+                    
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(AppTheme.ColorToken.mutedGray)
+                }
+                .padding(.horizontal, AppTheme.Spacing.m)
+                .padding(.vertical, AppTheme.Spacing.s)
+                .background(AppTheme.ColorToken.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: AppTheme.Radius.chip)
+                        .stroke(AppTheme.ColorToken.mutedGray.opacity(0.3), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.chip))
+            }
+            .buttonStyle(.plain)
+            
+            // Expanded text area
+            if isExpanded {
+                VStack(alignment: .trailing, spacing: AppTheme.Spacing.s) {
+                    TextEditor(text: $text)
+                        .frame(minHeight: 80, maxHeight: 120)
+                        .padding(AppTheme.Spacing.s)
+                        .background(AppTheme.ColorToken.surface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: AppTheme.Radius.card)
+                                .stroke(AppTheme.ColorToken.mutedGray.opacity(0.3), lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.card))
+                        .onChange(of: text) { _, new in
+                            if new.count > limit {
+                                text = String(new.prefix(limit))
+                            }
+                        }
+                    
+                    Text("\(text.count)/\(limit)")
+                        .font(AppTheme.Typography.footnote)
+                        .foregroundColor(AppTheme.ColorToken.mutedGray)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
     }
 }
 
-private struct AddMapPicker: View {
-    @Binding var camera: MapCameraPosition
-    @Binding var selected: CLLocationCoordinate2D?
-    var isHome: Bool
-    var userCoord: CLLocationCoordinate2D?
-
-    var displayCenter: CLLocationCoordinate2D? {
-        isHome ? (userCoord ?? selected) : selected
+// Simple flow layout (chips wrap to next line)
+private struct FlowLayout<Content: View>: View {
+    let spacing: CGFloat
+    @ViewBuilder let content: () -> Content
+    init(spacing: CGFloat = 8, @ViewBuilder content: @escaping () -> Content) {
+        self.spacing = spacing; self.content = content
     }
+    var body: some View {
+        var width = CGFloat.zero
+        var height = CGFloat.zero
+        return GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                content()
+                    .padding(.trailing, spacing)
+                    .alignmentGuide(.leading) { d in
+                        if (abs(width - d.width) > geo.size.width) { width = 0; height -= d.height + spacing }
+                        let result = width
+                        if d.width != 0 { width -= d.width + spacing }
+                        return result
+                    }
+                    .alignmentGuide(.top) { _ in
+                        let result = height
+                        if height != 0 { }
+                        return result
+                    }
+            }
+        }
+        .frame(minHeight: 10)
+    }
+}
+
+// MARK: - Inline Map
+
+private struct InlineMap: View {
+    let mode: AddTrashView.PickupMode
+    @Binding var camera: MapCameraPosition
+    @Binding var coord: CLLocationCoordinate2D?
+    @Binding var radius: Double
+    let colorCircle: Color
 
     var body: some View {
         MapReader { proxy in
             Map(position: $camera, interactionModes: .all) {
-                if isHome, let c = displayCenter {
-                    MapCircle(center: c, radius: 500)
-                        .foregroundStyle(Color.blue.opacity(0.16))
-                        .stroke(.blue.opacity(0.45), lineWidth: 2)
-                    UserAnnotation()
-                } else {
-                    if let c = selected {
-                        Annotation("Selected", coordinate: c) {
-                            Image(systemName: "mappin.circle.fill").font(.title2)
-                        }
+                if mode == .street, let c = coord {
+                    Annotation("Selected", coordinate: c) {
+                        Image(systemName: "mappin.circle.fill").font(.title2)
                     }
-                    UserAnnotation()
                 }
+                if mode == .home, let c = coord {
+                    MapCircle(center: c, radius: radius)
+                        .foregroundStyle(colorCircle.opacity(0.20))
+                        .stroke(colorCircle.opacity(0.9), lineWidth: 2)
+                }
+                UserAnnotation()
             }
-            .transaction { $0.disablesAnimations = true }
-            .onTapGesture { pt in
-                guard !isHome else { return }           // exact pin only in Street mode
-                if let c = proxy.convert(pt, from: .local) { selected = c }
-            }
+            .gesture(
+                SpatialTapGesture().onEnded { value in
+                    // allow moving exact pin when Street
+                    guard mode == .street else { return }
+                    let p = value.location
+                    if let newCoord = proxy.convert(p, from: .local) {
+                        coord = newCoord
+                    }
+                }
+            )
         }
     }
 }
+
+// MARK: - Pickers
+
+private struct CameraPicker: UIViewControllerRepresentable {
+    var onFinish: (UIImage?) -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(onFinish: onFinish) }
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let vc = UIImagePickerController()
+        vc.sourceType = .camera
+        vc.delegate = context.coordinator
+        vc.allowsEditing = false
+        return vc
+    }
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        let onFinish: (UIImage?) -> Void
+        init(onFinish: @escaping (UIImage?) -> Void) { self.onFinish = onFinish }
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { self.onFinish(nil) }
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            self.onFinish(info[.originalImage] as? UIImage)
+        }
+    }
+}
+
+private struct LibraryPicker: UIViewControllerRepresentable {
+    let limit: Int
+    var onFinish: ([UIImage]) -> Void
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var cfg = PHPickerConfiguration(photoLibrary: .shared())
+        cfg.filter = .images
+        cfg.selectionLimit = max(1, limit)
+        let vc = PHPickerViewController(configuration: cfg)
+        vc.delegate = context.coordinator
+        return vc
+    }
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(limit: limit, onFinish: onFinish) }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let limit: Int; let onFinish: ([UIImage]) -> Void
+        init(limit: Int, onFinish: @escaping ([UIImage]) -> Void) { self.limit = limit; self.onFinish = onFinish }
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            guard !results.isEmpty else { self.onFinish([]); return }
+            var images: [UIImage] = []; let group = DispatchGroup()
+            for r in results.prefix(limit) {
+                if r.itemProvider.canLoadObject(ofClass: UIImage.self) {
+                    group.enter()
+                    r.itemProvider.loadObject(ofClass: UIImage.self) { obj, _ in
+                        if let img = obj as? UIImage { images.append(img) }
+                        group.leave()
+                    }
+                }
+            }
+            group.notify(queue: .main) { self.onFinish(images) }
+        }
+    }
+}
+
+// MARK: - Small helpers
+
+private extension Shape {
+    func dashBorder() -> some View {
+        self
+            .stroke(style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [6, 6]))
+    }
+}
+

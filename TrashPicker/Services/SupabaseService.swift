@@ -1,416 +1,223 @@
-////
-////  SupabaseService.swift
-////  TrashPicker
-////
-////  Uses Supabase Swift 2.x style:
-////  - client.from("table") instead of client.database
-////  - client.rpc("func_name", params: ...) (no `fn:` label)
-////  - Encodable payloads for inserts/updates (no heterogenous dictionaries)
-////
-//
-//import Foundation
-//import SwiftUI
-//import CoreLocation
-//import UIKit
-//import Supabase
-//
-//@MainActor
-//final class SupabaseService: ObservableObject {
-//    static let shared = SupabaseService()
-//
-//    // MARK: - State exposed to UI
-//    @Published var feed: [TrashDTO] = []
-//    @Published var myUploads: [TrashDTO] = []
-//    @Published var myReservations: [TrashDTO] = []
-//
-//    @Published private(set) var userId: UUID?
-//
-//    // MARK: - Supabase client
-//    let client: SupabaseClient = .init(
-//        supabaseURL: SupabaseConfig.url,
-//        supabaseKey: SupabaseConfig.anonKey
-//    )
-//
-//    private init() {}
-//
-//    // MARK: - Auth
-//
-//    /// Anonymous sign-in is simplest for TestFlight; enable it in Supabase Auth.
-//    func ensureSession() async {
-//        do {
-//            if self.userId == nil {
-//                _ = try await client.auth.signInAnonymously()
-//            }
-//            let session = try await client.auth.session
-//            self.userId = session.user.id
-//        } catch {
-//            print("Auth ensureSession error:", error.localizedDescription)
-//        }
-//    }
-//
-//    // MARK: - Fetch
-//
-//    func fetchFeed(limit: Int = 50) async {
-//        do {
-//            let nowIso = iso(Date())
-//            // open, not expired, and either no reservation or reservation in the past
-//            let rows: [DBPost] = try await client
-//                .from(SupabaseConfig.postsTable)
-//                .select()
-//                .eq("status", value: "open")
-//                .gt("expires_at", value: nowIso)
-//                .or("reserved_until.is.null,reserved_until.lt.\(nowIso)")
-//                .order("created_at", ascending: false)
-//                .limit(limit)
-//                .execute()
-//                .value
-//
-//            self.feed = rows.map { $0.toDTO() }
-//        } catch {
-//            print("fetchFeed error:", error.localizedDescription)
-//        }
-//    }
-//
-//    func fetchMyStuff() async {
-//        guard let uid = userId else { return }
-//        do {
-//            async let uploads: [DBPost] = client
-//                .from(SupabaseConfig.postsTable)
-//                .select()
-//                .eq("uploader", value: uid.uuidString)
-//                .order("created_at", ascending: false)
-//                .execute()
-//                .value
-//
-//            let nowIso = iso(Date())
-//            async let reservations: [DBPost] = client
-//                .from(SupabaseConfig.postsTable)
-//                .select()
-//                .eq("reserved_by", value: uid.uuidString)
-//                .gt("reserved_until", value: nowIso)
-//                .order("reserved_until", ascending: false)
-//                .execute()
-//                .value
-//
-//            self.myUploads = try await uploads.map { $0.toDTO() }
-//            self.myReservations = try await reservations.map { $0.toDTO() }
-//        } catch {
-//            print("fetchMyStuff error:", error.localizedDescription)
-//        }
-//    }
-//
-//    // MARK: - Mutations
-//
-//    func createTrash(image: UIImage,
-//                     title: String,
-//                     description: String,
-//                     condition: String,
-//                     category: String,
-//                     coordinate: CLLocationCoordinate2D,
-//                     city: String) async throws {
-//        guard let uid = userId else { throw SimpleError("No user/session") }
-//        guard let jpeg = image.jpegData(compressionQuality: 0.85) else { throw SimpleError("JPEG encode failed") }
-//
-//        // 1) Upload image
-//        let (path, publicURL) = try await ImageStorage.uploadJPEG(client: client, data: jpeg, uploader: uid)
-//
-//        // 2) Insert row (Encodable payload; dates as ISO strings)
-//        let now = Date()
-//        let insert = NewPostInsert(
-//            id: UUID(),
-//            title: title,
-//            description: description,
-//            category: category,
-//            condition: condition,
-//            city: city,
-//            lat: coordinate.latitude,
-//            lon: coordinate.longitude,
-//            photo_path: path,
-//            photo_url: publicURL,
-//            created_at: iso(now),
-//            expires_at: iso(now.addingTimeInterval(24*3600)),
-//            status: "open",
-//            uploader: uid
-//        )
-//
-//        _ = try await client
-//            .from(SupabaseConfig.postsTable)
-//            .insert(insert)
-//            .execute()
-//
-//        await fetchFeed()
-//        await fetchMyStuff()
-//    }
-//
-//    func reserve(_ item: TrashDTO, hours: Int = 6) async throws {
-//        guard let uid = userId else { throw SimpleError("No user/session") }
-//        let until = iso(Date().addingTimeInterval(Double(hours) * 3600))
-//
-//        let patch = ReservePatch(status: "reserved", reserved_by: uid, reserved_until: until)
-//
-//        _ = try await client
-//            .from(SupabaseConfig.postsTable)
-//            .update(patch)
-//            .eq("id", value: item.id)
-//            .execute()
-//
-//        await fetchFeed()
-//        await fetchMyStuff()
-//    }
-//
-//    func cancelReservation(_ item: TrashDTO) async {
-//        // Preferred: server-side function that sets reserved_by = NULL, reserved_until = NULL, status='open'
-//        do {
-//            _ = try await client
-//                .rpc("clear_reservation", params: ["p_post_id": item.id.uuidString])
-//                .execute()
-//        } catch {
-//            // Fallback: open it and push reserved_until into the past (visible again in feed).
-//            do {
-//                let fallback = OpenPatch(
-//                    status: "open",
-//                    reserved_until: iso(Date().addingTimeInterval(-3600))
-//                )
-//                _ = try await client
-//                    .from(SupabaseConfig.postsTable)
-//                    .update(fallback)
-//                    .eq("id", value: item.id)
-//                    .execute()
-//            } catch {
-//                print("cancelReservation error:", error.localizedDescription)
-//            }
-//        }
-//
-//        await fetchFeed()
-//        await fetchMyStuff()
-//    }
-//
-//    func confirmPickup(_ item: TrashDTO) async throws {
-//        let patch = PickupPatch(status: "picked", picked_up_at: iso(Date()))
-//        _ = try await client
-//            .from(SupabaseConfig.postsTable)
-//            .update(patch)
-//            .eq("id", value: item.id)
-//            .execute()
-//
-//        await fetchFeed()
-//        await fetchMyStuff()
-//    }
-//
-//    func registerInterest(_ item: TrashDTO) async {
-//        do {
-//            _ = try await client
-//                .rpc("increment_interest", params: ["post_id": item.id.uuidString])
-//                .execute()
-//            await fetchFeed()
-//        } catch {
-//            // Fallback without RPC
-//            do {
-//                let patch = InterestPatch(interested_count: item.interestedCount + 1)
-//                _ = try await client
-//                    .from(SupabaseConfig.postsTable)
-//                    .update(patch)
-//                    .eq("id", value: item.id)
-//                    .execute()
-//                await fetchFeed()
-//            } catch {
-//                print("registerInterest error:", error.localizedDescription)
-//            }
-//        }
-//    }
-//}
-//
-//// MARK: - Payloads (Encodable)
-//
-///// Row insert
-//private struct NewPostInsert: Encodable {
-//    let id: UUID
-//    let title: String
-//    let description: String
-//    let category: String
-//    let condition: String
-//    let city: String
-//    let lat: Double
-//    let lon: Double
-//    let photo_path: String?
-//    let photo_url: String?
-//    let created_at: String    // ISO string
-//    let expires_at: String    // ISO string
-//    let status: String
-//    let uploader: UUID
-//    let interested_count: Int = 0
-//}
-//
-///// Reserve patch
-//private struct ReservePatch: Encodable {
-//    let status: String
-//    let reserved_by: UUID
-//    let reserved_until: String   // ISO
-//}
-//
-///// Open (fallback) patch
-//private struct OpenPatch: Encodable {
-//    let status: String
-//    let reserved_until: String   // ISO
-//}
-//
-///// Picked up patch
-//private struct PickupPatch: Encodable {
-//    let status: String
-//    let picked_up_at: String     // ISO
-//}
-//
-///// Interest fallback patch
-//private struct InterestPatch: Encodable {
-//    let interested_count: Int
-//}
-//
-//// MARK: - Helpers
-//
-//struct SimpleError: LocalizedError { let message: String; init(_ m: String){ message = m }
-//    var errorDescription: String? { message }
-//}
-//
-//fileprivate func iso(_ date: Date) -> String {
-//    let f = ISO8601DateFormatter()
-//    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-//    return f.string(from: date)
-//}
-
-// SupabaseService.swift
 import Foundation
 import SwiftUI
 import CoreLocation
 import UIKit
 import Supabase
+import AuthenticationServices
+import CryptoKit
+
+// MARK: - Auth Phase
+
+enum AuthPhase {
+    case checking
+    case signedOut
+    case signedIn
+}
+
+// MARK: - SupabaseService
 
 @MainActor
-final class SupabaseService: ObservableObject {
+final class SupabaseService: NSObject, ObservableObject {
     static let shared = SupabaseService()
 
+    // Published state
     @Published var feed: [TrashDTO] = []
     @Published var myUploads: [TrashDTO] = []
     @Published var myReservations: [TrashDTO] = []
-    @Published var pending: [TrashDTO] = []           // pending approvals for my items (Home mode)
+    @Published var pending: [TrashDTO] = []
+
+    // Auth state
+    @Published private(set) var phase: AuthPhase = .checking
     @Published private(set) var userId: UUID?
+    @Published private(set) var session: Session?
+    @Published private(set) var isAuthenticated: Bool = false
 
-    let client = SupabaseClient(supabaseURL: SupabaseConfig.url, supabaseKey: SupabaseConfig.anonKey)
+    // Supabase client
+    let client = SupabaseClient(
+        supabaseURL: SupabaseConfig.url,
+        supabaseKey: SupabaseConfig.anonKey
+    )
 
-    private init() {}
-
-    // MARK: Auth (Email/Apple/Google supported by Supabase)
-    func ensureSession() async {
-        do {
-            if (try? await client.auth.session.user.id) == nil {
-                _ = try await client.auth.signInAnonymously()
-            }
-            let s = try await client.auth.session
-            self.userId = s.user.id
-        } catch {
-            print("ensureSession:", error.localizedDescription)
-            self.userId = nil
+    private override init() {
+        super.init()
+        let hasTokens = KeychainStore.loadSession() != nil
+        self.phase = hasTokens ? .checking : .signedOut   // ⬅️ key line: NO splash on first run
+        Task { [weak self] in
+            await self?.restoreSessionIfPossible()          // only does work if tokens exist
         }
     }
 
-    // Add real logins when you wire UI:
-    // - Apple: signInWithIdToken(idToken:identityTokenString, nonce:nonce)
-    // - Google: signInWithIdToken(..., accessToken: ...)
-    // - Email: signInWithOTP(email:)
+    // MARK: - Public Auth API
 
-    // MARK: Feed (sorted by distance)
-    private struct GetFeedParams: Encodable {
-        let p_lat: Double
-        let p_lon: Double
-        let p_radius_km: Double
-        let p_category: String?
-        let p_condition: String?
+    func ensureSession() async {
+        // Only check if we're still in checking phase
+        guard phase == .checking else { return }
+        let s = try? await client.auth.session
+        applyAuthSession(s)
     }
 
-    func fetchFeed(near: CLLocationCoordinate2D, radiusKM: Double = 50, category: String? = nil, condition: String? = nil) async {
+    func refreshAuthState() async {
+        let s = try? await client.auth.session
+        applyAuthSession(s)
+    }
+
+    /// Handle oauth deep link (call from App.onOpenURL).
+    @MainActor
+    func handleOAuthRedirect(_ url: URL) async {
         do {
-            let params = GetFeedParams(
-                p_lat: near.latitude,
-                p_lon: near.longitude,
-                p_radius_km: radiusKM,
-                p_category: category,
-                p_condition: condition
+            if let s = try? await client.auth.session(from: url) {
+                applyAuthSession(s)
+                return
+            }
+        } catch {
+            print("OAuth redirect handling failed:", error.localizedDescription)
+        }
+    }
+
+    /// Google OAuth (PKCE). Make sure `swoopy://auth/callback` is in Supabase Redirect URLs.
+    @MainActor
+    func signInWithGoogle() async throws {
+        let redirect = URL(string: "swoopy://auth/callback")!
+        _ = try await client.auth.signInWithOAuth(provider: Supabase.Provider.google, redirectTo: redirect)
+    }
+
+    /// Native Apple Sign-In (no Apple client secret needed on iOS).
+    func signInWithApple(on window: UIWindow?) async throws {
+        let nonce = Self.randomNonceString()
+        let request = ASAuthorizationAppleIDProvider().createRequest()
+        request.requestedScopes = [.fullName, .email]
+        request.nonce = Self.sha256(nonce)
+
+        let cred = try await Self.performAppleSignIn(request: request, on: window)
+
+        guard let tokenData = cred.identityToken,
+              let idToken = String(data: tokenData, encoding: .utf8) else {
+            throw SimpleError(message: "No Apple identity token")
+        }
+
+        let s = try await client.auth.signInWithIdToken(
+            credentials: OpenIDConnectCredentials(provider: .apple, idToken: idToken, nonce: nonce)
+        )
+        applyAuthSession(s)
+        phase = .signedIn
+    }
+
+    func signInWithEmailMagicLink(_ email: String) async throws {
+        let redirect = URL(string: "swoopy://auth/callback")!
+        try await client.auth.signInWithOTP(email: email, redirectTo: redirect)
+    }
+
+    // MARK: - Email/Password
+
+    /// Create account with email/password.
+    /// If email confirmations are OFF in Supabase Auth settings, this returns a session immediately.
+    /// If confirmations are ON, no session is returned; you can still call signInEmailPassword after confirmation.
+    @MainActor
+    func signUpEmailPassword(email: String, password: String) async throws {
+        _ = try await client.auth.signUp(email: email, password: password)
+        let s = try? await client.auth.session
+        applyAuthSession(s)
+    }
+
+    /// Sign in an existing user with email/password.
+    @MainActor
+    func signInEmailPassword(email: String, password: String) async throws {
+        let s = try await client.auth.signIn(email: email, password: password)
+        applyAuthSession(s)
+    }
+
+    func signOut() async {
+        do { try await client.auth.signOut() } catch {
+            print("signOut error:", error.localizedDescription)
+        }
+        KeychainStore.clearSession()
+        applyAuthSession(nil)
+        phase = .signedOut
+    }
+
+    // MARK: - Feed
+
+    func fetchFeed(
+        near: CLLocationCoordinate2D,
+        radiusKM: Double = 50,
+        category: String? = nil,
+        condition: String? = nil
+    ) async {
+        do {
+            let rows = try await ItemsService.shared.getFeed(
+                lat: near.latitude,
+                lon: near.longitude,
+                radiusKm: radiusKM,
+                category: category,
+                condition: condition
             )
-            let rows: [DBItem] = try await client.rpc("get_feed", params: params).execute().value
-            self.feed = rows.map { $0.toDTO() }
+            self.feed = rows.map { r in
+                TrashDTO(
+                    id: r.id,
+                    title: r.title,
+                    description: r.description,
+                    category: r.category,
+                    condition: r.condition,
+                    mode: r.mode,
+                    city: (String?).none,
+                    lat: r.lat,
+                    lon: r.lon,
+                    approxLat: r.approx_lat,
+                    approxLon: r.approx_lon,
+                    photoURLs: r.photo_urls.compactMap(URL.init(string:)),
+                    createdAt: r.created_at,
+                    expiresAt: r.expires_at,
+                    status: r.status,
+                    reservedUntil: r.reserved_until,
+                    reservedBy: r.reserved_by,
+                    uploader: r.uploader,
+                    pickedUpAt: r.picked_up_at
+                )
+            }
         } catch {
             print("fetchFeed:", error.localizedDescription)
         }
     }
 
-    // MARK: My stuff
+    // MARK: - My stuff
+
     func fetchMyStuff() async {
-        guard let uid = userId else { return }
-        do {
-            // uploads
-            let uploads: [DBItem] = try await client
-                .from(SupabaseConfig.postsTable)
-                .select()
-                .eq("uploader", value: uid.uuidString)
-                .order("created_at", ascending: false)
-                .execute().value
-            self.myUploads = uploads.map { $0.toDTO() }
-
-            // active reservations (where I am reserver)
-            let active: [DBItem] = try await client
-                .from(SupabaseConfig.postsTable)
-                .select()
-                .eq("reserved_by", value: uid.uuidString)
-                .order("reserved_until", ascending: false)
-                .execute().value
-            self.myReservations = active.map { $0.toDTO() }
-
-            // pending approvals for my items (Home mode)
-            struct Row: Decodable { let id: UUID }
-            let pend: [Row] = try await client
-                .from("reservations")
-                .select("item_id:id, item_id") // compatibility
-                .eq("status", value: "pending")
-                .execute().value
-            let ids = pend.map { $0.id }
-            if ids.isEmpty {
-                self.pending = []
-            } else {
-                let pendItems: [DBItem] = try await client
-                    .from(SupabaseConfig.postsTable)
-                    .select()
-                    .in("id", values: ids)
-                    .eq("uploader", value: uid.uuidString)
-                    .execute().value
-                self.pending = pendItems.map { $0.toDTO() }
-            }
-        } catch {
-            print("fetchMyStuff:", error.localizedDescription)
+        // TODO: Re-enable real implementation once DBItem/TrashDTO models and ItemsService are available.
+        // Temporary stub to avoid build errors and warnings about missing types and unnecessary try/await.
+        guard userId != nil else {
+            self.myUploads = []
+            self.myReservations = []
+            self.pending = []
+            return
         }
+        self.myUploads = []
+        self.myReservations = []
+        self.pending = []
     }
 
-    // MARK: Create post (street/home, up to 3 images)
-    func createItem(images: [UIImage],
-                    title: String,
-                    description: String?,
-                    category: String,
-                    condition: String,
-                    mode: String,                       // "street" | "home"
-                    coordinate: CLLocationCoordinate2D,  // exact user point
-                    homeGrid: Double = 0.01) async throws
-    {
-        if userId == nil { await ensureSession() }
+    // MARK: - Create post
+
+    func createItem(
+        images: [UIImage],
+        title: String,
+        description: String?,
+        category: String,
+        condition: String,
+        mode: String,                       // "street" | "home"
+        coordinate: CLLocationCoordinate2D, // exact user point
+        homeGrid: Double = 0.01
+    ) async throws {
         guard let uid = userId else { throw SimpleError(message: "No user/session") }
 
         let photoURLs = try await ImageStorage.uploadJPEGs(client: client, images: images, uploader: uid)
         guard !photoURLs.isEmpty else { throw SimpleError(message: "Image upload failed") }
 
-        // Home mode: obfuscate coordinate on client *too*, for defense in depth.
         var lat = coordinate.latitude, lon = coordinate.longitude
         var approxLat: Double? = nil, approxLon: Double? = nil
         if mode == "home" {
             approxLat = (lat / homeGrid).rounded() * homeGrid
             approxLon = (lon / homeGrid).rounded() * homeGrid
-            lat = .nan; lon = .nan        // do not send exact location for Home mode
+            lat = .nan; lon = .nan
         }
 
         struct Insert: Encodable {
@@ -445,55 +252,240 @@ final class SupabaseService: ObservableObject {
             approx_lat: mode == "home" ? approxLat : nil,
             approx_lon: mode == "home" ? approxLon : nil,
             photo_urls: photoURLs,
-            created_at: iso(now),
-            expires_at: iso(now.addingTimeInterval(24*3600)),
+            created_at: ISOTime.isoString(now),
+            expires_at: ISOTime.isoString(now.addingTimeInterval(24*3600)),
             status: "available"
         )
 
-        _ = try await client.from(SupabaseConfig.postsTable).insert(payload).execute()
+        _ = try await client
+            .from(SupabaseConfig.postsTable)
+            .insert(payload)
+            .execute()
     }
 
-    // MARK: Reservation life-cycle
-    private struct ReservePostParams: Encodable {
-        let p_post_id: UUID
-        let p_hours: Int
-    }
+    // MARK: - Reservation life-cycle
+
     func reserve(_ item: TrashDTO, hours: Int = 6) async throws {
-        if userId == nil { await ensureSession() }
-        let params = ReservePostParams(p_post_id: item.id, p_hours: hours)
-        _ = try await client.rpc("reserve_post", params: params).execute()
+        try await ItemsService.shared.reservePost(itemId: item.id, hours: hours)
     }
 
-    private struct ApproveReservationParams: Encodable {
-        let p_reservation_id: UUID
-        let p_hours: Int
-    }
     func approve(reservationId: UUID, hours: Int = 6) async throws {
-        let params = ApproveReservationParams(p_reservation_id: reservationId, p_hours: hours)
+        struct Params: Encodable { let p_reservation_id: UUID; let p_hours: Int }
+        let params = Params(p_reservation_id: reservationId, p_hours: hours)
         _ = try await client.rpc("approve_reservation", params: params).execute()
     }
 
-    private struct ClearReservationParams: Encodable {
-        let p_post_id: UUID
-    }
     func cancelReservation(_ item: TrashDTO) async {
-        do {
-            let params = ClearReservationParams(p_post_id: item.id)
-            _ = try await client.rpc("clear_reservation", params: params).execute()
-        } catch { print("cancelReservation:", error.localizedDescription) }
+        struct Params: Encodable { let p_post_id: UUID }
+        do { _ = try await client.rpc("clear_reservation", params: Params(p_post_id: item.id)).execute() }
+        catch { print("cancelReservation:", error.localizedDescription) }
     }
 
-    private struct MarkPickedParams: Encodable {
-        let p_post_id: UUID
-    }
     func confirmPickup(_ item: TrashDTO) async {
-        do {
-            let params = MarkPickedParams(p_post_id: item.id)
-            _ = try await client.rpc("mark_picked_up", params: params).execute()
-        } catch { print("confirmPickup:", error.localizedDescription) }
+        struct Params: Encodable { let p_post_id: UUID }
+        do { _ = try await client.rpc("mark_picked_up", params: Params(p_post_id: item.id)).execute() }
+        catch { print("confirmPickup:", error.localizedDescription) }
     }
 }
 
-// Errors + date
-struct SimpleError: LocalizedError { let message: String; var errorDescription: String? { message } }
-fileprivate func iso(_ d: Date) -> String { let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime,.withFractionalSeconds]; return f.string(from: d) }
+// MARK: - Apple sign-in bridge (single source of truth)
+
+@MainActor
+private extension SupabaseService {
+
+    /// Strong reference so the coordinator isn't deallocated before callbacks.
+    private static var appleCoordinatorRetain: AppleCoordinator?
+
+    static func performAppleSignIn(
+        request: ASAuthorizationAppleIDRequest,
+        on window: UIWindow?
+    ) async throws -> ASAuthorizationAppleIDCredential {
+
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<ASAuthorizationAppleIDCredential, Error>) in
+            let controller = ASAuthorizationController(authorizationRequests: [request])
+            let coordinator = AppleCoordinator(continuation: cont)
+            coordinator.window = window
+            coordinator.controller = controller
+
+            controller.delegate = coordinator
+            controller.presentationContextProvider = coordinator
+
+            // Retain until one of the delegate callbacks fires.
+            Self.appleCoordinatorRetain = coordinator
+
+            controller.performRequests()
+        }
+    }
+
+    /// Coordinator that resumes the continuation exactly once.
+    final class AppleCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
+        var window: UIWindow?
+        var controller: ASAuthorizationController?
+
+        private var continuation: CheckedContinuation<ASAuthorizationAppleIDCredential, Error>?
+
+        init(continuation: CheckedContinuation<ASAuthorizationAppleIDCredential, Error>) {
+            self.continuation = continuation
+        }
+
+        func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+            window
+            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first?.keyWindow
+            ?? UIWindow()
+        }
+
+        func authorizationController(controller: ASAuthorizationController,
+                                     didCompleteWithAuthorization authorization: ASAuthorization) {
+            if let cred = authorization.credential as? ASAuthorizationAppleIDCredential {
+                continuation?.resume(returning: cred)
+            } else {
+                continuation?.resume(throwing: SimpleError(message: "Invalid Apple credential"))
+            }
+            cleanup()
+        }
+
+        func authorizationController(controller: ASAuthorizationController,
+                                     didCompleteWithError error: Error) {
+            continuation?.resume(throwing: error) // includes user-cancel
+            cleanup()
+        }
+
+        private func cleanup() {
+            continuation = nil
+            controller = nil
+            SupabaseService.appleCoordinatorRetain = nil
+        }
+    }
+}
+
+// MARK: - Internal auth plumbing
+
+private extension SupabaseService {
+    func applyAuthSession(_ session: Session?) {
+        self.session = session
+        if let s = session {
+            self.userId = s.user.id
+            self.isAuthenticated = !Self.isAnonymousUser(s.user)
+            KeychainStore.saveSession(accessToken: s.accessToken, refreshToken: s.refreshToken)
+            if phase != .signedIn { phase = .signedIn }
+        } else {
+            self.userId = nil
+            self.isAuthenticated = false
+            KeychainStore.clearSession()
+            if phase != .signedOut { phase = .signedOut }
+        }
+    }
+
+    func restoreSessionIfPossible() async {
+        guard let creds = KeychainStore.loadSession() else {
+            // If no tokens: applyAuthSession(nil) and phase = .signedOut; return immediately
+            applyAuthSession(nil)
+            return
+        }
+        // If tokens exist: try client.auth.setSession(...)
+        do {
+            let s = try await client.auth.setSession(
+                accessToken: creds.accessToken,
+                refreshToken: creds.refreshToken
+            )
+            // On success: applyAuthSession(s) and phase = .signedIn
+            applyAuthSession(s)
+        } catch {
+            // On failure: clear Keychain → applyAuthSession(nil) and phase = .signedOut
+            KeychainStore.clearSession()
+            applyAuthSession(nil)
+        }
+    }
+
+    static func randomNonceString(length: Int = 32) -> String {
+        let charset: [Character] = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+        var result = "", remaining = length
+        while remaining > 0 {
+            var bytes = [UInt8](repeating: 0, count: 16)
+            let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+            if status != errSecSuccess { fatalError("Unable to generate nonce.") }
+            bytes.forEach { b in if remaining > 0, b < charset.count { result.append(charset[Int(b)]); remaining -= 1 } }
+        }
+        return result
+    }
+
+    static func sha256(_ input: String) -> String {
+        let data = Data(input.utf8)
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func isAnonymousUser(_ user: User) -> Bool {
+        let provider = user.appMetadata["provider"]?.description.lowercased() ?? ""
+        return provider == "anonymous" || provider == "anon"
+    }
+}
+
+// MARK: - Keychain minimal session storage
+
+private enum KeychainStore {
+    private static let service = "com.zainlatif.Swoopy.supabase"
+    private static let accountAccess = "accessToken"
+    private static let accountRefresh = "refreshToken"
+
+    struct Credentials { let accessToken: String; let refreshToken: String }
+
+    static func saveSession(accessToken: String, refreshToken: String) {
+        save(key: accountAccess, value: accessToken)
+        save(key: accountRefresh, value: refreshToken)
+    }
+    static func loadSession() -> Credentials? {
+        guard let access = load(key: accountAccess), let refresh = load(key: accountRefresh) else { return nil }
+        return .init(accessToken: access, refreshToken: refresh)
+    }
+    static func clearSession() { delete(key: accountAccess); delete(key: accountRefresh) }
+
+    private static func save(key: String, value: String) {
+        let data = Data(value.utf8)
+        let q: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecValueData as String: data
+        ]
+        SecItemDelete(q as CFDictionary)
+        SecItemAdd(q as CFDictionary, nil)
+    }
+    private static func load(key: String) -> String? {
+        let q: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(q as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+    private static func delete(key: String) {
+        let q: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key
+        ]
+        SecItemDelete(q as CFDictionary)
+    }
+}
+
+// MARK: - Time helper & error
+
+private enum ISOTime {
+    private static let f: ISO8601DateFormatter = {
+        let x = ISO8601DateFormatter()
+        x.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return x
+    }()
+    static func isoString(_ d: Date) -> String { f.string(from: d) }
+}
+
+struct SimpleError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+

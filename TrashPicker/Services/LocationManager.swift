@@ -55,6 +55,18 @@ final class LocationManager: NSObject, ObservableObject {
     func bestCoordinate(fallback: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
         userLocation?.coordinate ?? fallback
     }
+
+    /// Snap a coordinate to an approximate grid for privacy (default ~500 meters).
+    /// Uses latitude/longitude degree conversion with a simple spherical approximation.
+    func roundedApprox(_ c: CLLocationCoordinate2D, meters: Double = 500) -> CLLocationCoordinate2D {
+        let latMetersPerDeg = 111_320.0
+        let lonMetersPerDeg = 111_320.0 * cos(c.latitude * .pi / 180)
+        let dLat = meters / latMetersPerDeg
+        let dLon = meters / max(1, lonMetersPerDeg)
+        let lat = (c.latitude / dLat).rounded() * dLat
+        let lon = (c.longitude / dLon).rounded() * dLon
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
 }
 
 extension LocationManager: CLLocationManagerDelegate {

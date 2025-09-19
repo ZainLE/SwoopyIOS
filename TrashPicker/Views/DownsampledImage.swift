@@ -1,34 +1,36 @@
 import SwiftUI
-import ImageIO
 
+// Fallback image loader that accepts URL or String
 struct DownsampledImage: View {
-    let url: URL
-    let maxDimension: CGFloat         
-    @State private var image: UIImage?
+    private let url: URL?
+    private let maxDimension: CGFloat
 
-    var body: some View {
-        Group {
-            if let img = image {
-                Image(uiImage: img).resizable()
-            } else {
-                Color.clear.onAppear(perform: load)
-            }
-        }
+    init(url: URL?, maxDimension: CGFloat) {
+        self.url = url
+        self.maxDimension = maxDimension
     }
 
-    private func load() {
-        let maxPixels = maxDimension * UIScreen.main.scale
-        DispatchQueue.global(qos: .userInitiated).async {
-            guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return }
-            let opts: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: Int(maxPixels),
-                kCGImageSourceShouldCacheImmediately: true,
-                kCGImageSourceShouldCache: true
-            ]
-            guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return }
-            let ui = UIImage(cgImage: cg)
-            DispatchQueue.main.async { self.image = ui }
+    init(urlString: String?, maxDimension: CGFloat) {
+        if let s = urlString, let u = URL(string: s) {
+            self.url = u
+        } else {
+            self.url = nil
+        }
+        self.maxDimension = maxDimension
+    }
+
+    var body: some View {
+        if let url {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let img): img.resizable()
+                case .failure(_): Color.secondary.opacity(0.15)
+                case .empty: Color.secondary.opacity(0.08)
+                @unknown default: Color.secondary.opacity(0.08)
+                }
+            }
+        } else {
+            Color.secondary.opacity(0.08)
         }
     }
 }
