@@ -98,14 +98,21 @@ final class CameraController: NSObject, AVCapturePhotoCaptureDelegate {
 
         session.addInput(input)
         session.addOutput(output)
-        output.isHighResolutionCaptureEnabled = true
+        if #available(iOS 16.0, *) {
+        } else {
+            output.isHighResolutionCaptureEnabled = true
+        }
         session.commitConfiguration()
     }
 
     func capturePhoto(_ handler: @escaping (UIImage?) -> Void) {
         onShot = handler
         let settings = AVCapturePhotoSettings()
-        settings.isHighResolutionPhotoEnabled = true
+        if #available(iOS 16.0, *) {
+            // On iOS 16+, rely on default maxPhotoDimensions behavior (highest supported by default)
+        } else {
+            settings.isHighResolutionPhotoEnabled = true
+        }
         output.capturePhoto(with: settings, delegate: self)
     }
 
@@ -139,3 +146,4 @@ struct CameraPreview: UIViewRepresentable {
         var videoPreviewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
     }
 }
+

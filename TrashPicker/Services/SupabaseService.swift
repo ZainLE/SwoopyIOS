@@ -31,6 +31,7 @@ final class SupabaseService: NSObject, ObservableObject {
     @Published private(set) var userId: UUID?
     @Published private(set) var session: Session?
     @Published private(set) var isAuthenticated: Bool = false
+    @Published var didCheckSession = false
 
     // Supabase client
     let client = SupabaseClient(
@@ -44,6 +45,9 @@ final class SupabaseService: NSObject, ObservableObject {
         self.phase = hasTokens ? .checking : .signedOut   // ⬅️ key line: NO splash on first run
         Task { [weak self] in
             await self?.restoreSessionIfPossible()          // only does work if tokens exist
+            await MainActor.run {
+                self?.didCheckSession = true
+            }
         }
     }
 
@@ -65,10 +69,8 @@ final class SupabaseService: NSObject, ObservableObject {
     @MainActor
     func handleOAuthRedirect(_ url: URL) async {
         do {
-            if let s = try? await client.auth.session(from: url) {
-                applyAuthSession(s)
-                return
-            }
+            let s = try await client.auth.session(from: url)
+            applyAuthSession(s)
         } catch {
             print("OAuth redirect handling failed:", error.localizedDescription)
         }
@@ -134,6 +136,9 @@ final class SupabaseService: NSObject, ObservableObject {
         applyAuthSession(nil)
         phase = .signedOut
     }
+    
+    @MainActor
+    func applyAuthForGate(_ s: Session?) { applyAuthSession(s) }
 
     // MARK: - Feed
 
@@ -380,6 +385,7 @@ private extension SupabaseService {
         guard let creds = KeychainStore.loadSession() else {
             // If no tokens: applyAuthSession(nil) and phase = .signedOut; return immediately
             applyAuthSession(nil)
+            didCheckSession = true
             return
         }
         // If tokens exist: try client.auth.setSession(...)
@@ -390,10 +396,12 @@ private extension SupabaseService {
             )
             // On success: applyAuthSession(s) and phase = .signedIn
             applyAuthSession(s)
+            didCheckSession = true
         } catch {
             // On failure: clear Keychain → applyAuthSession(nil) and phase = .signedOut
             KeychainStore.clearSession()
             applyAuthSession(nil)
+            didCheckSession = true
         }
     }
 

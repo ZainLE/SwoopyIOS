@@ -27,4 +27,9 @@ extension Color {
                   blue: Double(b) / 255,
                   opacity: alpha)
     }
+
+    // Brand tokens used across the app (hex-based)
+    static let brandDark  = Color(hex: "00513F")
+    static let brandLime  = Color(hex: "B4DD4E")
+    static let textMuted  = Color(hex: "656565")
 }

@@ -14,6 +14,10 @@ struct AddTrashView: View {
     @EnvironmentObject var ck: CKTrashService
     @EnvironmentObject var loc: LocationManager
     @Environment(\.dismiss) private var dismiss
+    
+    // NEW: Accept initial images from camera capture
+    var initialImages: [UIImage] = []
+    var onDone: ((_ posted: Bool) -> Void)? = nil
 
     // MARK: - Form State
     @State private var slots: [UIImage?] = [nil, nil, nil]         // exactly 3 slots
@@ -297,6 +301,14 @@ struct AddTrashView: View {
             } message: {
                 Text(validationText)
             }
+            .onAppear {
+                // Prefill with initial images from camera capture
+                if slots.allSatisfy({ $0 == nil }) && !initialImages.isEmpty {
+                    for (index, image) in initialImages.prefix(3).enumerated() {
+                        slots[index] = image
+                    }
+                }
+            }
         }
     }
 
@@ -348,6 +360,7 @@ struct AddTrashView: View {
             withAnimation { showSuccess = true }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                 showSuccess = false
+                onDone?(true) // Notify that posting was successful
                 dismiss() // Dismiss to feed
             }
         } catch {
