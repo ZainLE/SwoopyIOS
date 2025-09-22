@@ -7,6 +7,7 @@ import CoreLocation
 
 struct UploadFindView: View {
     @EnvironmentObject var loc: LocationManager
+    @Environment(\.dismiss) private var dismiss
     
     let initialPhoto: UIImage?
     @StateObject private var vm = UploadFindViewModel()
@@ -19,6 +20,7 @@ struct UploadFindView: View {
     @State private var showPicker = false
     @State private var showValidation = false
     @State private var validationText = ""
+    @State private var selectedPhotoItem: PhotosPickerItem?
 
     // Layout constants
     private let sidePadding: CGFloat = 20
@@ -29,33 +31,60 @@ struct UploadFindView: View {
             VStack(spacing: 16) {
                 Spacer(minLength: 16)
 
-                // Title
-                Text("Upload your find")
-                    .font(.title3.weight(.semibold))
-                    .multilineTextAlignment(.center)
-
                 // Provide image *
                 sectionLabel("Provide image", required: true)
                 helper("Upload or take up to 3 pictures of your item (front, detail, size). Clear photos help others decide quickly.")
 
                 photoRow
 
-                if showValidation && vm.photos.isEmpty {
+                if showValidation && vm.imageRecords.isEmpty {
                     validationHint("Please add at least one photo.")
                 }
 
                 // Condition *
                 VStack(alignment: .leading, spacing: 8) {
                     sectionLabel("Condition", required: true)
-                    ChipGroup(
-                        items: Condition.allCases,
-                        selection: $vm.condition,
-                        label: { $0.title }
-                    )
+                    ConditionSegmentedPicker(selection: $vm.condition)
                 }
 
                 if showValidation && vm.condition == nil {
                     validationHint("Please select a condition.")
+                }
+
+                // Provide Description (toggle row -> expands)
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle(isOn: $vm.wantsDescription.animation()) {
+                        Text("Provide Description")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Color.brandDark)
+
+                    if vm.wantsDescription {
+                        helper("Write up to 100 characters (optional).")
+                        VStack(spacing: 8) {
+                            TextField("Add details about the product", text: $vm.descriptionText, axis: .vertical)
+                                .textInputAutocapitalization(.sentences)
+                                .lineLimit(1...4)
+                                .padding(12)
+                                .frame(maxWidth: .infinity)
+                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 99))
+                                .overlay(RoundedRectangle(cornerRadius: 99).stroke(Color.brandDark.opacity(0.20), lineWidth: 1))
+                            
+                            HStack {
+                                Spacer()
+                                Button("Done") {
+                                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(Color.brandDark)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(Color.brandDark.opacity(0.1))
+                                .clipShape(Capsule())
+                            }
+                        }
+                    }
                 }
 
                 // Pickup Location *
@@ -67,37 +96,6 @@ struct UploadFindView: View {
 
                 if showValidation && !vm.hasChosenModeOrLocation {
                     validationHint("Please confirm your pickup mode.")
-                }
-
-                // Provide Description (toggle row -> expands)
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle(isOn: $vm.wantsDescription.animation()) {
-                        HStack(spacing: 8) {
-                            Image(systemName: vm.wantsDescription ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(Color.brandDark)
-                            Text("Provide Description")
-                                .font(.subheadline.weight(.semibold))
-                        }
-                    }
-                    .toggleStyle(.switch)
-
-                    if vm.wantsDescription {
-                        helper("Write up to 100 characters (optional).")
-                        ZStack(alignment: .bottomTrailing) {
-                            TextField("Building a simple app with friends to share,", text: $vm.descriptionText, axis: .vertical)
-                                .textInputAutocapitalization(.sentences)
-                                .lineLimit(2...4)
-                                .padding(12)
-                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.brandDark.opacity(0.20), lineWidth: 1))
-
-                            Text("\(vm.descriptionText.count)/100")
-                                .font(.caption)
-                                .foregroundStyle(Color.textMuted)
-                                .padding(.trailing, 8)
-                                .padding(.bottom, 6)
-                        }
-                    }
                 }
 
                 // CTA
@@ -118,6 +116,23 @@ struct UploadFindView: View {
         }
         .background(Color(.systemBackground))
         .scrollDismissesKeyboard(.immediately)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text("Upload your find")
+                    .font(.headline.weight(.semibold))
+                    .foregroundColor(.primary)
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.title3.weight(.semibold))
+                        .foregroundColor(Color.brandDark)
+                }
+            }
+        }
         .onAppear {
             if loc.authorization == .notDetermined { loc.request() }
             Task {
@@ -134,20 +149,38 @@ struct UploadFindView: View {
         }
         // Prefill from camera notification (FAB flow)
         .onReceive(NotificationCenter.default.publisher(for: .prefillUploadImage)) { note in
-            if let img = note.object as? UIImage, vm.photos.isEmpty {
+            if let img = note.object as? UIImage, vm.imageRecords.isEmpty {
                 vm.putPhoto(img, at: nil)
             }
         }
-        // Image sources (reuse existing pickers)
-        .sheet(isPresented: $showCamera) {
-            CameraPicker { image in
-                if let img = image { vm.putPhoto(img, at: showActionForTile) }
+        // Image sources (use working camera implementations)
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraCaptureView { image in
+                if let img = image { 
+                    vm.putPhoto(img, at: showActionForTile) 
+                }
             }
-            .ignoresSafeArea()
+            .ignoresSafeArea(.all)
+            .background(Color.black)
         }
         .sheet(isPresented: $showPicker) {
-            LibraryPicker(limit: 1) { images in
-                if let img = images.first { vm.putPhoto(img, at: showActionForTile) }
+            PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+                Text("Choose Photo")
+                    .font(.headline)
+                    .padding()
+            }
+            .onChange(of: selectedPhotoItem) { newItem in
+                Task {
+                    if let newItem = newItem,
+                       let data = try? await newItem.loadTransferable(type: Data.self),
+                       let image = UIImage(data: data) {
+                        await MainActor.run {
+                            vm.putPhoto(image, at: showActionForTile)
+                            selectedPhotoItem = nil
+                            showPicker = false
+                        }
+                    }
+                }
             }
         }
     }
@@ -155,31 +188,69 @@ struct UploadFindView: View {
     // MARK: Sections
 
     private var photoRow: some View {
-        HStack(spacing: 12) {
-            ForEach(0..<3, id: \.self) { idx in
-                let img = vm.photos[safe: idx]
-                PhotoTile(image: img, height: 96) {
+        HStack(alignment: .top, spacing: 12) {
+            // Show photos + one extra empty frame (max 3 total)
+            ForEach(0..<min(vm.imageRecords.count + 1, 3), id: \.self) { idx in
+                let img = vm.imageRecords[safe: idx]?.localImage
+                PhotoTile(image: img, width: 110, height: 164) {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     showActionForTile = idx
                     showPhotoActions(for: idx, hasImage: (img != nil))
                 }
             }
+            Spacer()
         }
     }
 
     private func showPhotoActions(for index: Int, hasImage: Bool) {
-        guard let controller = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .first?.keyWindow?.rootViewController else { return }
-
-        let ac = UIAlertController(title: "Photo", message: nil, preferredStyle: .actionSheet)
-        ac.addAction(UIAlertAction(title: "Take Photo", style: .default) { _ in showCamera = true })
-        ac.addAction(UIAlertAction(title: "Choose Photo", style: .default) { _ in showPicker = true })
+        let takePhotoTitle = hasImage ? "Retake Photo" : "Take Photo"
+        
+        let alert = UIAlertController(title: "Photo Options", message: nil, preferredStyle: .actionSheet)
+        
+        alert.addAction(UIAlertAction(title: takePhotoTitle, style: .default) { _ in
+            DispatchQueue.main.async {
+                self.showActionForTile = index
+                self.showCamera = true
+            }
+        })
+        
+        alert.addAction(UIAlertAction(title: "Choose from Library", style: .default) { _ in
+            DispatchQueue.main.async {
+                self.showActionForTile = index
+                self.showPicker = true
+            }
+        })
+        
         if hasImage {
-            ac.addAction(UIAlertAction(title: "Remove", style: .destructive) { _ in vm.removePhoto(at: index) })
+            alert.addAction(UIAlertAction(title: "Remove", style: .destructive) { _ in
+                DispatchQueue.main.async {
+                    self.vm.removePhoto(at: index)
+                }
+            })
         }
-        ac.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        controller.present(ac, animated: true)
+        
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        
+        // Set app color
+        alert.view.tintColor = UIColor(Color.brandDark)
+        
+        // Present the alert with better error handling
+        DispatchQueue.main.async {
+            guard let windowScene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
+                  let window = windowScene.windows.first(where: { $0.isKeyWindow }),
+                  let rootViewController = window.rootViewController else {
+                print("Could not find root view controller")
+                return
+            }
+            
+            // Find the topmost presented view controller
+            var topController = rootViewController
+            while let presented = topController.presentedViewController {
+                topController = presented
+            }
+            
+            topController.present(alert, animated: true)
+        }
     }
 
     private var mapCard: some View {
@@ -225,12 +296,35 @@ struct UploadFindView: View {
 
 // MARK: - ViewModel & Models
 
+// MARK: - Image Models for Supabase
+struct ImageRecord {
+    let id: UUID = UUID()
+    let postId: UUID?
+    let url: String
+    let orderIndex: Int
+    let localImage: UIImage? // For display before upload
+}
+
+struct PostDraft {
+    let id: UUID = UUID()
+    let images: [ImageRecord]
+    let condition: Condition
+    let mode: PickupMode
+    let description: String?
+    let coordinate: CLLocationCoordinate2D?
+}
+
 final class UploadFindViewModel: ObservableObject {
-    @Published var photos: [UIImage] = []                // max 3
-    @Published var condition: Condition? = nil           // required
+    @Published var imageRecords: [ImageRecord] = []      // max 3, Supabase-ready
+    @Published var condition: Condition? = .needsFixing  // default to 'Needs Fixing'
     @Published var mode: PickupMode? = .street           // default selected (street)
     @Published var wantsDescription = false
     @Published var descriptionText = "" { didSet { if descriptionText.count > 100 { descriptionText = String(descriptionText.prefix(100)) } } }
+    
+    // Computed property for backward compatibility
+    var photos: [UIImage] {
+        return imageRecords.compactMap { $0.localImage }
+    }
 
     // Map state
     @Published var camera: MapCameraPosition = .region(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
@@ -240,19 +334,56 @@ final class UploadFindViewModel: ObservableObject {
     
     private var geocodeTask: Task<Void, Never>?
 
-    var canSubmit: Bool { !photos.isEmpty && condition != nil && mode != nil }
+    var canSubmit: Bool { !imageRecords.isEmpty && condition != nil && mode != nil }
     var hasChosenModeOrLocation: Bool { mode != nil }
 
     func putPhoto(_ img: UIImage, at index: Int?) {
-        if let i = index, photos.indices.contains(i) {
-            photos[i] = img
-        } else if photos.count < 3 {
-            photos.append(img)
+        let imageRecord = ImageRecord(
+            postId: nil, // Will be set when creating post
+            url: "", // Will be set after upload to Supabase storage
+            orderIndex: index ?? imageRecords.count,
+            localImage: img
+        )
+        
+        if let i = index, imageRecords.indices.contains(i) {
+            // Replace existing image
+            var updatedRecord = imageRecord
+            updatedRecord = ImageRecord(
+                postId: imageRecords[i].postId,
+                url: imageRecords[i].url,
+                orderIndex: i,
+                localImage: img
+            )
+            imageRecords[i] = updatedRecord
+        } else if imageRecords.count < 3 {
+            // Add new image
+            imageRecords.append(imageRecord)
+        }
+        
+        // Reorder indices
+        for (idx, _) in imageRecords.enumerated() {
+            imageRecords[idx] = ImageRecord(
+                postId: imageRecords[idx].postId,
+                url: imageRecords[idx].url,
+                orderIndex: idx,
+                localImage: imageRecords[idx].localImage
+            )
         }
     }
+    
     func removePhoto(at index: Int) {
-        guard photos.indices.contains(index) else { return }
-        photos.remove(at: index)
+        guard imageRecords.indices.contains(index) else { return }
+        imageRecords.remove(at: index)
+        
+        // Reorder remaining images
+        for (idx, _) in imageRecords.enumerated() {
+            imageRecords[idx] = ImageRecord(
+                postId: imageRecords[idx].postId,
+                url: imageRecords[idx].url,
+                orderIndex: idx,
+                localImage: imageRecords[idx].localImage
+            )
+        }
     }
 
     func bootstrapLocation(_ user: CLLocationCoordinate2D?) {
@@ -296,8 +427,29 @@ final class UploadFindViewModel: ObservableObject {
     @MainActor
     func submit(using uploader: FindUploader) async {
         guard let cond = condition, let m = mode, canSubmit else { return }
-        let draft = UploadDraft(photos: photos, condition: cond, mode: m, description: descriptionText.isEmpty ? nil : descriptionText)
-        try? await uploader.uploadDraft(draft) // no-op mock by default
+        
+        let postDraft = PostDraft(
+            images: imageRecords,
+            condition: cond,
+            mode: m,
+            description: descriptionText.isEmpty ? nil : descriptionText,
+            coordinate: currentCoordinate
+        )
+        
+        try? await uploader.uploadPostDraft(postDraft)
+    }
+    
+    // Method to prepare for Supabase upload
+    func prepareForUpload() -> PostDraft? {
+        guard let cond = condition, let m = mode, canSubmit else { return nil }
+        
+        return PostDraft(
+            images: imageRecords,
+            condition: cond,
+            mode: m,
+            description: descriptionText.isEmpty ? nil : descriptionText,
+            coordinate: currentCoordinate
+        )
     }
 }
 
@@ -317,16 +469,28 @@ enum Condition: CaseIterable, Hashable, Identifiable {
 enum PickupMode: Hashable { case street, home }
 
 protocol FindUploader {
-    func uploadDraft(_ draft: UploadDraft) async throws
+    func uploadPostDraft(_ draft: PostDraft) async throws
 }
-struct UploadDraft {
-    let photos: [UIImage]
-    let condition: Condition
-    let mode: PickupMode
-    let description: String?
-}
+
 struct MockUploader: FindUploader {
-    func uploadDraft(_ draft: UploadDraft) async throws { /* no-op for now */ }
+    func uploadPostDraft(_ draft: PostDraft) async throws { 
+        print("Mock upload: \(draft.images.count) images, condition: \(draft.condition.title)")
+        // In real implementation, this would:
+        // 1. Upload images to Supabase storage
+        // 2. Create post record with image URLs
+        // 3. Create image records with post_id and order_index
+    }
+}
+
+// Future Supabase uploader structure
+struct SupabaseUploader: FindUploader {
+    func uploadPostDraft(_ draft: PostDraft) async throws {
+        // 1. Upload each image to Supabase storage
+        // 2. Get public URLs for uploaded images
+        // 3. Create post record in 'posts' table
+        // 4. Create image records in 'images' table with post_id and order_index
+        // This matches your Python backend structure
+    }
 }
 
 // MARK: - InlineUploadMap
@@ -415,6 +579,7 @@ private struct InlineUploadMap: View {
 
 private struct PhotoTile: View {
     let image: UIImage?
+    let width: CGFloat
     let height: CGFloat
     let onTap: () -> Void
 
@@ -425,19 +590,18 @@ private struct PhotoTile: View {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
-                        .frame(height: height)
-                        .frame(maxWidth: .infinity)
+                        .frame(width: width, height: height)
                         .clipped()
                 } else {
-                    Image(systemName: "plus.square.on.square")
+                    Image(systemName: "photo.badge.plus")
                         .font(.system(size: 24, weight: .semibold))
                         .foregroundStyle(Color.brandDark)
                 }
             }
-            .frame(width: (height * 4/3), height: height) // 4:3 tiles, fixed height
+            .frame(width: width, height: height)
             .background(Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.brandDark.opacity(0.20), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.brandDark.opacity(0.40), lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
@@ -469,6 +633,27 @@ private struct ChipGroup<Item: CaseIterable & Hashable>: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+    }
+}
+
+private struct ConditionSegmentedPicker: View {
+    @Binding var selection: Condition?
+    
+    var body: some View {
+        Picker("Condition", selection: $selection) {
+            ForEach(Condition.allCases, id: \.self) { condition in
+                Text(condition.title).tag(condition as Condition?)
+            }
+        }
+        .pickerStyle(.segmented)
+        .background(Color.clear)
+        .onAppear {
+            // Style the segmented control with white background and proper text colors
+            UISegmentedControl.appearance().backgroundColor = UIColor.white
+            UISegmentedControl.appearance().selectedSegmentTintColor = UIColor(Color.brandDark)
+            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.white], for: .selected)
+            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.black], for: .normal)
         }
     }
 }
@@ -585,4 +770,3 @@ private extension Array {
 
 // Keep old references working
 typealias AddTrashFlow = AddTrashView
-

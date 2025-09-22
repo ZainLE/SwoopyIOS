@@ -11,9 +11,14 @@ struct CameraCaptureView: UIViewControllerRepresentable {
         c.delegate = context.coordinator
         c.sourceType = UIImagePickerController.isSourceTypeAvailable(.camera) ? .camera : .photoLibrary
         c.allowsEditing = false
-        c.modalPresentationStyle = .overFullScreen
+        c.modalPresentationStyle = .fullScreen
         c.cameraOverlayView = nil
         c.showsCameraControls = true
+        
+        // Force full screen presentation
+        c.edgesForExtendedLayout = []
+        c.extendedLayoutIncludesOpaqueBars = false
+        
         return c
     }
 
