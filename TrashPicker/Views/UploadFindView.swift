@@ -46,6 +46,7 @@ struct UploadFindView: View {
                     sectionLabel("Condition", required: true)
                     ConditionSegmentedPicker(selection: $vm.condition)
                 }
+                .padding(.top, 16)
 
                 if showValidation && vm.condition == nil {
                     validationHint("Please select a condition.")
@@ -59,6 +60,7 @@ struct UploadFindView: View {
                     }
                     .toggleStyle(.switch)
                     .tint(Color.brandDark)
+                    .padding(.top, 16)
 
                     if vm.wantsDescription {
                         helper("Write up to 100 characters (optional).")
@@ -88,11 +90,12 @@ struct UploadFindView: View {
                 }
 
                 // Pickup Location *
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 12) {
                     sectionLabel("Pickup Location", required: true)
-                    ModeChips(mode: $vm.mode)
+                    PickupModeSegmentedPicker(selection: $vm.mode)
                     mapCard
                 }
+                .padding(.top, 16)
 
                 if showValidation && !vm.hasChosenModeOrLocation {
                     validationHint("Please confirm your pickup mode.")
@@ -254,7 +257,7 @@ struct UploadFindView: View {
     }
 
     private var mapCard: some View {
-        Group {
+        VStack(alignment: .leading, spacing: 8) {
             if let mode = vm.mode {
                 InlineUploadMap(
                     mode: mode,
@@ -270,6 +273,13 @@ struct UploadFindView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(.quaternary, lineWidth: 1))
                 .transition(.opacity.combined(with: .move(edge: .top)))
+                
+                // Address text outside the map
+                Text(vm.addressText)
+                    .font(.footnote)
+                    .foregroundStyle(Color.textMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: vm.mode)
@@ -464,9 +474,38 @@ enum Condition: CaseIterable, Hashable, Identifiable {
         case .likeNew:     return "Like New"
         }
     }
+    
+    // Backend mapping
+    var backendValue: String {
+        switch self {
+        case .needsFixing: return "bad"
+        case .usable:      return "good"
+        case .good:        return "good"
+        case .likeNew:     return "excellent"
+        }
+    }
 }
 
-enum PickupMode: Hashable { case street, home }
+enum PickupMode: CaseIterable, Hashable, Identifiable {
+    case street, home
+    
+    var id: Self { self }
+    
+    var title: String {
+        switch self {
+        case .street: return "From Street"
+        case .home: return "From Home"
+        }
+    }
+    
+    // Backend mapping
+    var backendValue: String {
+        switch self {
+        case .street: return "street"
+        case .home: return "home"
+        }
+    }
+}
 
 protocol FindUploader {
     func uploadPostDraft(_ draft: PostDraft) async throws
@@ -482,14 +521,105 @@ struct MockUploader: FindUploader {
     }
 }
 
-// Future Supabase uploader structure
+// Backend API Models
+struct BackendPostRequest: Codable {
+    let title: String
+    let description: String?
+    let category: String
+    let condition: String
+    let mode: String
+    let images: [BackendImageData]
+    let exact_location: String?   // "POINT(lon lat)" for street
+    let approx_location: String?  // "POINT(lon lat)" for home
+}
+
+struct BackendImageData: Codable {
+    let url: String
+    let order_index: Int
+}
+
+// Supabase uploader with proper backend integration
 struct SupabaseUploader: FindUploader {
+    let supabaseStorageURL: String
+    let backendAPIURL: String
+    let bearerToken: String
+    
     func uploadPostDraft(_ draft: PostDraft) async throws {
-        // 1. Upload each image to Supabase storage
-        // 2. Get public URLs for uploaded images
-        // 3. Create post record in 'posts' table
-        // 4. Create image records in 'images' table with post_id and order_index
-        // This matches your Python backend structure
+        // Step 1: Upload each image to Supabase Storage
+        var uploadedImages: [BackendImageData] = []
+        
+        for (index, imageRecord) in draft.images.enumerated() {
+            guard let image = imageRecord.localImage else { continue }
+            
+            // Upload to Supabase Storage (implement your storage upload logic)
+            let publicURL = try await uploadImageToSupabaseStorage(image, index: index)
+            
+            uploadedImages.append(BackendImageData(
+                url: publicURL,
+                order_index: index
+            ))
+        }
+        
+        // Step 2: Prepare location data
+        let (exactLocation, approxLocation) = prepareLocationData(draft)
+        
+        // Step 3: Create backend request
+        let backendRequest = BackendPostRequest(
+            title: "Free item",  // Safe default as per your note
+            description: draft.description,
+            category: "other",   // Safe default as per your note
+            condition: draft.condition.backendValue,
+            mode: draft.mode.backendValue,
+            images: uploadedImages,
+            exact_location: exactLocation,
+            approx_location: approxLocation
+        )
+        
+        // Step 4: POST to your Flask backend
+        try await postToBackend(backendRequest)
+    }
+    
+    private func uploadImageToSupabaseStorage(_ image: UIImage, index: Int) async throws -> String {
+        // TODO: Implement Supabase Storage upload
+        // 1. Convert UIImage to Data
+        // 2. Upload to Supabase Storage bucket
+        // 3. Return public URL
+        return "https://your-supabase-storage.com/image_\(index).jpg"
+    }
+    
+    private func prepareLocationData(_ draft: PostDraft) -> (exact: String?, approx: String?) {
+        guard let coord = draft.coordinate else { return (nil, nil) }
+        
+        let pointString = "POINT(\(coord.longitude) \(coord.latitude))"
+        
+        switch draft.mode {
+        case .street:
+            return (exact: pointString, approx: nil)
+        case .home:
+            // For home mode, use approximate location (could add 500m rounding logic here)
+            return (exact: nil, approx: pointString)
+        }
+    }
+    
+    private func postToBackend(_ request: BackendPostRequest) async throws {
+        guard let url = URL(string: "\(backendAPIURL)/post/") else {
+            throw URLError(.badURL)
+        }
+        
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        
+        let jsonData = try JSONEncoder().encode(request)
+        urlRequest.httpBody = jsonData
+        
+        let (_, response) = try await URLSession.shared.data(for: urlRequest)
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              200...299 ~= httpResponse.statusCode else {
+            throw URLError(.badServerResponse)
+        }
     }
 }
 
@@ -510,11 +640,6 @@ private struct InlineUploadMap: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(mode == .home ? "Your home area is shown approximately (500 m radius)." :
-                                 "Drag the map to adjust the exact pin.")
-                .font(.caption)
-                .foregroundStyle(Color.textMuted)
-            
             Map(position: $camera, interactionModes: .all) {
                 if mode == .home, let c = selectedCoord {
                     MapCircle(center: c, radius: 500)
@@ -528,10 +653,10 @@ private struct InlineUploadMap: View {
                     Annotation("Pickup", coordinate: c) {
                         Image(systemName: "mappin.circle.fill")
                             .font(.title2)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(.green)
                     }
                 }
-                UserAnnotation()
+                // Removed UserAnnotation() - no user location circle
             }
             .transaction { $0.disablesAnimations = true }
             .onChange(of: camera, initial: false) { _, newCamera in
@@ -564,13 +689,6 @@ private struct InlineUploadMap: View {
                 camera = .region(.init(center: center, span: .init(latitudeDelta: 0.01, longitudeDelta: 0.01)))
                 onCoordinateChange?(center)
             }
-            
-            // Address text below the map
-            Text(addressText)
-                .font(.footnote)
-                .foregroundStyle(Color.textMuted)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 6)
         }
     }
 }
@@ -647,13 +765,36 @@ private struct ConditionSegmentedPicker: View {
             }
         }
         .pickerStyle(.segmented)
+        .frame(height: 50)
         .background(Color.clear)
         .onAppear {
             // Style the segmented control with white background and proper text colors
             UISegmentedControl.appearance().backgroundColor = UIColor.white
             UISegmentedControl.appearance().selectedSegmentTintColor = UIColor(Color.brandDark)
-            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.white], for: .selected)
-            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.black], for: .normal)
+            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.white, .font: UIFont.systemFont(ofSize: 16, weight: .medium)], for: .selected)
+            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.black, .font: UIFont.systemFont(ofSize: 16, weight: .medium)], for: .normal)
+        }
+    }
+}
+
+private struct PickupModeSegmentedPicker: View {
+    @Binding var selection: PickupMode?
+    
+    var body: some View {
+        Picker("Pickup Mode", selection: $selection) {
+            ForEach(PickupMode.allCases, id: \.self) { mode in
+                Text(mode.title).tag(mode as PickupMode?)
+            }
+        }
+        .pickerStyle(.segmented)
+        .frame(height: 50)
+        .background(Color.clear)
+        .onAppear {
+            // Style the segmented control with white background and proper text colors
+            UISegmentedControl.appearance().backgroundColor = UIColor.white
+            UISegmentedControl.appearance().selectedSegmentTintColor = UIColor(Color.brandDark)
+            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.white, .font: UIFont.systemFont(ofSize: 16, weight: .medium)], for: .selected)
+            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.black, .font: UIFont.systemFont(ofSize: 16, weight: .medium)], for: .normal)
         }
     }
 }
@@ -662,7 +803,7 @@ private struct ModeChips: View {
     @Binding var mode: PickupMode?
     var body: some View {
         HStack(spacing: 8) {
-            chip("On The Street", .street)
+            chip("From Street", .street)
             chip("From Home", .home)
         }
     }
