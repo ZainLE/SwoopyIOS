@@ -33,11 +33,20 @@ final class SupabaseService: NSObject, ObservableObject {
     @Published private(set) var isAuthenticated: Bool = false
     @Published var didCheckSession = false
 
-    // Supabase client
-    let client = SupabaseClient(
-        supabaseURL: SupabaseConfig.url,
-        supabaseKey: SupabaseConfig.anonKey
-    )
+    // Supabase client with OAuth callback configuration
+    private static let callbackURL = URL(string: "swoopy://auth-callback")!
+    
+    let client: SupabaseClient = {
+        SupabaseClient(
+            supabaseURL: SupabaseConfig.url,
+            supabaseKey: SupabaseConfig.anonKey,
+            options: .init(
+                auth: .init(
+                    redirectToURL: SupabaseService.callbackURL, flowType: .pkce
+                )
+            )
+        )
+    }()
 
     private override init() {
         super.init()
@@ -79,17 +88,8 @@ final class SupabaseService: NSObject, ObservableObject {
     /// Google OAuth (PKCE). Make sure `swoopy://auth/callback` is in Supabase Redirect URLs.
     @MainActor
     func signInWithGoogle() async throws {
-        let redirect = URL(string: "https://swoopy.eu/auth/v1/callback")!
-        
-        // Generate a random state parameter for security
-        let state = UUID().uuidString
-        
-        // Use Supabase Swift's direct OAuth API (no AuthOAuthConfiguration type)
-        _ = try await client.auth.signInWithOAuth(
-            provider: .google,
-            redirectTo: redirect,
-            scopes: nil,
-            queryParams: [("state", state)]
+        try await client.auth.signInWithOAuth(
+            provider: .google
         )
     }
 
@@ -115,8 +115,7 @@ final class SupabaseService: NSObject, ObservableObject {
     }
 
     func signInWithEmailMagicLink(_ email: String) async throws {
-        let redirect = URL(string: "https://swoopy.eu/auth/v1/callback")!
-        try await client.auth.signInWithOTP(email: email, redirectTo: redirect)
+        try await client.auth.signInWithOTP(email: email)
     }
 
     // MARK: - Email/Password
@@ -506,4 +505,3 @@ struct SimpleError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
 }
-

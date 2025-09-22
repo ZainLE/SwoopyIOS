@@ -19,10 +19,8 @@ struct TrashPickerApp: App {
                 .environmentObject(ck)
                 .onOpenURL { url in
                     Task {
-                        // deep link for OAuth
-                        if let s = try? await svc.client.auth.session(from: url) {
-                            await MainActor.run { svc.applyAuthForGate(s) }
-                        }
+                        // Handle OAuth callback (Google, magic links, etc.)
+                        await svc.handleOAuthRedirect(url)
                     }
                 }
                 .tint(Color(hex: 0x00513F))
