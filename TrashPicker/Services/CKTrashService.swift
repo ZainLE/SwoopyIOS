@@ -35,6 +35,7 @@ struct CKTrashItem: Identifiable, Equatable, Hashable {
     // Optional extras (already in your project)
     var desc: String?
     var condition: String?           // "bad" | "good" | "excellent"
+    var mode: String?                // "home" | "street" - for privacy handling
 
     var isExpired: Bool { Date() >= expiresAt }
     var isReservationActive: Bool { (reservedUntil ?? .distantPast) > Date() }

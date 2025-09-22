@@ -7,7 +7,6 @@
 
 import SwiftUI
 import MapKit
-import CloudKit
 
 // MARK: - Backend bridge toggle (switch when BE is ready)
 private enum BackendMode { case cloudKit, api, stub }
@@ -26,7 +25,8 @@ struct SwipeDeckView: View {
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var loc: LocationManager
 
-    // Using CloudKit IDs so it matches your service
+    // Deck state management - single source of truth
+    @StateObject private var deckState = DeckState()
     @State private var hidden: Set<CKRecord.ID> = []
 
     // Glass segmented control and map presentation
@@ -47,16 +47,119 @@ struct SwipeDeckView: View {
 
     // Keep everything in CKTrashItem to match service
     private var visible: [CKTrashItem] {
-        // If isMine(_:) exists, filter with it; otherwise just filter by hidden
-        ck.feed.filter { !hidden.contains($0.id) && !(ck.isMine($0) ?? false) }
+        // Use inline sample data for testing, fallback to real feed
+        let feedItems = ck.feed.isEmpty ? sampleFeedItems : ck.feed
+        return feedItems.filter { !hidden.contains($0.id) && !ck.isMine($0) }
+    }
+    
+    // Inline sample data for design testing
+    private var sampleFeedItems: [CKTrashItem] {
+        [
+            CKTrashItem(
+                id: CKRecord.ID(),
+                title: "Vintage Wooden Chair",
+                category: "Furniture",
+                photoURL: URL(string: "https://picsum.photos/400/400?random=1"),
+                coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
+                city: "San Francisco",
+                createdAt: Date().addingTimeInterval(-3600),
+                expiresAt: Date().addingTimeInterval(86400 * 6),
+                status: "available",
+                reservedUntil: nil,
+                reservedBy: nil,
+                uploader: nil,
+                pickedUpAt: nil,
+                interestedCount: 3,
+                desc: "Beautiful vintage wooden chair in great condition. Perfect for a home office or dining room.",
+                condition: "good",
+                mode: "street"
+            ),
+            CKTrashItem(
+                id: CKRecord.ID(),
+                title: "Kitchen Appliances Set",
+                category: "Appliances",
+                photoURL: URL(string: "https://picsum.photos/400/400?random=2"),
+                coordinate: CLLocationCoordinate2D(latitude: 37.7849, longitude: -122.4094),
+                city: "San Francisco",
+                createdAt: Date().addingTimeInterval(-7200),
+                expiresAt: Date().addingTimeInterval(86400 * 5),
+                status: "available",
+                reservedUntil: nil,
+                reservedBy: nil,
+                uploader: nil,
+                pickedUpAt: nil,
+                interestedCount: 7,
+                desc: "Microwave, toaster, and coffee maker. All working perfectly.",
+                condition: "like new",
+                mode: "home"
+            ),
+            CKTrashItem(
+                id: CKRecord.ID(),
+                title: "Books Collection",
+                category: "Books",
+                photoURL: URL(string: "https://picsum.photos/400/400?random=3"),
+                coordinate: CLLocationCoordinate2D(latitude: 37.7649, longitude: -122.4294),
+                city: "San Francisco",
+                createdAt: Date().addingTimeInterval(-10800),
+                expiresAt: Date().addingTimeInterval(86400 * 4),
+                status: "available",
+                reservedUntil: nil,
+                reservedBy: nil,
+                uploader: nil,
+                pickedUpAt: nil,
+                interestedCount: 2,
+                desc: "Mix of fiction and non-fiction books. Great for students or book lovers.",
+                condition: "usable",
+                mode: "street"
+            ),
+            CKTrashItem(
+                id: CKRecord.ID(),
+                title: "Exercise Equipment",
+                category: "Sports",
+                photoURL: URL(string: "https://picsum.photos/400/400?random=4"),
+                coordinate: CLLocationCoordinate2D(latitude: 37.7549, longitude: -122.4394),
+                city: "San Francisco",
+                createdAt: Date().addingTimeInterval(-14400),
+                expiresAt: Date().addingTimeInterval(86400 * 3),
+                status: "available",
+                reservedUntil: nil,
+                reservedBy: nil,
+                uploader: nil,
+                pickedUpAt: nil,
+                interestedCount: 5,
+                desc: "Yoga mat, resistance bands, and dumbbells. Perfect for home workouts.",
+                condition: "needs fixing",
+                mode: "home"
+            ),
+            CKTrashItem(
+                id: CKRecord.ID(),
+                title: "Art Supplies",
+                category: "Art",
+                photoURL: URL(string: "https://picsum.photos/400/400?random=5"),
+                coordinate: CLLocationCoordinate2D(latitude: 37.7449, longitude: -122.4494),
+                city: "San Francisco",
+                createdAt: Date().addingTimeInterval(-18000),
+                expiresAt: Date().addingTimeInterval(86400 * 2),
+                status: "available",
+                reservedUntil: nil,
+                reservedBy: nil,
+                uploader: nil,
+                pickedUpAt: nil,
+                interestedCount: 1,
+                desc: "Paints, brushes, canvases, and drawing supplies. Great for artists or students.",
+                condition: "like new",
+                mode: "street"
+            )
+        ]
     }
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 12) {
+            VStack(spacing: 0) {
+                // Logo to Segmented: 16pt spacing (handled by toolbar)
                 GlassSegmented(selection: $seg)
-                    .padding(.top, 8)
-
+                    .padding(.top, 16) // Logo → Segmented: 16pt
+                    .padding(.horizontal, 16) // chromeSidePadding
 
                 GeometryReader { geo in
 
@@ -73,18 +176,29 @@ struct SwipeDeckView: View {
                                 makePost: { showCamera = true }
                             )
                         } else {
-                            DeckStack(
-                                items: Array(visible.prefix(3)),
-                                onReserve: { item in
-                                    sheetItem = item
-                                    sheetMode = .prompt
-                                    withAnimation(.easeOut(duration: 0.18)) { showReserveSheet = true }
-                                },
-                                onPass: { item in
-                                    hidden.insert(item.id)
-                                }
-                            )
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                            VStack(spacing: 0) {
+                                // Segmented → Card: 18pt spacing
+                                DeckStack(deckState: deckState)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                                    .padding(.top, 18)
+                                
+                                // Card → Buttons: 16pt spacing
+                                ActionBar(
+                                    deckState: deckState,
+                                    onPass: {
+                                        Task {
+                                            await handlePass()
+                                        }
+                                    },
+                                    onReserve: {
+                                        Task {
+                                            await handleReserve()
+                                        }
+                                    }
+                                )
+                                .padding(.top, 16)
+                                .padding(.bottom, 16)
+                            }
                         }
 
                         // Reservation sheet
@@ -114,10 +228,8 @@ struct SwipeDeckView: View {
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
                     }
-                    .padding(.horizontal, 16)
                 }
             }
-            .padding(.horizontal, 16)
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     Image("SwoopyLogo")
@@ -149,6 +261,26 @@ struct SwipeDeckView: View {
                 await fetchFeedBridge()
                 // CloudKit expiry/maintenance should be done inside the service layer; removed here to avoid missing-member errors.
             }
+            .onChange(of: visible) { newVisible in
+                // Update deck state when visible items change
+                deckState.updateItems(newVisible)
+            }
+            .overlay(
+                // Error toast
+                Group {
+                    if let errorMessage = deckState.errorMessage {
+                        VStack {
+                            Spacer()
+                            Text(errorMessage)
+                                .padding()
+                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                                .padding(.horizontal)
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+                        .animation(.easeInOut, value: deckState.errorMessage)
+                    }
+                }
+            )
             .fullScreenCover(isPresented: $showCamera) {
                 CameraCaptureView { image in
                     if let image = image {
@@ -179,7 +311,39 @@ struct SwipeDeckView: View {
         }
     }
     
+    // MARK: - Action Handlers
     
+    @MainActor
+    private func handlePass() async {
+        guard let activeCard = deckState.activeCard else { return }
+        
+        await deckState.triggerPass()
+        
+        // Add to hidden set to remove from visible items
+        hidden.insert(activeCard.id)
+    }
+    
+    @MainActor
+    private func handleReserve() async {
+        guard let activeCard = deckState.activeCard else { return }
+        
+        do {
+            try await deckState.triggerReserve()
+            
+            // Show reservation sheet
+            sheetItem = activeCard
+            sheetMode = .prompt
+            withAnimation(.easeOut(duration: 0.18)) { 
+                showReserveSheet = true 
+            }
+            
+            // Complete the transition
+            deckState.completeCardTransition()
+            
+        } catch {
+            // Error handling is managed by DeckState
+        }
+    }
 
     // MARK: - Tiny bridge helpers (CloudKit / API / Stub)
 
@@ -272,30 +436,33 @@ extension SwipeDeckView {
     //
     
     private struct DeckStack: View {
-        let items: [CKTrashItem]
-        var onReserve: (CKTrashItem) -> Void
-        var onPass: (CKTrashItem) -> Void
+        @ObservedObject var deckState: DeckState
         
         var body: some View {
             ZStack {
-                ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
+                // Show active card and next card only
+                if let activeCard = deckState.activeCard {
                     FeedCard(
-                        item: item,
-                        onReserve: { onReserve(item) },
-                        onPass: { onPass(item) },
-                        isTopCard: idx == 0 // Only the first card (top card) shows buttons
+                        item: activeCard,
+                        deckState: deckState,
+                        isActiveCard: true
                     )
-                    .zIndex(Double(100 - idx))
-                    .scaleEffect(1 - CGFloat(idx) * 0.03)
-                    .offset(y: CGFloat(idx) * 14)
-                    .transition(.asymmetric(
-                        insertion: .scale.combined(with: .opacity),
-                        removal: .move(edge: .trailing).combined(with: .opacity)
-                    ))
+                    .zIndex(2)
+                    .allowsHitTesting(!deckState.isAnimating)
+                }
+                
+                if let nextCard = deckState.nextCard {
+                    FeedCard(
+                        item: nextCard,
+                        deckState: deckState,
+                        isActiveCard: false
+                    )
+                    .zIndex(1)
+                    .allowsHitTesting(false)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            .animation(.spring(response: 0.32, dampingFraction: 0.88), value: items.map(\.id))
+            .animation(.spring(response: 0.32, dampingFraction: 0.88), value: deckState.activeIndex)
         }
     }
     

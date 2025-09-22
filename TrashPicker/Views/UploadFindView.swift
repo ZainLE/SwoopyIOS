@@ -833,31 +833,121 @@ private struct ChipGroup<Item: CaseIterable & Hashable>: View {
 
 private struct ConditionSegmentedPicker: View {
     @Binding var selection: Condition?
+    @Namespace private var thumbAnimation
+    
+    // Single source of truth for segment metrics
+    private let segmentHeight: CGFloat = 46
+    private let horizontalInset: CGFloat = 8
+    private let verticalInset: CGFloat = 11
+    private var cornerRadius: CGFloat { segmentHeight / 2 }
+    
+    // Design tokens
+    private let primaryColor = Color(hex: 0x00513F) // #00513F
     
     var body: some View {
-        Picker("Condition", selection: $selection) {
+        HStack(spacing: 0) {
             ForEach(Condition.allCases, id: \.self) { condition in
-                Text(condition.title).tag(condition as Condition?)
+                let isSelected = selection == condition
+                
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        selection = condition
+                    }
+                } label: {
+                    Text(condition.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(isSelected ? .white : .primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .layoutPriority(1)
+                        .padding(.horizontal, horizontalInset)
+                        .padding(.vertical, verticalInset)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: segmentHeight)
+                        .background(
+                            Group {
+                                if isSelected {
+                                    Capsule()
+                                        .fill(primaryColor)
+                                        .matchedGeometryEffect(id: "conditionThumb", in: thumbAnimation)
+                                }
+                            }
+                        )
+                }
+                .buttonStyle(.plain)
             }
         }
-        .pickerStyle(.segmented)
-        .frame(height: 50)
-        .background(Color.clear)
+        .frame(height: segmentHeight)
+        .background(
+            Capsule()
+                .fill(Color(.secondarySystemBackground))
+        )
+        .clipShape(Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color(.separator), lineWidth: 0.5)
+        )
     }
 }
 
 private struct PickupModeSegmentedPicker: View {
     @Binding var selection: PickupMode?
+    @Namespace private var thumbAnimation
+    
+    // Single source of truth for segment metrics - match condition picker
+    private let segmentHeight: CGFloat = 46
+    private let horizontalInset: CGFloat = 8
+    private let verticalInset: CGFloat = 11
+    private var cornerRadius: CGFloat { segmentHeight / 2 }
+    
+    // Design tokens
+    private let primaryColor = Color(hex: 0x00513F) // #00513F
     
     var body: some View {
-        Picker("Pickup Mode", selection: $selection) {
+        HStack(spacing: 0) {
             ForEach(PickupMode.allCases, id: \.self) { mode in
-                Text(mode.title).tag(mode as PickupMode?)
+                let isSelected = selection == mode
+                
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        selection = mode
+                    }
+                } label: {
+                    Text(mode.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(isSelected ? .white : .primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .layoutPriority(1)
+                        .padding(.horizontal, horizontalInset)
+                        .padding(.vertical, verticalInset)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: segmentHeight)
+                        .background(
+                            Group {
+                                if isSelected {
+                                    Capsule()
+                                        .fill(primaryColor)
+                                        .matchedGeometryEffect(id: "pickupThumb", in: thumbAnimation)
+                                }
+                            }
+                        )
+                }
+                .buttonStyle(.plain)
             }
         }
-        .pickerStyle(.segmented)
-        .frame(height: 50)
-        .background(Color.clear)
+        .frame(height: segmentHeight)
+        .background(
+            Capsule()
+                .fill(Color(.secondarySystemBackground))
+        )
+        .clipShape(Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color(.separator), lineWidth: 0.5)
+        )
     }
 }
 
@@ -973,3 +1063,14 @@ private extension Array {
 
 // Keep old references working
 typealias AddTrashFlow = AddTrashView
+
+// MARK: - Color Extension for Hex Support
+extension Color {
+    init(hex: UInt, alpha: Double = 1.0) {
+        self.init(.sRGB,
+                  red: Double((hex >> 16) & 0xFF) / 255.0,
+                  green: Double((hex >> 8) & 0xFF) / 255.0,
+                  blue: Double(hex & 0xFF) / 255.0,
+                  opacity: alpha)
+    }
+}
