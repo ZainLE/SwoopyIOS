@@ -14,21 +14,22 @@ struct FeedCard: View {
     let item: CKTrashItem
     @ObservedObject var deckState: DeckState
     let isActiveCard: Bool // Whether this is the active (top) card
+    let router: AppRouter
 
     // Local UI state
     @State private var dragOffset: CGSize = .zero
     @State private var isDragging = false
     @State private var currentImageIndex = 0
-    @State private var isExpanded = false
+    @State private var showDetailOverlay = false
 
     // Card position relative to the deck
     private var isNextCard: Bool { !isActiveCard }
     private var shouldShowStaged: Bool { isNextCard && (isDragging || deckState.isAnimating) }
 
     // Design tokens
-    private let primary = Color(hex: 0x00513F)      // #00513F
-    private let accent = Color(hex: 0xB4DD4E)       // #B4DD4E
-    private let mutedText = Color(hex: 0x656565)    // #656565
+    private let primary = Color(hex: "00513F")      // #00513F
+    private let accent = Color(hex: "B4DD4E")       // #B4DD4E
+    private let mutedText = Color(hex: "656565")    // #656565
 
     // Layout
     private let chromeSidePadding: CGFloat = 16
@@ -43,19 +44,8 @@ struct FeedCard: View {
     private let cardRadius: CGFloat = 28
 
     // Dynamic heights
-    private var imageHeight: CGFloat { isExpanded ? expandedImageHeight : collapsedImageHeight }
-    private var expandedContentHeight: CGFloat {
-        let descriptionLines = (item.desc?.count ?? 0) / 40 + 1
-        return CGFloat(max(descriptionLines * 20 + 60, 100))
-    }
-    private var cardHeight: CGFloat {
-        if isExpanded {
-            let contentHeight = expandedImageHeight + infoBarHeight + expandedContentHeight + 32
-            let maxHeight = screenHeight - 200
-            return min(contentHeight, maxHeight)
-        }
-        return collapsedCardHeight
-    }
+    private var imageHeight: CGFloat { collapsedImageHeight }
+    private var cardHeight: CGFloat { collapsedCardHeight }
 
     // MARK: - Computed Strings
 
@@ -116,7 +106,7 @@ struct FeedCard: View {
                         .contentShape(Rectangle())
                         .onTapGesture {
                             previousPhoto()
-                            if !isExpanded { expandCard() }
+                            showDetailOverlay = true
                         }
 
                     // Middle 20% - just expand
@@ -125,7 +115,7 @@ struct FeedCard: View {
                         .frame(width: cardWidth * 0.2)
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            if !isExpanded { expandCard() }
+                            showDetailOverlay = true
                         }
 
                     // Right 40% - next photo
@@ -135,7 +125,7 @@ struct FeedCard: View {
                         .contentShape(Rectangle())
                         .onTapGesture {
                             nextPhoto()
-                            if !isExpanded { expandCard() }
+                            showDetailOverlay = true
                         }
                 }
 
@@ -197,18 +187,8 @@ struct FeedCard: View {
             .frame(height: infoBarHeight)
             .frame(maxWidth: .infinity)
             .background(Color.white)
-            .onTapGesture { toggleExpansion() }
+            .onTapGesture { showDetailOverlay = true }
 
-            // EXPANDED CONTENT
-            if isExpanded {
-                FeedCardExpandedContent(item: item)
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 16)
-                    .background(Color.white)
-                    .opacity(isExpanded ? 1 : 0)
-                    .offset(y: isExpanded ? 0 : 12)
-                    .animation(.spring(response: 0.22, dampingFraction: 0.86), value: isExpanded)
-            }
         }
         .frame(width: cardWidth, height: cardHeight)
         .background(Color.white)
@@ -232,7 +212,7 @@ struct FeedCard: View {
         .gesture(
             DragGesture(minimumDistance: 6)
                 .onChanged { value in
-                    guard isActiveCard && deckState.canAct else { return }
+                    guard isActiveCard && deckState.canAct && !showDetailOverlay else { return }
                     let wasDragging = isDragging
                     isDragging = abs(value.translation.width) > 6 || abs(value.translation.height) > 6
                     dragOffset = value.translation
@@ -242,7 +222,7 @@ struct FeedCard: View {
                     }
                 }
                 .onEnded { value in
-                    guard isActiveCard && deckState.canAct else { return }
+                    guard isActiveCard && deckState.canAct && !showDetailOverlay else { return }
                     isDragging = false
                     let threshold: CGFloat = 115
 
@@ -257,6 +237,24 @@ struct FeedCard: View {
                     }
                 }
         )
+        .fullScreenCover(isPresented: $showDetailOverlay) {
+            FeedDetailOverlay(
+                item: item,
+                currentImageIndex: $currentImageIndex,
+                onDismiss: { showDetailOverlay = false },
+                onSave: { 
+                    showDetailOverlay = false
+                    Task { 
+                        await triggerReserve()
+                        // Navigation is handled in triggerReserve()
+                    }
+                },
+                onPass: { 
+                    showDetailOverlay = false
+                    Task { await triggerPass() }
+                }
+            )
+        }
     }
 
     // MARK: - Actions
@@ -271,6 +269,11 @@ struct FeedCard: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 deckState.completeCardTransition()
                 dragOffset = .zero
+            }
+            
+            // Navigate to reservations tab after successful reservation
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                router.selectedTab = .reservations
             }
         } catch {
             // DeckState handles error reporting/logging
@@ -303,89 +306,109 @@ struct FeedCard: View {
 
     private func advancePhoto() { nextPhoto() }
 
-    private func expandCard() {
-        guard !isExpanded else { return }
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
-            isExpanded = true
-        }
-    }
-
-    private func toggleExpansion() {
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
-            isExpanded.toggle()
-        }
-    }
 }
 
-// MARK: - Expanded Content (renamed to avoid conflicts)
-struct FeedCardExpandedContent: View {
+// MARK: - Feed Detail Overlay
+
+struct FeedDetailOverlay: View {
     let item: CKTrashItem
-
+    @Binding var currentImageIndex: Int
+    let onDismiss: () -> Void
+    let onSave: () -> Void
+    let onPass: () -> Void
+    
+    @State private var dragOffset: CGSize = .zero
+    @Namespace var imageTransition
+    
+    // Design tokens - matching reservation overlay
+    let primaryColor = Color(hex: "00513F")
+    private let accentColor = Color(hex: "B4DD4E")
+    private let dangerColor = Color(hex: "C44242")
+    let mutedColor = Color(hex: "656565")
+    
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(item.title)
-                .font(.title2)
-                .fontWeight(.bold)
-
-            if let description = item.desc, !description.isEmpty {
-                Text(description)
-                    .font(.body)
-                    .foregroundColor(.secondary)
-            }
-
-            HStack {
-                VStack(alignment: .leading) {
-                    Text("Category")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text(item.category.capitalized) // non-optional
-                        .font(.body)
+        ZStack {
+            // Backdrop
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+                .onTapGesture {
+                    onDismiss()
                 }
-
+            
+            // Container
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        // Image carousel
+                        imageCarousel
+                        
+                        // Content with 20pt spacing between sections per spec
+                        VStack(alignment: .leading, spacing: 20) {
+                            metaSection
+                            
+                            if let description = item.desc, !description.isEmpty {
+                                descriptionSection(description)
+                            }
+                            
+                            locationSection
+                            sharedBySection
+                        }
+                        .padding(.horizontal, 24) // 24pt side padding per spec
+                    }
+                }
+                
+                // Buttons (pinned to bottom) - aligned with image left edge
+                buttonsSection
+                    .padding(.horizontal, 24) // Match content padding for alignment
+                    .padding(.vertical, 16)
+            }
+            .frame(
+                width: min(UIScreen.main.bounds.width * 0.8, 600),
+                height: UIScreen.main.bounds.height * 0.8
+            )
+            .background(Color(.systemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 28))
+            .shadow(color: .black.opacity(0.12), radius: 24, x: 0, y: 8)
+            .offset(y: dragOffset.height)
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        if value.translation.height > 0 {
+                            dragOffset = value.translation
+                        }
+                    }
+                    .onEnded { value in
+                        if value.translation.height > 120 {
+                            onDismiss()
+                        } else {
+                            withAnimation(.spring()) {
+                                dragOffset = .zero
+                            }
+                        }
+                    }
+            )
+            
+            // Close button with glassmorphic background
+            VStack {
+                HStack {
+                    Spacer()
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.primary)
+                            .frame(width: 32, height: 32)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .padding(.top, 16)
+                    .padding(.trailing, 20)
+                }
                 Spacer()
-
-                VStack(alignment: .trailing) {
-                    Text("Interested")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("\(item.interestedCount ?? 0) people")
-                        .font(.body)
-                }
             }
+            .frame(
+                width: min(UIScreen.main.bounds.width * 0.8, 600),
+                height: UIScreen.main.bounds.height * 0.8
+            )
         }
     }
 }
-
-//
-//#Preview {
-//    // Mock CKTrashItem for preview — CKTrashItem.id is CKRecord.ID
-//    let mockItem = CKTrashItem(
-//        id: CKRecord.ID(UUID().uuidString),
-//        title: "Preview Item",
-//        category: "furniture",
-//        photoURL: URL(string: "https://picsum.photos/400/400"),
-//        coordinate: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
-//        city: "Barcelona",
-//        createdAt: Date().addingTimeInterval(-3600), // 1 hour ago
-//        expiresAt: Date().addingTimeInterval(86400), // 24 hours from now
-//        status: "open",
-//        reservedUntil: nil,
-//        reservedBy: nil,
-//        uploader: nil,
-//        pickedUpAt: nil,
-//        interestedCount: 3,
-//        desc: "A nice piece of furniture that would look great in any home.",
-//        condition: "good",
-//        mode: "street"
-//    )
-//
-//    FeedCard(
-//        item: mockItem,
-//        deckState: DeckState(),
-//        isActiveCard: true
-//    )
-//    .padding()
-//}
 

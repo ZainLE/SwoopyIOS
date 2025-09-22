@@ -4,12 +4,12 @@ import UIKit
 struct SystemGlassTabsWithFab: View {
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var loc: LocationManager
+    @EnvironmentObject var draftStore: UploadDraftStore
 
     @State private var tab = 0
-    @State private var showCamera = false
     @State private var showUploadForm = false
-    @State private var capturedImage: UIImage?
-
+    @State private var cameraService: CameraService?
+    
     // App green
     private let appGreen = Color(red: 0/255, green: 81/255, blue: 63/255)
 
@@ -33,7 +33,9 @@ struct SystemGlassTabsWithFab: View {
             .tint(appGreen)
 
             // Detached FAB (+), aligned to bar baseline with a visible gap
-            Button { showCamera = true } label: {
+            Button { 
+                handleFabTap()
+            } label: {
                 FabGlassCircle(appGreen: appGreen) {
                     Image(systemName: "plus")
                         .font(.system(size: 24, weight: .bold))
@@ -48,36 +50,66 @@ struct SystemGlassTabsWithFab: View {
             ))
         }
         .ignoresSafeArea(edges: .bottom)
-
-        // Camera → Upload flow (unified with AppTabView)
-        .fullScreenCover(isPresented: $showCamera) {
-            CameraCaptureView { image in
-                if let image = image {
-                    capturedImage = image
-                    showUploadForm = true
-                }
+        .onAppear {
+            // Initialize camera service with injected draft store
+            if cameraService == nil {
+                cameraService = CameraService(draftStore: draftStore)
             }
-            .ignoresSafeArea(.all)
-            .background(Color.black)
+        }
+        .alert("Camera Permission Required", isPresented: .constant(cameraService?.showPermissionDeniedAlert == true)) {
+            Button("Open Settings") {
+                cameraService?.openSettings()
+            }
+            Button("Cancel", role: .cancel) {
+                cameraService?.showPermissionDeniedAlert = false
+            }
+        } message: {
+            Text("Please enable camera access in Settings to take photos for your posts.")
         }
         .fullScreenCover(isPresented: $showUploadForm) {
             NavigationStack {
-                UploadFindView(initialPhoto: capturedImage)
+                UploadFindView()
                     .environmentObject(svc)
                     .environmentObject(loc)
+                    .environmentObject(draftStore)
             }
             .onDisappear {
-                // Clean up after upload form dismisses
-                capturedImage = nil
                 // Refresh feed after upload
                 if let c = loc.userLocation?.coordinate {
                     Task { await svc.fetchFeed(near: c) }
                 }
             }
         }
+        .onChange(of: draftStore.lastCaptureTick) { _ in
+            // Show upload form when new photo is captured
+            if !draftStore.photos.isEmpty && !showUploadForm {
+                showUploadForm = true
+            }
+        }
     }
-
-    // Removed showUploadForm() - now using unified fullScreenCover approach
+    
+    // MARK: - Actions
+    
+    private func handleFabTap() {
+        guard let cameraService = cameraService else { return }
+        
+        cameraService.ensureCameraPermission { granted in
+            if granted {
+                // Present camera with proper view controller
+                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let window = windowScene.windows.first,
+                   let rootViewController = window.rootViewController {
+                    
+                    var topController = rootViewController
+                    while let presented = topController.presentedViewController {
+                        topController = presented
+                    }
+                    
+                    cameraService.presentCamera(from: topController)
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Glassy FAB circle

@@ -21,9 +21,11 @@ private enum APIConfig {
 }
 
 struct SwipeDeckView: View {
+    @Environment(AppRouter.self) var router
     @EnvironmentObject var ck: CKTrashService
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var loc: LocationManager
+    @EnvironmentObject var draftStore: UploadDraftStore
 
     // Deck state management - single source of truth
     @StateObject private var deckState = DeckState()
@@ -40,10 +42,9 @@ struct SwipeDeckView: View {
     @State private var sheetMode: ReserveSheet.Mode = .prompt
     @State private var sheetItem: CKTrashItem?
     
-    // Camera and upload flow - unified with AppTabView
-    @State private var showCamera = false
+    // Camera and upload flow - using draft store
     @State private var showUploadForm = false
-    @State private var capturedImage: UIImage?
+    @State private var cameraService: CameraService?
 
     // Keep everything in CKTrashItem to match service
     private var visible: [CKTrashItem] {
@@ -173,7 +174,7 @@ struct SwipeDeckView: View {
                                         hidden.removeAll()
                                     } 
                                 },
-                                makePost: { showCamera = true }
+                                makePost: { handleMakePost() }
                             )
                         } else {
                             VStack(spacing: 0) {
@@ -241,12 +242,10 @@ struct SwipeDeckView: View {
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
-            .onChange(of: seg) { newValue in
+            .onChange(of: seg) { _, newValue in
                 if newValue == .map {
-                    // Let the animation complete first, then show map
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        showFeedMap = true
-                    }
+                    // Show map immediately
+                    showFeedMap = true
                 }
             }
             .onChange(of: showFeedMap) { isPresented in
@@ -257,6 +256,12 @@ struct SwipeDeckView: View {
                     }
                 }
             }
+            .onAppear {
+                // Initialize camera service with injected draft store
+                if cameraService == nil {
+                    cameraService = CameraService(draftStore: draftStore)
+                }
+            }
             .task {
                 await fetchFeedBridge()
                 // CloudKit expiry/maintenance should be done inside the service layer; removed here to avoid missing-member errors.
@@ -264,6 +269,12 @@ struct SwipeDeckView: View {
             .onChange(of: visible) { newVisible in
                 // Update deck state when visible items change
                 deckState.updateItems(newVisible)
+            }
+            .onChange(of: draftStore.lastCaptureTick) { _ in
+                // Show upload form when new photo is captured
+                if !draftStore.photos.isEmpty && !showUploadForm {
+                    showUploadForm = true
+                }
             }
             .overlay(
                 // Error toast
@@ -281,25 +292,16 @@ struct SwipeDeckView: View {
                     }
                 }
             )
-            .fullScreenCover(isPresented: $showCamera) {
-                CameraCaptureView { image in
-                    if let image = image {
-                        capturedImage = image
-                        showUploadForm = true
-                    }
-                }
-                .ignoresSafeArea(.all)
-                .background(Color.black)
-            }
             .fullScreenCover(isPresented: $showUploadForm) {
                 NavigationStack {
-                    UploadFindView(initialPhoto: capturedImage)
+                    UploadFindView()
                         .environmentObject(svc)
                         .environmentObject(loc)
+                        .environmentObject(draftStore)
                 }
                 .onDisappear {
-                    // Clean up after upload form dismisses
-                    capturedImage = nil
+                    // Refresh feed after upload
+                    Task { await fetchFeedBridge() }
                 }
             }
             .fullScreenCover(isPresented: $showFeedMap) {
@@ -342,6 +344,27 @@ struct SwipeDeckView: View {
             
         } catch {
             // Error handling is managed by DeckState
+        }
+    }
+    
+    private func handleMakePost() {
+        guard let cameraService = cameraService else { return }
+        
+        cameraService.ensureCameraPermission { granted in
+            if granted {
+                // Present camera with proper view controller
+                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                   let window = windowScene.windows.first,
+                   let rootViewController = window.rootViewController {
+                    
+                    var topController = rootViewController
+                    while let presented = topController.presentedViewController {
+                        topController = presented
+                    }
+                    
+                    cameraService.presentCamera(from: topController)
+                }
+            }
         }
     }
 
@@ -436,6 +459,7 @@ extension SwipeDeckView {
     //
     
     private struct DeckStack: View {
+        @Environment(AppRouter.self) var router
         @ObservedObject var deckState: DeckState
         
         var body: some View {
@@ -445,7 +469,8 @@ extension SwipeDeckView {
                     FeedCard(
                         item: activeCard,
                         deckState: deckState,
-                        isActiveCard: true
+                        isActiveCard: true,
+                        router: router
                     )
                     .zIndex(2)
                     .allowsHitTesting(!deckState.isAnimating)
@@ -455,7 +480,8 @@ extension SwipeDeckView {
                     FeedCard(
                         item: nextCard,
                         deckState: deckState,
-                        isActiveCard: false
+                        isActiveCard: false,
+                        router: router
                     )
                     .zIndex(1)
                     .allowsHitTesting(false)

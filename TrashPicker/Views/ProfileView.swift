@@ -16,7 +16,7 @@ struct ProfileView: View {
                 }
                 Section {
                     ForEach(svc.myReservations) { item in
-                        ReservationRow(item: item)
+                        ProfileReservationRow(item: item)
                     }
                 } header: {
                     Text("My reservations").font(AppFont.h2)
@@ -59,7 +59,7 @@ private struct UploadRow: View {
     }
 }
 
-private struct ReservationRow: View {
+private struct ProfileReservationRow: View {
     let item: TrashDTO
 
     var body: some View {

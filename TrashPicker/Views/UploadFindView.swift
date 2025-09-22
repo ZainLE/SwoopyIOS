@@ -8,18 +8,16 @@ import CoreLocation
 struct UploadFindView: View {
     @EnvironmentObject var loc: LocationManager
     @EnvironmentObject var svc: SupabaseService
+    @EnvironmentObject var draftStore: UploadDraftStore
     @Environment(\.dismiss) private var dismiss
     
-    let initialPhoto: UIImage?
     @StateObject private var vm = UploadFindViewModel()
     
     // Static flag to ensure appearance is only configured once
     private static var hasConfiguredAppearance = false
     
     // Configure segmented control appearance once
-    init(initialPhoto: UIImage? = nil) {
-        self.initialPhoto = initialPhoto
-        
+    init() {
         // Configure appearance only once globally
         if !Self.hasConfiguredAppearance {
             UISegmentedControl.appearance().selectedSegmentTintColor = UIColor(Color.brandDark)
@@ -44,6 +42,11 @@ struct UploadFindView: View {
     // Layout constants
     private let sidePadding: CGFloat = 20
     private let maxWidth: CGFloat = 600
+    
+    // Computed properties
+    private var canSubmit: Bool {
+        !draftStore.photos.isEmpty && vm.condition != nil && vm.mode != nil && vm.currentCoordinate != nil
+    }
 
     var body: some View {
         ScrollView {
@@ -56,7 +59,7 @@ struct UploadFindView: View {
 
                 photoRow
 
-                if showValidation && vm.imageRecords.isEmpty {
+                if showValidation && draftStore.photos.isEmpty {
                     validationHint("Please add at least one photo.")
                 }
 
@@ -121,9 +124,9 @@ struct UploadFindView: View {
                 }
 
                 // CTA
-                PrimaryCTAButton(title: "Share Your Find", enabled: vm.canSubmit) {
+                PrimaryCTAButton(title: "Share Your Find", enabled: canSubmit) {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    if !vm.canSubmit {
+                    if !canSubmit {
                         showValidation = true
                         validationText = "Please complete required fields."
                         return
@@ -144,17 +147,22 @@ struct UploadFindView: View {
                             // 2) Configure uploader with real endpoints
                             let uploader = SupabaseUploader(
                                 supabaseService: svc,
-                                backendAPIURL: "https://api.yourserver.com", // TODO: Replace with AppConfig.apiBaseURL
+                                backendAPIURL: "https://api.swoopy.eu/v1", // Use real API endpoint
                                 bearerToken: bearer
                             )
                             
-                            // 3) Submit (does not throw)
-                            await vm.submit(using: uploader)
-                            // Success - dismiss the upload form
+                            // 3) Submit with proper error handling
+                            try await submitWithDraftStore(using: uploader)
+                            
+                            // Success - clear draft, show success toast, and dismiss
+                            draftStore.clearDraft()
+                            showSuccessToast()
                             dismiss()
                         } catch {
-                            // TODO: Show error toast
-                            print("Auth/session error:", error.localizedDescription)
+                            // Show error feedback
+                            showValidation = true
+                            validationText = "Upload failed: \(error.localizedDescription)"
+                            print("Upload error:", error.localizedDescription)
                         }
                     }
                 }
@@ -175,6 +183,8 @@ struct UploadFindView: View {
             }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
+                    // Clear draft store when dismissing
+                    draftStore.clearDraft()
                     dismiss()
                 } label: {
                     Image(systemName: "xmark")
@@ -187,11 +197,6 @@ struct UploadFindView: View {
             if loc.authorization == CLAuthorizationStatus.notDetermined { loc.request() }
             Task {
                 vm.bootstrapLocation(loc.userLocation?.coordinate)
-                
-                // Add initial photo if provided
-                if let initialPhoto = initialPhoto {
-                    vm.putPhoto(initialPhoto, at: nil)
-                }
             }
         }
         .onChange(of: loc.userLocation) { _, newValue in
@@ -201,8 +206,12 @@ struct UploadFindView: View {
         // Image sources (use working camera implementations)
         .fullScreenCover(isPresented: $showCamera) {
             CameraCaptureView { image in
-                if let img = image { 
-                    vm.putPhoto(img, at: showActionForTile) 
+                if let img = image {
+                    if let index = showActionForTile, draftStore.photos.indices.contains(index) {
+                        draftStore.replacePhoto(at: index, with: img)
+                    } else if draftStore.canAddPhoto {
+                        draftStore.insertPrimary(img)
+                    }
                 }
             }
             .ignoresSafeArea(.all)
@@ -220,7 +229,11 @@ struct UploadFindView: View {
                        let data = try? await newItem.loadTransferable(type: Data.self),
                        let image = UIImage(data: data) {
                         await MainActor.run {
-                            vm.putPhoto(image, at: showActionForTile)
+                            if let index = showActionForTile, draftStore.photos.indices.contains(index) {
+                                draftStore.replacePhoto(at: index, with: image)
+                            } else if draftStore.canAddPhoto {
+                                draftStore.insertPrimary(image)
+                            }
                             selectedPhotoItem = nil
                             showPicker = false
                         }
@@ -229,14 +242,49 @@ struct UploadFindView: View {
             }
         }
     }
+    
+    // MARK: - Submit Logic
+    
+    @MainActor
+    private func submitWithDraftStore(using uploader: FindUploader) async throws {
+        guard let cond = vm.condition, let m = vm.mode, canSubmit else { 
+            throw UploadError.invalidData
+        }
+        
+        // Convert draft store photos to ImageRecords
+        let imageRecords = draftStore.photos.enumerated().map { index, image in
+            ImageRecord(
+                postId: nil,
+                url: "",
+                orderIndex: index,
+                localImage: image
+            )
+        }
+        
+        let postDraft = PostDraft(
+            images: imageRecords,
+            condition: cond,
+            mode: m,
+            description: vm.descriptionText.isEmpty ? nil : vm.descriptionText,
+            coordinate: vm.currentCoordinate
+        )
+        
+        try await uploader.uploadPostDraft(postDraft)
+    }
+    
+    private func showSuccessToast() {
+        // TODO: Implement success toast
+        // This could be integrated with a toast system or shown as an alert
+        print("✅ Post uploaded successfully!")
+    }
 
     // MARK: Sections
 
     private var photoRow: some View {
         HStack(alignment: .top, spacing: 12) {
             // Show photos + one extra empty frame (max 3 total)
-            ForEach(0..<min(vm.imageRecords.count + 1, 3), id: \.self) { idx in
-                let img = vm.imageRecords[safe: idx]?.localImage
+            ForEach(0..<min(draftStore.photos.count + 1, 3), id: \.self) { idx in
+                let img = draftStore.photo(at: idx)
                 PhotoTile(image: img, width: 110, height: 164) {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     showActionForTile = idx
@@ -269,7 +317,7 @@ struct UploadFindView: View {
         if hasImage {
             alert.addAction(UIAlertAction(title: "Remove", style: .destructive) { _ in
                 DispatchQueue.main.async {
-                    self.vm.removePhoto(at: index)
+                    self.draftStore.removePhoto(at: index)
                 }
             })
         }
@@ -367,16 +415,10 @@ struct PostDraft {
 }
 
 final class UploadFindViewModel: ObservableObject {
-    @Published var imageRecords: [ImageRecord] = []      // max 3, Supabase-ready
     @Published var condition: Condition? = .needsFixing  // default to 'Needs Fixing'
     @Published var mode: PickupMode? = .street           // default selected (street)
     @Published var wantsDescription = false
     @Published var descriptionText = "" { didSet { if descriptionText.count > 100 { descriptionText = String(descriptionText.prefix(100)) } } }
-    
-    // Computed property for backward compatibility
-    var photos: [UIImage] {
-        return imageRecords.compactMap { $0.localImage }
-    }
 
     // Map state
     @Published var camera: MapCameraPosition = .region(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
@@ -386,59 +428,7 @@ final class UploadFindViewModel: ObservableObject {
     
     private var geocodeTask: Task<Void, Never>?
 
-    var canSubmit: Bool { 
-        !imageRecords.isEmpty && condition != nil && mode != nil && currentCoordinate != nil
-    }
     var hasChosenModeOrLocation: Bool { mode != nil }
-
-    func putPhoto(_ img: UIImage, at index: Int?) {
-        let imageRecord = ImageRecord(
-            postId: nil, // Will be set when creating post
-            url: "", // Will be set after upload to Supabase storage
-            orderIndex: index ?? imageRecords.count,
-            localImage: img
-        )
-        
-        if let i = index, imageRecords.indices.contains(i) {
-            // Replace existing image
-            var updatedRecord = imageRecord
-            updatedRecord = ImageRecord(
-                postId: imageRecords[i].postId,
-                url: imageRecords[i].url,
-                orderIndex: i,
-                localImage: img
-            )
-            imageRecords[i] = updatedRecord
-        } else if imageRecords.count < 3 {
-            // Add new image
-            imageRecords.append(imageRecord)
-        }
-        
-        // Reorder indices
-        for (idx, _) in imageRecords.enumerated() {
-            imageRecords[idx] = ImageRecord(
-                postId: imageRecords[idx].postId,
-                url: imageRecords[idx].url,
-                orderIndex: idx,
-                localImage: imageRecords[idx].localImage
-            )
-        }
-    }
-    
-    func removePhoto(at index: Int) {
-        guard imageRecords.indices.contains(index) else { return }
-        imageRecords.remove(at: index)
-        
-        // Reorder remaining images
-        for (idx, _) in imageRecords.enumerated() {
-            imageRecords[idx] = ImageRecord(
-                postId: imageRecords[idx].postId,
-                url: imageRecords[idx].url,
-                orderIndex: idx,
-                localImage: imageRecords[idx].localImage
-            )
-        }
-    }
 
     func bootstrapLocation(_ user: CLLocationCoordinate2D?) {
         guard currentCoordinate == nil else { return }
@@ -478,54 +468,34 @@ final class UploadFindViewModel: ObservableObject {
         }
     }
 
-    @MainActor
-    func submit(using uploader: FindUploader) async {
-        guard let cond = condition, let m = mode, canSubmit else { return }
-        
-        let postDraft = PostDraft(
-            images: imageRecords,
-            condition: cond,
-            mode: m,
-            description: descriptionText.isEmpty ? nil : descriptionText,
-            coordinate: currentCoordinate
-        )
-        
-        try? await uploader.uploadPostDraft(postDraft)
-    }
-    
-    // Method to prepare for Supabase upload
-    func prepareForUpload() -> PostDraft? {
-        guard let cond = condition, let m = mode, canSubmit else { return nil }
-        
-        return PostDraft(
-            images: imageRecords,
-            condition: cond,
-            mode: m,
-            description: descriptionText.isEmpty ? nil : descriptionText,
-            coordinate: currentCoordinate
-        )
-    }
+}
+
+enum UploadError: Error {
+    case invalidData
+    case imageEncodingFailed
+    case networkError
+    case authenticationFailed
 }
 
 enum Condition: CaseIterable, Hashable, Identifiable {
-    case needsFixing, usable, good, likeNew
+    case needsFixing, good, excellent, likeNew
     var id: Self { self }
     var title: String {
         switch self {
         case .needsFixing: return "Needs Fixing"
-        case .usable:      return "Usable"
         case .good:        return "Good"
+        case .excellent:   return "Excellent"
         case .likeNew:     return "Like New"
         }
     }
     
-    // Backend mapping
+    // Backend mapping - matches Flask API spec
     var backendValue: String {
         switch self {
-        case .needsFixing: return "bad"
-        case .usable:      return "good"
-        case .good:        return "good"
-        case .likeNew:     return "excellent"
+        case .needsFixing: return "bad"        // "Needs Fixing" = bad
+        case .good:        return "good"       // "Good" = good
+        case .excellent:   return "excellent" // "Excellent" = excellent
+        case .likeNew:     return "excellent" // "Like New" = excellent (same as excellent)
         }
     }
 }
@@ -593,10 +563,7 @@ func approx(_ c: CLLocationCoordinate2D, meters: Double = 500) -> CLLocationCoor
     return CLLocationCoordinate2D(latitude: lat, longitude: lon)
 }
 
-// Local errors for upload operations
-enum UploadError: Error {
-    case imageEncodingFailed
-}
+
 
 // Supabase uploader with proper backend integration
 struct SupabaseUploader: FindUploader {
@@ -1064,13 +1031,4 @@ private extension Array {
 // Keep old references working
 typealias AddTrashFlow = AddTrashView
 
-// MARK: - Color Extension for Hex Support
-extension Color {
-    init(hex: UInt, alpha: Double = 1.0) {
-        self.init(.sRGB,
-                  red: Double((hex >> 16) & 0xFF) / 255.0,
-                  green: Double((hex >> 8) & 0xFF) / 255.0,
-                  blue: Double(hex & 0xFF) / 255.0,
-                  opacity: alpha)
-    }
-}
+
