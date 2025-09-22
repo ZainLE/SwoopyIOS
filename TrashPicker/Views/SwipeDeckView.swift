@@ -40,7 +40,7 @@ struct SwipeDeckView: View {
     @State private var sheetMode: ReserveSheet.Mode = .prompt
     @State private var sheetItem: CKTrashItem?
     
-    // Camera and upload flow
+    // Camera and upload flow - unified with AppTabView
     @State private var showCamera = false
     @State private var showUploadForm = false
     @State private var capturedImage: UIImage?
@@ -59,10 +59,6 @@ struct SwipeDeckView: View {
 
 
                 GeometryReader { geo in
-                    let maxWidth  = geo.size.width - 32
-                    let cardWidth = min(maxWidth, 420)
-                    let idealH    = cardWidth * 1.25   // 4:5 style
-                    let cardHeight = min(idealH, geo.size.height - 180)
 
                     ZStack {
                         if visible.isEmpty {
@@ -79,16 +75,13 @@ struct SwipeDeckView: View {
                         } else {
                             DeckStack(
                                 items: Array(visible.prefix(3)),
-                                width: cardWidth,
-                                height: cardHeight,
-                                onSwipe: { item, dir in
-                                    if dir == .right {
-                                        sheetItem = item
-                                        sheetMode = .prompt
-                                        withAnimation(.easeOut(duration: 0.18)) { showReserveSheet = true }
-                                    } else {
-                                        hidden.insert(item.id)
-                                    }
+                                onReserve: { item in
+                                    sheetItem = item
+                                    sheetMode = .prompt
+                                    withAnimation(.easeOut(duration: 0.18)) { showReserveSheet = true }
+                                },
+                                onPass: { item in
+                                    hidden.insert(item.id)
                                 }
                             )
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -164,11 +157,17 @@ struct SwipeDeckView: View {
                     }
                 }
                 .ignoresSafeArea(.all)
+                .background(Color.black)
             }
             .fullScreenCover(isPresented: $showUploadForm) {
                 NavigationStack {
                     UploadFindView(initialPhoto: capturedImage)
+                        .environmentObject(svc)
                         .environmentObject(loc)
+                }
+                .onDisappear {
+                    // Clean up after upload form dismisses
+                    capturedImage = nil
                 }
             }
             .fullScreenCover(isPresented: $showFeedMap) {
@@ -274,16 +273,18 @@ extension SwipeDeckView {
     
     private struct DeckStack: View {
         let items: [CKTrashItem]
-        let width: CGFloat
-        let height: CGFloat
-        var onSwipe: (CKTrashItem, SwipeCard.Direction) -> Void
+        var onReserve: (CKTrashItem) -> Void
+        var onPass: (CKTrashItem) -> Void
         
         var body: some View {
             ZStack {
                 ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
-                    SwipeCard(item: item, width: width, height: height) { dir in
-                        onSwipe(item, dir)
-                    }
+                    FeedCard(
+                        item: item,
+                        onReserve: { onReserve(item) },
+                        onPass: { onPass(item) },
+                        isTopCard: idx == 0 // Only the first card (top card) shows buttons
+                    )
                     .zIndex(Double(100 - idx))
                     .scaleEffect(1 - CGFloat(idx) * 0.03)
                     .offset(y: CGFloat(idx) * 14)
@@ -298,140 +299,6 @@ extension SwipeDeckView {
         }
     }
     
-    //
-    // MARK: - Single swipeable card
-    //
-    
-    private struct SwipeCard: View {
-        enum Direction { case left, right }
-        
-        let item: CKTrashItem
-        let width: CGFloat
-        let height: CGFloat
-        var onSwipe: (Direction) -> Void
-        
-        @State private var drag: CGSize = .zero
-        @State private var dragging = false
-        
-        var body: some View {
-            ZStack {
-                RoundedRectangle(cornerRadius: 22)
-                    .fill(Color(.systemBackground))
-                    .frame(width: width, height: height)
-                    .shadow(color: .black.opacity(0.10), radius: 8, y: 5)
-                
-                // Photo
-                if let url = item.photoURL as? URL {
-                    DownsampledImage(url: url, maxDimension: max(width, height))
-                        .scaledToFill()
-                        .frame(width: width, height: height)
-                        .clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: 22))
-                } else if let urlString = item.photoURL as? String {
-                    DownsampledImage(urlString: urlString, maxDimension: max(width, height))
-                        .scaledToFill()
-                        .frame(width: width, height: height)
-                        .clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: 22))
-                } else {
-                    RoundedRectangle(cornerRadius: 22)
-                        .fill(.secondary.opacity(0.15))
-                        .frame(width: width, height: height)
-                }
-                
-                // Title/time with subtle top gradient
-                VStack {
-                    HStack {
-                        Text(item.title)
-                            .font(.headline.weight(.semibold))
-                            .lineLimit(1)
-                            .shadow(radius: 2)
-                        Spacer()
-                        Text(item.createdAt, style: .time)
-                            .font(.caption)
-                            .opacity(0.95)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 14)
-                    .foregroundStyle(.white)
-                    .background(
-                        LinearGradient(colors: [Color.black.opacity(0.45), .clear],
-                                       startPoint: .top, endPoint: .bottom)
-                        .frame(height: 70)
-                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                        .frame(maxHeight: .infinity, alignment: .top)
-                    )
-                    Spacer()
-                }
-                .frame(width: width, height: height)
-                
-                // Bottom chips + actions
-                VStack(spacing: 10) {
-                    Spacer()
-                    HStack {
-                        Label(item.city, systemImage: "mappin.and.ellipse")
-                            .font(.callout.weight(.semibold))
-                            .padding(.horizontal, 10).padding(.vertical, 6)
-                            .background(.thinMaterial, in: Capsule())
-                            .foregroundStyle(.white)
-                        
-                        Spacer()
-                        
-                        Text("Interested: \(item.interestedCount)")
-                            .font(.caption2).padding(.horizontal, 10).padding(.vertical, 6)
-                            .background(.thinMaterial, in: Capsule())
-                            .foregroundStyle(.white)
-                    }
-                    HStack {
-                        ActionCircle(system: "xmark") { swipe(.left) }
-                        Spacer()
-                        ActionCircle(system: "heart.fill") { swipe(.right) }
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 14)
-                .frame(width: width, height: height)
-            }
-            .offset(drag)
-            .rotationEffect(.degrees(Double(drag.width / 18)))
-            .gesture(
-                DragGesture(minimumDistance: 8)
-                    .onChanged { v in dragging = true; drag = v.translation }
-                    .onEnded { v in
-                        dragging = false
-                        let t: CGFloat = 115
-                        if v.translation.width > t { swipe(.right) }
-                        else if v.translation.width < -t { swipe(.left) }
-                        else { withAnimation(.easeOut(duration: 0.18)) { drag = .zero } }
-                    }
-            )
-            .animation(.easeOut(duration: 0.18), value: drag)
-        }
-        
-        private func swipe(_ dir: Direction) {
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            withAnimation(.easeOut(duration: 0.18)) {
-                drag = CGSize(width: dir == .right ? 900 : -900, height: 0)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) { onSwipe(dir) }
-        }
-    }
-    
-    private struct ActionCircle: View {
-        let system: String
-        var action: () -> Void
-        var body: some View {
-            Button(action: action) {
-                Image(systemName: system)
-                    .font(.title2.weight(.semibold))
-                    .frame(width: 56, height: 56)
-                    .background(Color.white.opacity(0.96))
-                    .foregroundStyle(.black)
-                    .clipShape(Circle())
-                    .shadow(radius: 4)
-            }
-        }
-    }
     
     private struct GlassSegmented: View {
         @Binding var selection: SwipeDeckView.SegTab

@@ -7,6 +7,7 @@ struct SystemGlassTabsWithFab: View {
 
     @State private var tab = 0
     @State private var showCamera = false
+    @State private var showUploadForm = false
     @State private var capturedImage: UIImage?
 
     // App green
@@ -48,33 +49,35 @@ struct SystemGlassTabsWithFab: View {
         }
         .ignoresSafeArea(edges: .bottom)
 
-        // Camera → Upload flow (minimal example)
-        .fullScreenCover(isPresented: $showCamera, onDismiss: {
-            if capturedImage != nil { showUploadForm() }
-        }) {
-            SystemCamera { image in
-                capturedImage = image
-                showCamera = false
+        // Camera → Upload flow (unified with AppTabView)
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraCaptureView { image in
+                if let image = image {
+                    capturedImage = image
+                    showUploadForm = true
+                }
             }
-            .ignoresSafeArea()
+            .ignoresSafeArea(.all)
+            .background(Color.black)
         }
-    }
-
-    private func showUploadForm() {
-        guard let img = capturedImage else { return }
-        NotificationCenter.default.post(name: .prefillUploadImage, object: img)
-
-        let host = UIHostingController(rootView:
-            AddTrashFlow { _ in
-                // Optional refresh after post
+        .fullScreenCover(isPresented: $showUploadForm) {
+            NavigationStack {
+                UploadFindView(initialPhoto: capturedImage)
+                    .environmentObject(svc)
+                    .environmentObject(loc)
+            }
+            .onDisappear {
+                // Clean up after upload form dismisses
+                capturedImage = nil
+                // Refresh feed after upload
                 if let c = loc.userLocation?.coordinate {
                     Task { await svc.fetchFeed(near: c) }
                 }
-                UIApplication.shared.topMostController()?.dismiss(animated: true)
             }
-        )
-        UIApplication.shared.topMostController()?.present(host, animated: true)
+        }
     }
+
+    // Removed showUploadForm() - now using unified fullScreenCover approach
 }
 
 // MARK: - Glassy FAB circle

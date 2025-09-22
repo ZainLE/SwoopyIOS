@@ -7,14 +7,33 @@ import CoreLocation
 
 struct UploadFindView: View {
     @EnvironmentObject var loc: LocationManager
+    @EnvironmentObject var svc: SupabaseService
     @Environment(\.dismiss) private var dismiss
     
     let initialPhoto: UIImage?
     @StateObject private var vm = UploadFindViewModel()
     
+    // Static flag to ensure appearance is only configured once
+    private static var hasConfiguredAppearance = false
+    
+    // Configure segmented control appearance once
     init(initialPhoto: UIImage? = nil) {
         self.initialPhoto = initialPhoto
+        
+        // Configure appearance only once globally
+        if !Self.hasConfiguredAppearance {
+            UISegmentedControl.appearance().selectedSegmentTintColor = UIColor(Color.brandDark)
+            if #available(iOS 13.0, *) {
+                UISegmentedControl.appearance().backgroundColor = UIColor.secondarySystemBackground
+            } else {
+                UISegmentedControl.appearance().backgroundColor = UIColor.white
+            }
+            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.white, .font: UIFont.systemFont(ofSize: 16, weight: .medium)], for: .selected)
+            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.label, .font: UIFont.systemFont(ofSize: 16, weight: .medium)], for: .normal)
+            Self.hasConfiguredAppearance = true
+        }
     }
+    
     @State private var showActionForTile: Int? = nil     // which tile (0..2)
     @State private var showCamera = false
     @State private var showPicker = false
@@ -109,7 +128,35 @@ struct UploadFindView: View {
                         validationText = "Please complete required fields."
                         return
                     }
-                    Task { await vm.submit(using: MockUploader()) }
+                    
+                    Task {
+                        do {
+                            // 1) Read access token from Supabase session (session access can throw)
+                            let session = try await svc.client.auth.session
+                            let bearer = session.accessToken
+                            
+                            guard !bearer.isEmpty else {
+                                // TODO: Show error toast
+                                print("No access token")
+                                return
+                            }
+                            
+                            // 2) Configure uploader with real endpoints
+                            let uploader = SupabaseUploader(
+                                supabaseService: svc,
+                                backendAPIURL: "https://api.yourserver.com", // TODO: Replace with AppConfig.apiBaseURL
+                                bearerToken: bearer
+                            )
+                            
+                            // 3) Submit (does not throw)
+                            await vm.submit(using: uploader)
+                            // Success - dismiss the upload form
+                            dismiss()
+                        } catch {
+                            // TODO: Show error toast
+                            print("Auth/session error:", error.localizedDescription)
+                        }
+                    }
                 }
                 .padding(.top, 8)
             }
@@ -137,7 +184,7 @@ struct UploadFindView: View {
             }
         }
         .onAppear {
-            if loc.authorization == .notDetermined { loc.request() }
+            if loc.authorization == CLAuthorizationStatus.notDetermined { loc.request() }
             Task {
                 vm.bootstrapLocation(loc.userLocation?.coordinate)
                 
@@ -150,12 +197,7 @@ struct UploadFindView: View {
         .onChange(of: loc.userLocation) { _, newValue in
             vm.bootstrapLocation(newValue?.coordinate)
         }
-        // Prefill from camera notification (FAB flow)
-        .onReceive(NotificationCenter.default.publisher(for: .prefillUploadImage)) { note in
-            if let img = note.object as? UIImage, vm.imageRecords.isEmpty {
-                vm.putPhoto(img, at: nil)
-            }
-        }
+        // Note: Notification-based prefill removed - now using direct initialPhoto parameter
         // Image sources (use working camera implementations)
         .fullScreenCover(isPresented: $showCamera) {
             CameraCaptureView { image in
@@ -344,7 +386,9 @@ final class UploadFindViewModel: ObservableObject {
     
     private var geocodeTask: Task<Void, Never>?
 
-    var canSubmit: Bool { !imageRecords.isEmpty && condition != nil && mode != nil }
+    var canSubmit: Bool { 
+        !imageRecords.isEmpty && condition != nil && mode != nil && currentCoordinate != nil
+    }
     var hasChosenModeOrLocation: Bool { mode != nil }
 
     func putPhoto(_ img: UIImage, at index: Int?) {
@@ -538,9 +582,25 @@ struct BackendImageData: Codable {
     let order_index: Int
 }
 
+// Helper function for 500m coordinate rounding
+func approx(_ c: CLLocationCoordinate2D, meters: Double = 500) -> CLLocationCoordinate2D {
+    let latMetersPerDeg = 111_320.0
+    let lonMetersPerDeg = 111_320.0 * cos(c.latitude * .pi / 180)
+    let dLat = meters / latMetersPerDeg
+    let dLon = meters / max(1, lonMetersPerDeg)
+    let lat = (c.latitude / dLat).rounded() * dLat
+    let lon = (c.longitude / dLon).rounded() * dLon
+    return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+}
+
+// Local errors for upload operations
+enum UploadError: Error {
+    case imageEncodingFailed
+}
+
 // Supabase uploader with proper backend integration
 struct SupabaseUploader: FindUploader {
-    let supabaseStorageURL: String
+    let supabaseService: SupabaseService
     let backendAPIURL: String
     let bearerToken: String
     
@@ -580,24 +640,40 @@ struct SupabaseUploader: FindUploader {
     }
     
     private func uploadImageToSupabaseStorage(_ image: UIImage, index: Int) async throws -> String {
-        // TODO: Implement Supabase Storage upload
-        // 1. Convert UIImage to Data
-        // 2. Upload to Supabase Storage bucket
-        // 3. Return public URL
-        return "https://your-supabase-storage.com/image_\(index).jpg"
+        // 1) JPEG encode
+        guard let data = image.jpegData(compressionQuality: 0.85) else {
+            throw UploadError.imageEncodingFailed
+        }
+        
+        // 2) Generate unique filename
+        let filename = "posts/\(UUID().uuidString)_\(index).jpg"
+        
+        // 3) Upload to Supabase Storage
+        // TODO: Replace with actual Supabase Storage implementation
+        // Example:
+        // let result = try await supabaseService.client.storage
+        //     .from("images")
+        //     .upload(path: filename, file: data)
+        // 
+        // let publicURL = try await supabaseService.client.storage
+        //     .from("images")
+        //     .getPublicURL(path: filename)
+        
+        // TEMP: Return placeholder until real implementation
+        return "https://YOUR-SUPABASE-STORAGE/public/\(filename)"
     }
     
     private func prepareLocationData(_ draft: PostDraft) -> (exact: String?, approx: String?) {
-        guard let coord = draft.coordinate else { return (nil, nil) }
-        
-        let pointString = "POINT(\(coord.longitude) \(coord.latitude))"
+        guard let c = draft.coordinate else { return (nil, nil) }
         
         switch draft.mode {
         case .street:
-            return (exact: pointString, approx: nil)
+            let wkt = "POINT(\(c.longitude) \(c.latitude))"
+            return (exact: wkt, approx: nil)
         case .home:
-            // For home mode, use approximate location (could add 500m rounding logic here)
-            return (exact: nil, approx: pointString)
+            let a = approx(c, meters: 500)
+            let wkt = "POINT(\(a.longitude) \(a.latitude))"
+            return (exact: nil, approx: wkt)
         }
     }
     
@@ -683,7 +759,7 @@ private struct InlineUploadMap: View {
                 .padding(10)
             }
             .task {
-                if loc.authorization == .notDetermined { loc.request() }
+                if loc.authorization == CLAuthorizationStatus.notDetermined { loc.request() }
                 let center = loc.userLocation?.coordinate ?? selectedCoord ?? fallback
                 selectedCoord = center
                 camera = .region(.init(center: center, span: .init(latitudeDelta: 0.01, longitudeDelta: 0.01)))
@@ -767,13 +843,6 @@ private struct ConditionSegmentedPicker: View {
         .pickerStyle(.segmented)
         .frame(height: 50)
         .background(Color.clear)
-        .onAppear {
-            // Style the segmented control with white background and proper text colors
-            UISegmentedControl.appearance().backgroundColor = UIColor.white
-            UISegmentedControl.appearance().selectedSegmentTintColor = UIColor(Color.brandDark)
-            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.white, .font: UIFont.systemFont(ofSize: 16, weight: .medium)], for: .selected)
-            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.black, .font: UIFont.systemFont(ofSize: 16, weight: .medium)], for: .normal)
-        }
     }
 }
 
@@ -789,13 +858,6 @@ private struct PickupModeSegmentedPicker: View {
         .pickerStyle(.segmented)
         .frame(height: 50)
         .background(Color.clear)
-        .onAppear {
-            // Style the segmented control with white background and proper text colors
-            UISegmentedControl.appearance().backgroundColor = UIColor.white
-            UISegmentedControl.appearance().selectedSegmentTintColor = UIColor(Color.brandDark)
-            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.white, .font: UIFont.systemFont(ofSize: 16, weight: .medium)], for: .selected)
-            UISegmentedControl.appearance().setTitleTextAttributes([.foregroundColor: UIColor.black, .font: UIFont.systemFont(ofSize: 16, weight: .medium)], for: .normal)
-        }
     }
 }
 

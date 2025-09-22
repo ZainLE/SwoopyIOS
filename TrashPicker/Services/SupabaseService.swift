@@ -79,11 +79,21 @@ final class SupabaseService: NSObject, ObservableObject {
     /// Google OAuth (PKCE). Make sure `swoopy://auth/callback` is in Supabase Redirect URLs.
     @MainActor
     func signInWithGoogle() async throws {
-        let redirect = URL(string: "swoopy://auth/callback")!
-        _ = try await client.auth.signInWithOAuth(provider: Supabase.Provider.google, redirectTo: redirect)
+        let redirect = URL(string: "https://swoopy.eu/auth/v1/callback")!
+        
+        // Generate a random state parameter for security
+        let state = UUID().uuidString
+        
+        // Use Supabase Swift's direct OAuth API (no AuthOAuthConfiguration type)
+        _ = try await client.auth.signInWithOAuth(
+            provider: .google,
+            redirectTo: redirect,
+            scopes: nil,
+            queryParams: [("state", state)]
+        )
     }
 
-    /// Native Apple Sign-In (no Apple client secret needed on iOS).
+    /// Native Apple Sign-In (no Apple client secret needed on iOS).K
     func signInWithApple(on window: UIWindow?) async throws {
         let nonce = Self.randomNonceString()
         let request = ASAuthorizationAppleIDProvider().createRequest()
@@ -105,7 +115,7 @@ final class SupabaseService: NSObject, ObservableObject {
     }
 
     func signInWithEmailMagicLink(_ email: String) async throws {
-        let redirect = URL(string: "swoopy://auth/callback")!
+        let redirect = URL(string: "https://swoopy.eu/auth/v1/callback")!
         try await client.auth.signInWithOTP(email: email, redirectTo: redirect)
     }
 

@@ -55,26 +55,28 @@ struct AppTabView: View {
         }
         
         // Camera → Upload flow
-        .fullScreenCover(isPresented: $showCamera, onDismiss: {
-            if capturedImage != nil { 
-                showUpload = true 
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraCaptureView { image in
+                if let image = image {
+                    capturedImage = image
+                    showUpload = true
+                }
             }
-        }) {
-            SystemCamera { image in
-                capturedImage = image
-                showCamera = false
-            }
-            .ignoresSafeArea()
+            .ignoresSafeArea(.all)
+            .background(Color.black)
         }
         .fullScreenCover(isPresented: $showUpload) {
-            AddTrashFlow(initialImages: capturedImage.map { [$0] } ?? []) { posted in
-                showUpload = false
+            NavigationStack {
+                UploadFindView(initialPhoto: capturedImage)
+                    .environmentObject(svc)
+                    .environmentObject(loc)
+            }
+            .onDisappear {
+                // Clean up after upload form dismisses
                 capturedImage = nil
-                if posted {
-                    router.selectedTab = .feed
-                    if let c = loc.userLocation?.coordinate {
-                        Task { await svc.fetchFeed(near: c) }
-                    }
+                router.selectedTab = .feed
+                if let c = loc.userLocation?.coordinate {
+                    Task { await svc.fetchFeed(near: c) }
                 }
             }
         }
