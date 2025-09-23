@@ -691,9 +691,24 @@ extension SwipeDeckView {
                         }
                         .buttonStyle(.plain)
                     }
+                    
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button(action: recenter) {
+                            Image(systemName: "location.north.line.fill")
+                                .font(.title3.weight(.semibold))
+                                .foregroundColor(Color.brandDark)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Center on my location")
+                    }
                 }
                 .task {
-                    if loc.authorization == .notDetermined { loc.request() }
+                    // Request location permission if needed
+                    if loc.authorization == .notDetermined { 
+                        loc.request() 
+                    }
+                    
+                    // Set initial camera position
                     if let c = loc.userLocation?.coordinate {
                         cameraPosition = .region(
                             MKCoordinateRegion(
@@ -701,6 +716,35 @@ extension SwipeDeckView {
                                 span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
                             )
                         )
+                    } else {
+                        // Fallback to Barcelona if no location available
+                        cameraPosition = .region(
+                            MKCoordinateRegion(
+                                center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
+                                span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                            )
+                        )
+                    }
+                    
+                    // Fetch feed data for the current location
+                    if let c = loc.userLocation?.coordinate {
+                        await svc.fetchFeed(near: c)
+                    }
+                }
+                .onChange(of: loc.userLocation) { _, newLocation in
+                    // Update camera position when location changes
+                    if let coordinate = newLocation?.coordinate {
+                        Task { @MainActor in
+                            // Only update if we don't already have a good position
+                            if case .automatic = cameraPosition {
+                                cameraPosition = .region(
+                                    MKCoordinateRegion(
+                                        center: coordinate,
+                                        span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                                    )
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -710,16 +754,36 @@ extension SwipeDeckView {
             // First request location permission if needed
             if loc.authorization == .notDetermined {
                 loc.request()
+                return
             }
             
-            // Try to get current location
+            // Check if we have permission
+            guard loc.authorization == .authorizedWhenInUse || loc.authorization == .authorizedAlways else {
+                print("Location permission not granted")
+                return
+            }
+            
+            // If we already have a location, use it immediately
+            if let currentLocation = loc.userLocation?.coordinate {
+                withAnimation(.easeInOut(duration: 0.8)) {
+                    cameraPosition = .region(
+                        MKCoordinateRegion(
+                            center: currentLocation,
+                            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                        )
+                    )
+                }
+                return
+            }
+            
+            // Otherwise request a fresh location
             loc.requestOnce { coordinate in
                 guard let coordinate = coordinate else {
                     print("Failed to get current location")
                     return
                 }
                 
-                DispatchQueue.main.async {
+                Task { @MainActor in
                     withAnimation(.easeInOut(duration: 0.8)) {
                         self.cameraPosition = .region(
                             MKCoordinateRegion(

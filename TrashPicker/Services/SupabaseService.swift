@@ -32,6 +32,33 @@ final class SupabaseService: NSObject, ObservableObject {
     @Published private(set) var session: Session?
     @Published private(set) var isAuthenticated: Bool = false
     @Published var didCheckSession = false
+    
+    // User profile computed properties
+    var displayName: String {
+        session?.user.userMetadata["full_name"]?.description 
+        ?? session?.user.userMetadata["name"]?.description 
+        ?? "Your Name"
+    }
+    
+    var userEmail: String {
+        session?.user.email ?? "No email"
+    }
+    
+    var memberSince: Date? {
+        session?.user.createdAt
+    }
+    
+    var accountAge: String {
+        guard let createdAt = memberSince else { return "Unknown" }
+        let days = Calendar.current.dateComponents([.day], from: createdAt, to: Date()).day ?? 0
+        
+        if days < 30 {
+            return "\(days) days"
+        } else {
+            let months = days / 30
+            return "\(months) months"
+        }
+    }
 
     // Supabase client with OAuth callback configuration
     private static let callbackURL = URL(string: "swoopy://auth-callback")!
@@ -151,6 +178,61 @@ final class SupabaseService: NSObject, ObservableObject {
         KeychainStore.clearSession()
         applyAuthSession(nil)
         phase = .signedOut
+    }
+    
+    func deleteAccount() async throws {
+        guard let accessToken = session?.accessToken else {
+            throw SimpleError(message: "No valid session")
+        }
+        
+        // Call the Flask endpoint to delete account
+        guard let url = URL(string: "\(SupabaseConfig.url.absoluteString.replacingOccurrences(of: "/rest/v1", with: ""))/account/delete") else {
+            throw SimpleError(message: "Invalid URL")
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            if let httpResponse = response as? HTTPURLResponse {
+                switch httpResponse.statusCode {
+                case 200:
+                    // Success - account deleted
+                    break
+                case 409:
+                    // Already deleted - treat as success
+                    break
+                case 401, 403:
+                    throw SimpleError(message: "Authentication failed")
+                default:
+                    if let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let message = errorData["message"] as? String {
+                        throw SimpleError(message: message)
+                    } else {
+                        throw SimpleError(message: "Failed to delete account")
+                    }
+                }
+            }
+        } catch let error as SimpleError {
+            throw error
+        } catch {
+            throw SimpleError(message: "Network error: \(error.localizedDescription)")
+        }
+        
+        // Clear local session and data
+        KeychainStore.clearSession()
+        applyAuthSession(nil)
+        phase = .signedOut
+        
+        // Clear local data
+        feed = []
+        myUploads = []
+        myReservations = []
+        pending = []
     }
     
     @MainActor
