@@ -202,10 +202,10 @@ struct AuthView: View {
             .padding(.top, 6)
         }
         .tint(Color(AppColor.darkGreen))
-        .onChange(of: email) { _ in recalcSubmit() }
-        .onChange(of: password) { _ in recalcSubmit() }
-        .onChange(of: confirm) { _ in recalcSubmit() }
-        .onChange(of: mode) { _ in
+        .onChange(of: email) { recalcSubmit() }
+        .onChange(of: password) { recalcSubmit() }
+        .onChange(of: confirm) { recalcSubmit() }
+        .onChange(of: mode) {
             // reset cross-mode state, then recalc
             email = ""; password = ""; confirm = ""
             errorMessage = nil; focus = nil

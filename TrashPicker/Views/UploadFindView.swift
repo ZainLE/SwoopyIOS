@@ -38,6 +38,7 @@ struct UploadFindView: View {
     @State private var showValidation = false
     @State private var validationText = ""
     @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var isPosting = false
 
     // Layout constants
     private let sidePadding: CGFloat = 20
@@ -133,26 +134,12 @@ struct UploadFindView: View {
                     }
                     
                     Task {
+                        // Start loading state
+                        isPosting = true
+                        defer { isPosting = false }
+                        
                         do {
-                            // 1) Read access token from Supabase session (session access can throw)
-                            let session = try await svc.client.auth.session
-                            let bearer = session.accessToken
-                            
-                            guard !bearer.isEmpty else {
-                                // TODO: Show error toast
-                                print("No access token")
-                                return
-                            }
-                            
-                            // 2) Configure uploader with real endpoints
-                            let uploader = SupabaseUploader(
-                                supabaseService: svc,
-                                backendAPIURL: "https://api.swoopy.eu/v1", // Use real API endpoint
-                                bearerToken: bearer
-                            )
-                            
-                            // 3) Submit with proper error handling
-                            try await submitWithDraftStore(using: uploader)
+                            try await uploadWithRetry()
                             
                             // Success - clear draft, show success toast, and dismiss
                             draftStore.clearDraft()
@@ -161,7 +148,7 @@ struct UploadFindView: View {
                         } catch {
                             // Show error feedback
                             showValidation = true
-                            validationText = "Upload failed: \(error.localizedDescription)"
+                            validationText = "Upload failed. Please try again."
                             print("Upload error:", error.localizedDescription)
                         }
                     }
@@ -272,9 +259,53 @@ struct UploadFindView: View {
         try await uploader.uploadPostDraft(postDraft)
     }
     
+    private func uploadWithRetry() async throws {
+        // First attempt
+        guard let bearer = svc.currentAccessTokenOrNil() else {
+            throw UploadError.authenticationFailed
+        }
+        
+        let uploader = SupabaseUploader(
+            supabaseService: svc,
+            backendAPIURL: "https://swoopy.eu",
+            bearerToken: bearer
+        )
+        
+        do {
+            try await submitWithDraftStore(using: uploader)
+        } catch {
+            // Check if it's a 401 (unauthorized) error
+            if let urlError = error as? URLError,
+               urlError.code == .badServerResponse {
+                // Try to refresh session and retry once
+                do {
+                    try await svc.client.auth.refreshSession()
+                    guard let newBearer = svc.currentAccessTokenOrNil() else {
+                        throw UploadError.authenticationFailed
+                    }
+                    
+                    let retryUploader = SupabaseUploader(
+                        supabaseService: svc,
+                        backendAPIURL: "https://swoopy.eu",
+                        bearerToken: newBearer
+                    )
+                    
+                    try await submitWithDraftStore(using: retryUploader)
+                } catch {
+                    // If retry also fails, throw the original error
+                    throw error
+                }
+            } else {
+                // Not a 401, throw original error
+                throw error
+            }
+        }
+    }
+    
     private func showSuccessToast() {
-        // TODO: Implement success toast
-        // This could be integrated with a toast system or shown as an alert
+        // Trigger success haptic
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
         print("✅ Post uploaded successfully!")
     }
 
@@ -493,7 +524,7 @@ enum Condition: CaseIterable, Hashable, Identifiable {
     var backendValue: String {
         switch self {
         case .needsFixing: return "bad"        // "Needs Fixing" = bad
-        case .good:        return "good"       // "Good" = good
+        case .good:        return "good"       // "Good" = good  
         case .excellent:   return "excellent" // "Excellent" = excellent
         case .likeNew:     return "excellent" // "Like New" = excellent (same as excellent)
         }
@@ -578,8 +609,8 @@ struct SupabaseUploader: FindUploader {
         for (index, imageRecord) in draft.images.enumerated() {
             guard let image = imageRecord.localImage else { continue }
             
-            // Upload to Supabase Storage (implement your storage upload logic)
-            let publicURL = try await uploadImageToSupabaseStorage(image, index: index)
+            // Upload to Supabase Storage with draft ID for consistent paths
+            let publicURL = try await uploadImageToSupabaseStorage(image, draftId: draft.id, index: index)
             
             uploadedImages.append(BackendImageData(
                 url: publicURL,
@@ -606,28 +637,50 @@ struct SupabaseUploader: FindUploader {
         try await postToBackend(backendRequest)
     }
     
-    private func uploadImageToSupabaseStorage(_ image: UIImage, index: Int) async throws -> String {
-        // 1) JPEG encode
-        guard let data = image.jpegData(compressionQuality: 0.85) else {
+    private func uploadImageToSupabaseStorage(_ image: UIImage, draftId: UUID, index: Int) async throws -> String {
+        // 1) Resize and compress image
+        let resizedImage = resizeImage(image, maxWidth: 1600)
+        guard let data = resizedImage.jpegData(compressionQuality: 0.85) else {
             throw UploadError.imageEncodingFailed
         }
         
-        // 2) Generate unique filename
-        let filename = "posts/\(UUID().uuidString)_\(index).jpg"
+        // 2) Get user ID from Supabase session
+        let session = try await supabaseService.client.auth.session
+        let userId = session.user.id
         
-        // 3) Upload to Supabase Storage
-        // TODO: Replace with actual Supabase Storage implementation
-        // Example:
-        // let result = try await supabaseService.client.storage
-        //     .from("images")
-        //     .upload(path: filename, file: data)
-        // 
-        // let publicURL = try await supabaseService.client.storage
-        //     .from("images")
-        //     .getPublicURL(path: filename)
+        // 3) Generate storage path: posts/<userId>/<draftId>/<index>.jpg
+        let filename = "posts/\(userId)/\(draftId.uuidString)/\(index).jpg"
         
-        // TEMP: Return placeholder until real implementation
-        return "https://YOUR-SUPABASE-STORAGE/public/\(filename)"
+        // 4) Upload to Supabase Storage bucket "post-content"
+        _ = try await supabaseService.client.storage
+            .from("post-content")
+            .upload(path: filename, file: data, options: .init(upsert: true))
+        
+        // 5) Get public URL (assuming public bucket)
+        let publicURL = try supabaseService.client.storage
+            .from("post-content")
+            .getPublicURL(path: filename)
+        
+        return publicURL.absoluteString
+    }
+    
+    private func resizeImage(_ image: UIImage, maxWidth: CGFloat) -> UIImage {
+        let size = image.size
+        if size.width <= maxWidth {
+            return image
+        }
+        
+        let aspectRatio = size.height / size.width
+        let newWidth = maxWidth
+        let newHeight = newWidth * aspectRatio
+        let newSize = CGSize(width: newWidth, height: newHeight)
+        
+        UIGraphicsBeginImageContextWithOptions(newSize, false, 0.0)
+        image.draw(in: CGRect(origin: .zero, size: newSize))
+        let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        
+        return resizedImage ?? image
     }
     
     private func prepareLocationData(_ draft: PostDraft) -> (exact: String?, approx: String?) {
@@ -1030,5 +1083,6 @@ private extension Array {
 
 // Keep old references working
 typealias AddTrashFlow = AddTrashView
+
 
 

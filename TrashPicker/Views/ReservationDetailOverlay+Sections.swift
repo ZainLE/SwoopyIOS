@@ -35,7 +35,7 @@ extension ReservationDetailOverlay {
                 HStack(spacing: 8) {
                     ForEach(0..<reservation.post.images.count, id: \.self) { index in
                         Circle()
-                            .fill(index == currentImageIndex ? primaryColor : primaryColor.opacity(0.35))
+                            .fill(index == currentImageIndex ? Color.accentColor : Color.accentColor.opacity(0.35))
                             .frame(width: 8, height: 8)
                     }
                 }
@@ -91,7 +91,7 @@ extension ReservationDetailOverlay {
             // Line 2: Posted time (12pt Regular per spec)
             Text("Posted \(formatRelativeTime(reservation.reservation.requestedAt)) ago")
                 .font(.system(size: 12, weight: .regular))
-                .foregroundColor(mutedColor)
+                .foregroundColor(.secondary)
         }
     }
     
@@ -142,7 +142,7 @@ extension ReservationDetailOverlay {
             case .home:
                 Text("Home listings keep addresses private. You'll get a location and confirm details directly from the owner.")
                     .font(.system(size: 14, weight: .regular))
-                    .foregroundColor(mutedColor)
+                    .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -155,12 +155,12 @@ extension ReservationDetailOverlay {
         HStack(spacing: 12) {
             // Avatar
             RoundedRectangle(cornerRadius: 8)
-                .fill(primaryColor.opacity(0.15))
+                .fill(Color.accentColor.opacity(0.15))
                 .frame(width: 40, height: 40)
                 .overlay(
                     Text(String(reservation.post.owner.name.prefix(1)))
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(primaryColor)
+                        .foregroundColor(.accentColor)
                 )
             
             VStack(alignment: .leading, spacing: 2) {
@@ -178,12 +178,12 @@ extension ReservationDetailOverlay {
             Spacer()
             
             if let pickupsCount = reservation.post.owner.pickupsCount {
-                Text("\(pickupsCount) Pickups")
+                Text("Condition: \(conditionText)")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(.white)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(primaryColor)
+                    .background(Color.accentColor)
                     .clipShape(Capsule())
             }
         }
@@ -203,7 +203,7 @@ extension ReservationDetailOverlay {
                         .frame(height: 52)
                         .frame(maxWidth: .infinity)
                 }
-                .background(primaryColor)
+                .background(Color.accentColor)
                 .clipShape(RoundedRectangle(cornerRadius: 26))
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
@@ -215,7 +215,7 @@ extension ReservationDetailOverlay {
                         .frame(height: 52)
                         .frame(maxWidth: .infinity)
                 }
-                .background(dangerColor)
+                .background(Color.red)
                 .clipShape(RoundedRectangle(cornerRadius: 26))
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
@@ -223,11 +223,11 @@ extension ReservationDetailOverlay {
                 Button(action: onDirections) {
                     Text("Directions")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(primaryColor)
+                        .foregroundColor(.accentColor)
                         .frame(height: 52)
                         .frame(maxWidth: .infinity)
                 }
-                .background(accentColor)
+                .background(Color.accentColor.opacity(0.12))
                 .clipShape(RoundedRectangle(cornerRadius: 26))
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
@@ -242,7 +242,7 @@ extension ReservationDetailOverlay {
                         .frame(height: 52)
                         .frame(maxWidth: .infinity)
                 }
-                .background(primaryColor.opacity(0.4))
+                .background(Color.accentColor.opacity(0.4))
                 .clipShape(RoundedRectangle(cornerRadius: 26))
                 .disabled(true)
                 
@@ -253,7 +253,7 @@ extension ReservationDetailOverlay {
                         .frame(height: 52)
                         .frame(maxWidth: .infinity)
                 }
-                .background(dangerColor)
+                .background(Color.red)
                 .clipShape(RoundedRectangle(cornerRadius: 26))
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
@@ -268,7 +268,7 @@ extension ReservationDetailOverlay {
                         .frame(height: 52)
                         .frame(maxWidth: .infinity)
                 }
-                .background(primaryColor)
+                .background(Color.accentColor)
                 .clipShape(RoundedRectangle(cornerRadius: 26))
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
@@ -280,7 +280,7 @@ extension ReservationDetailOverlay {
                         .frame(height: 52)
                         .frame(maxWidth: .infinity)
                 }
-                .background(dangerColor)
+                .background(Color.red)
                 .clipShape(RoundedRectangle(cornerRadius: 26))
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
@@ -306,10 +306,14 @@ extension ReservationDetailOverlay {
         }
     }
     
-    var primaryColor: Color { Color(hex: "00513F") }
-    var accentColor: Color { Color(hex: "B4DD4E") }
-    var dangerColor: Color { Color(hex: "C44242") }
-    var mutedColor: Color { Color(hex: "656565") }
+    var conditionText: String {
+        switch reservation.post.condition {
+        case .bad: return "Needs Fixing"
+        case .good: return "Good"
+        case .excellent: return "Excellent"
+        default: return "Condition"
+        }
+    }
     
     // MARK: - Helper Methods
     

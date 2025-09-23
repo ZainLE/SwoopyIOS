@@ -2,22 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>SupabaseUrl</key>
-	<string>https://swoopy.eu</string>
-	<key>SupabaseAnonKey</key>
-	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzU4MDYwMDAwLCJleHAiOjE5MTU4MjY0MDB9.mDyOt5Wzl6x1tIyMXPRS4uDYbImVk1Jt2pXcWhBwwrc</string>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLName</key>
-			<string>swoopy</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>swoopy</string>
-			</array>
-		</dict>
-	</array>
-	<key>CFBundleIdentifier</key>
-	<string></string>
+    <key>SupabaseUrl</key>
+    <string>https://swoopy.eu</string>
+    <key>SupabaseAnonKey</key>
+    <string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzU4MDYwMDAwLCJleHAiOjE5MTU4MjY0MDB9.mDyOt5Wzl6x1tIyMXPRS4uDYbImVk1Jt2pXcWhBwwrc</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>swoopy</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>swoopy</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

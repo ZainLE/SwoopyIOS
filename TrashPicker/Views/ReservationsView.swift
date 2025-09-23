@@ -735,12 +735,16 @@ private struct ReservationCard: View {
                 Button(action: onCancel) {
                     Text("Cancel")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(primaryColor)
+                        .foregroundColor(.black)
                         .frame(height: buttonHeight)
                         .frame(maxWidth: .infinity)
                 }
-                .background(Color(.systemGray6))
+                .background(Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 29))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 29)
+                        .stroke(primaryColor, lineWidth: 2)
+                )
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
                 
@@ -774,12 +778,16 @@ private struct ReservationCard: View {
                 Button(action: onCancel) {
                     Text("Cancel")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(primaryColor)
+                        .foregroundColor(.black)
                         .frame(height: buttonHeight)
                         .frame(maxWidth: .infinity)
                 }
-                .background(Color(.systemGray6))
+                .background(Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 29))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 29)
+                        .stroke(primaryColor, lineWidth: 2)
+                )
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
             }
@@ -802,12 +810,16 @@ private struct ReservationCard: View {
                 Button(action: onCancel) {
                     Text("Cancel")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(primaryColor)
+                        .foregroundColor(.black)
                         .frame(height: buttonHeight)
                         .frame(maxWidth: .infinity)
                 }
-                .background(Color(.systemGray6))
+                .background(Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 29))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 29)
+                        .stroke(primaryColor, lineWidth: 2)
+                )
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
             }
@@ -842,11 +854,11 @@ struct ReservationDetailOverlay: View {
     @State private var timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     
     // Design tokens
-    private let dtPrimaryColor = Color(hex: "00513F")
-    private let dtAccentColor = Color(hex: "B4DD4E")
-    private let dtDangerColor = Color(hex: "C44242")
-    private let dtSuccessColor = Color(hex: "6AA54A")
-    private let dtMutedColor = Color(hex: "656565")
+    let dtPrimaryColor = Color(hex: "00513F")
+    let dtAccentColor = Color(hex: "B4DD4E")
+    let dtDangerColor = Color(hex: "C44242")
+    let dtSuccessColor = Color(hex: "6AA54A")
+    let dtMutedColor = Color(hex: "656565")
     
     init(reservation: ReservationRow, isLoading: Bool, imageTransition: Namespace.ID, onDismiss: @escaping () -> Void, onPickUp: @escaping () -> Void, onCancel: @escaping () -> Void, onDirections: @escaping () -> Void, onContact: @escaping () -> Void) {
         self.reservation = reservation
@@ -889,7 +901,9 @@ struct ReservationDetailOverlay: View {
                         }
                         .padding(.horizontal, 24) // 24pt side padding per spec
                     }
+                    .padding(.vertical, 16)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 
                 // Buttons (pinned to bottom) - aligned with image left edge
                 buttonsSection
@@ -897,12 +911,15 @@ struct ReservationDetailOverlay: View {
                     .padding(.vertical, 16)
             }
             .frame(
-                width: min(UIScreen.main.bounds.width * 0.8, 600),
-                height: UIScreen.main.bounds.height * 0.8
+                maxWidth: .infinity,
+                maxHeight: .infinity
             )
             .background(Color(.systemBackground))
             .clipShape(RoundedRectangle(cornerRadius: 28))
             .shadow(color: .black.opacity(0.12), radius: 24, x: 0, y: 8)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 40)
+            .frame(maxWidth: UIScreen.main.bounds.width * 0.8, maxHeight: UIScreen.main.bounds.height * 0.8)
             .offset(y: dragOffset.height)
             .gesture(
                 DragGesture()
@@ -922,25 +939,21 @@ struct ReservationDetailOverlay: View {
                     }
             )
             
-            // Close button with glassmorphic background
+            // Close button with glassmorphic background - positioned on top of card
             VStack {
-                HStack {
-                    Spacer()
-                    Button(action: onDismiss) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.primary)
-                            .frame(width: 32, height: 32)
-                            .background(.ultraThinMaterial, in: Circle())
-                    }
-                    .padding(.top, 16)
-                    .padding(.trailing, 20)
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(.primary)
+                        .frame(width: 36, height: 36)
+                        .background(.ultraThinMaterial, in: Circle())
                 }
+                .padding(.top, 20)
+                
                 Spacer()
             }
             .frame(
-                width: min(UIScreen.main.bounds.width * 0.8, 600),
-                height: UIScreen.main.bounds.height * 0.8
+                maxWidth: UIScreen.main.bounds.width * 0.8, maxHeight: UIScreen.main.bounds.height * 0.8
             )
         }
         .onReceive(timer) { _ in

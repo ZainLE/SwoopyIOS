@@ -47,6 +47,13 @@ final class SupabaseService: NSObject, ObservableObject {
             )
         )
     }()
+    
+    // MARK: - Helper Methods for Upload
+    
+    /// Get current access token or nil if not authenticated
+    func currentAccessTokenOrNil() -> String? {
+        return session?.accessToken
+    }
 
     private override init() {
         super.init()

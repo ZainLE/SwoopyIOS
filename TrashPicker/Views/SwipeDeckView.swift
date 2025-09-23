@@ -55,264 +55,304 @@ struct SwipeDeckView: View {
     
     // Inline sample data for design testing
     private var sampleFeedItems: [CKTrashItem] {
-        [
-            CKTrashItem(
-                id: CKRecord.ID(),
-                title: "Vintage Wooden Chair",
-                category: "Furniture",
-                photoURL: URL(string: "https://picsum.photos/400/400?random=1"),
-                coordinate: CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194),
-                city: "San Francisco",
-                createdAt: Date().addingTimeInterval(-3600),
-                expiresAt: Date().addingTimeInterval(86400 * 6),
-                status: "available",
-                reservedUntil: nil,
-                reservedBy: nil,
-                uploader: nil,
-                pickedUpAt: nil,
-                interestedCount: 3,
-                desc: "Beautiful vintage wooden chair in great condition. Perfect for a home office or dining room.",
-                condition: "good",
-                mode: "street"
-            ),
-            CKTrashItem(
-                id: CKRecord.ID(),
-                title: "Kitchen Appliances Set",
-                category: "Appliances",
-                photoURL: URL(string: "https://picsum.photos/400/400?random=2"),
-                coordinate: CLLocationCoordinate2D(latitude: 37.7849, longitude: -122.4094),
-                city: "San Francisco",
-                createdAt: Date().addingTimeInterval(-7200),
-                expiresAt: Date().addingTimeInterval(86400 * 5),
-                status: "available",
-                reservedUntil: nil,
-                reservedBy: nil,
-                uploader: nil,
-                pickedUpAt: nil,
-                interestedCount: 7,
-                desc: "Microwave, toaster, and coffee maker. All working perfectly.",
-                condition: "like new",
-                mode: "home"
-            ),
-            CKTrashItem(
-                id: CKRecord.ID(),
-                title: "Books Collection",
-                category: "Books",
-                photoURL: URL(string: "https://picsum.photos/400/400?random=3"),
-                coordinate: CLLocationCoordinate2D(latitude: 37.7649, longitude: -122.4294),
-                city: "San Francisco",
-                createdAt: Date().addingTimeInterval(-10800),
-                expiresAt: Date().addingTimeInterval(86400 * 4),
-                status: "available",
-                reservedUntil: nil,
-                reservedBy: nil,
-                uploader: nil,
-                pickedUpAt: nil,
-                interestedCount: 2,
-                desc: "Mix of fiction and non-fiction books. Great for students or book lovers.",
-                condition: "usable",
-                mode: "street"
-            ),
-            CKTrashItem(
-                id: CKRecord.ID(),
-                title: "Exercise Equipment",
-                category: "Sports",
-                photoURL: URL(string: "https://picsum.photos/400/400?random=4"),
-                coordinate: CLLocationCoordinate2D(latitude: 37.7549, longitude: -122.4394),
-                city: "San Francisco",
-                createdAt: Date().addingTimeInterval(-14400),
-                expiresAt: Date().addingTimeInterval(86400 * 3),
-                status: "available",
-                reservedUntil: nil,
-                reservedBy: nil,
-                uploader: nil,
-                pickedUpAt: nil,
-                interestedCount: 5,
-                desc: "Yoga mat, resistance bands, and dumbbells. Perfect for home workouts.",
-                condition: "needs fixing",
-                mode: "home"
-            ),
-            CKTrashItem(
-                id: CKRecord.ID(),
-                title: "Art Supplies",
-                category: "Art",
-                photoURL: URL(string: "https://picsum.photos/400/400?random=5"),
-                coordinate: CLLocationCoordinate2D(latitude: 37.7449, longitude: -122.4494),
-                city: "San Francisco",
-                createdAt: Date().addingTimeInterval(-18000),
-                expiresAt: Date().addingTimeInterval(86400 * 2),
-                status: "available",
-                reservedUntil: nil,
-                reservedBy: nil,
-                uploader: nil,
-                pickedUpAt: nil,
-                interestedCount: 1,
-                desc: "Paints, brushes, canvases, and drawing supplies. Great for artists or students.",
-                condition: "like new",
-                mode: "street"
-            )
-        ]
+        // Build items in smaller steps to help the type-checker
+        let now = Date()
+        let baseCity = "San Francisco"
+
+        // Coordinates
+        let coord1 = CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194)
+        let coord2 = CLLocationCoordinate2D(latitude: 37.7849, longitude: -122.4094)
+        let coord3 = CLLocationCoordinate2D(latitude: 37.7649, longitude: -122.4294)
+        let coord4 = CLLocationCoordinate2D(latitude: 37.7549, longitude: -122.4394)
+        let coord5 = CLLocationCoordinate2D(latitude: 37.7449, longitude: -122.4494)
+
+        // Photo URLs
+        let url1 = URL(string: "https://picsum.photos/400/400?random=1")
+        let url2 = URL(string: "https://picsum.photos/400/400?random=2")
+        let url3 = URL(string: "https://picsum.photos/400/400?random=3")
+        let url4 = URL(string: "https://picsum.photos/400/400?random=4")
+        let url5 = URL(string: "https://picsum.photos/400/400?random=5")
+
+        // Items
+        let item1 = CKTrashItem(
+            id: CKRecord.ID(),
+            title: "Vintage Wooden Chair",
+            category: "Furniture",
+            photoURL: url1,
+            coordinate: coord1,
+            city: baseCity,
+            createdAt: now.addingTimeInterval(-3600),
+            expiresAt: now.addingTimeInterval(86400 * 6),
+            status: "available",
+            reservedUntil: nil,
+            reservedBy: nil,
+            uploader: nil,
+            pickedUpAt: nil,
+            interestedCount: 3,
+            desc: "Beautiful vintage wooden chair in great condition. Perfect for a home office or dining room.",
+            condition: "good",
+            mode: "street"
+        )
+
+        let item2 = CKTrashItem(
+            id: CKRecord.ID(),
+            title: "Kitchen Appliances Set",
+            category: "Appliances",
+            photoURL: url2,
+            coordinate: coord2,
+            city: baseCity,
+            createdAt: now.addingTimeInterval(-7200),
+            expiresAt: now.addingTimeInterval(86400 * 5),
+            status: "available",
+            reservedUntil: nil,
+            reservedBy: nil,
+            uploader: nil,
+            pickedUpAt: nil,
+            interestedCount: 7,
+            desc: "Microwave, toaster, and coffee maker. All working perfectly.",
+            condition: "like new",
+            mode: "home"
+        )
+
+        let item3 = CKTrashItem(
+            id: CKRecord.ID(),
+            title: "Books Collection",
+            category: "Books",
+            photoURL: url3,
+            coordinate: coord3,
+            city: baseCity,
+            createdAt: now.addingTimeInterval(-10800),
+            expiresAt: now.addingTimeInterval(86400 * 4),
+            status: "available",
+            reservedUntil: nil,
+            reservedBy: nil,
+            uploader: nil,
+            pickedUpAt: nil,
+            interestedCount: 2,
+            desc: "Mix of fiction and non-fiction books. Great for students or book lovers.",
+            condition: "usable",
+            mode: "street"
+        )
+
+        let item4 = CKTrashItem(
+            id: CKRecord.ID(),
+            title: "Exercise Equipment",
+            category: "Sports",
+            photoURL: url4,
+            coordinate: coord4,
+            city: baseCity,
+            createdAt: now.addingTimeInterval(-14400),
+            expiresAt: now.addingTimeInterval(86400 * 3),
+            status: "available",
+            reservedUntil: nil,
+            reservedBy: nil,
+            uploader: nil,
+            pickedUpAt: nil,
+            interestedCount: 5,
+            desc: "Yoga mat, resistance bands, and dumbbells. Perfect for home workouts.",
+            condition: "needs fixing",
+            mode: "home"
+        )
+
+        let item5 = CKTrashItem(
+            id: CKRecord.ID(),
+            title: "Art Supplies",
+            category: "Art",
+            photoURL: url5,
+            coordinate: coord5,
+            city: baseCity,
+            createdAt: now.addingTimeInterval(-18000),
+            expiresAt: now.addingTimeInterval(86400 * 2),
+            status: "available",
+            reservedUntil: nil,
+            reservedBy: nil,
+            uploader: nil,
+            pickedUpAt: nil,
+            interestedCount: 1,
+            desc: "Paints, brushes, canvases, and drawing supplies. Great for artists or students.",
+            condition: "like new",
+            mode: "street"
+        )
+
+        return [item1, item2, item3, item4, item5]
     }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Logo to Segmented: 16pt spacing (handled by toolbar)
                 GlassSegmented(selection: $seg)
-                    .padding(.top, 16) // Logo → Segmented: 16pt
-                    .padding(.horizontal, 16) // chromeSidePadding
-
+                    .padding(.top, 16)
+                    .padding(.horizontal, 16)
+                
                 GeometryReader { geo in
-
-                    ZStack {
-                        if visible.isEmpty {
-                            EmptyFeedCTA(
-                                refresh: { 
-                                    Task { 
-                                        await fetchFeedBridge()
-                                        // Also clear hidden items to show refreshed content
-                                        hidden.removeAll()
-                                    } 
-                                },
-                                makePost: { handleMakePost() }
-                            )
-                        } else {
-                            VStack(spacing: 0) {
-                                // Segmented → Card: 18pt spacing
-                                DeckStack(deckState: deckState)
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                                    .padding(.top, 18)
-                                
-                                // Card → Buttons: 16pt spacing
-                                ActionBar(
-                                    deckState: deckState,
-                                    onPass: {
-                                        Task {
-                                            await handlePass()
-                                        }
-                                    },
-                                    onReserve: {
-                                        Task {
-                                            await handleReserve()
-                                        }
-                                    }
-                                )
-                                .padding(.top, 16)
-                                .padding(.bottom, 16)
-                            }
-                        }
-
-                        // Reservation sheet
-                        if showReserveSheet, let item = sheetItem {
-                            ReserveSheet(
-                                mode: sheetMode,
-                                item: item,
-                                confirm: {
-                                    Task {
-                                        try? await reserveBridge(item)
-                                        await fetchFeedBridge()
-                                        withAnimation(.easeOut(duration: 0.18)) { sheetMode = .info }
-                                    }
-                                },
-                                openMaps: {
-                                    let mi = MKMapItem(placemark: MKPlacemark(coordinate: item.coordinate))
-                                    mi.name = item.title
-                                    mi.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeTransit])
-                                },
-                                close: {
-                                    withAnimation(.easeOut(duration: 0.18)) {
-                                        showReserveSheet = false
-                                        sheetMode = .prompt
-                                    }
-                                }
-                            )
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                        }
-                    }
+                    mainContentArea
                 }
             }
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Image("SwoopyLogo")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(height: 28)
-                        .accessibilityHidden(true)
-                        .padding(.vertical, 4)
-                }
-            }
+            .toolbar { toolbarContent }
             .navigationBarTitleDisplayMode(.inline)
-            .onChange(of: seg) { _, newValue in
-                if newValue == .map {
-                    // Show map immediately
-                    showFeedMap = true
+            .onAppear { handleViewAppear() }
+            .task { await fetchFeedBridge() }
+            .onChange(of: seg) { newValue in
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                    showFeedMap = (newValue == .map)
                 }
             }
-            .onChange(of: showFeedMap) { isPresented in
-                if !isPresented {
-                    // Reset pill when map is dismissed
+            .onChange(of: showFeedMap) { newValue in
+                if !newValue {
                     withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
                         seg = .feed
                     }
                 }
             }
-            .onAppear {
-                // Initialize camera service with injected draft store
-                if cameraService == nil {
-                    cameraService = CameraService(draftStore: draftStore)
-                }
-            }
-            .task {
-                await fetchFeedBridge()
-                // CloudKit expiry/maintenance should be done inside the service layer; removed here to avoid missing-member errors.
-            }
-            .onChange(of: visible) { newVisible in
-                // Update deck state when visible items change
-                deckState.updateItems(newVisible)
-            }
-            .onChange(of: draftStore.lastCaptureTick) { _ in
-                // Show upload form when new photo is captured
-                if !draftStore.photos.isEmpty && !showUploadForm {
-                    showUploadForm = true
-                }
-            }
-            .overlay(
-                // Error toast
-                Group {
-                    if let errorMessage = deckState.errorMessage {
-                        VStack {
-                            Spacer()
-                            Text(errorMessage)
-                                .padding()
-                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-                                .padding(.horizontal)
-                                .transition(.move(edge: .bottom).combined(with: .opacity))
-                        }
-                        .animation(.easeInOut, value: deckState.errorMessage)
-                    }
-                }
-            )
-            .fullScreenCover(isPresented: $showUploadForm) {
-                NavigationStack {
-                    UploadFindView()
-                        .environmentObject(svc)
-                        .environmentObject(loc)
-                        .environmentObject(draftStore)
-                }
-                .onDisappear {
-                    // Refresh feed after upload
-                    Task { await fetchFeedBridge() }
-                }
+            .overlay { errorOverlay }
+            .fullScreenCover(isPresented: $showUploadForm, onDismiss: { handleUploadFormDismiss() }) {
+                uploadFormView
             }
             .fullScreenCover(isPresented: $showFeedMap) {
-                FeedMapScreen()
-                    .environmentObject(svc)
-                    .environmentObject(loc)
-                    .ignoresSafeArea()
+                feedMapView
             }
         }
     }
-    
+
+    // MARK: - Main Content Components
+
+    private var mainContentArea: some View {
+        ZStack {
+            if visible.isEmpty {
+                emptyStateView
+            } else {
+                feedContentView
+            }
+            
+            reservationSheetView
+        }
+    }
+
+    private var emptyStateView: some View {
+        EmptyFeedCTA(
+            refresh: {
+                Task {
+                    await fetchFeedBridge()
+                    hidden.removeAll()
+                }
+            },
+            makePost: { handleMakePost() }
+        )
+    }
+
+    private var feedContentView: some View {
+        VStack(spacing: 0) {
+            DeckStack(deckState: deckState, router: router)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .padding(.top, 18)
+            
+            ActionBar(
+                deckState: deckState,
+                onPass: { Task { await handlePass() } },
+                onReserve: { Task { await handleReserve() } }
+            )
+            .padding(.top, 16)
+            .padding(.bottom, 16)
+        }
+    }
+
+    @ViewBuilder
+    private var reservationSheetView: some View {
+        if showReserveSheet, let item = sheetItem {
+            ReserveSheet(
+                mode: sheetMode,
+                item: item,
+                confirm: { Task { await handleReservationConfirm(item) } },
+                openMaps: { handleOpenMaps(for: item) },
+                close: { handleReservationClose() }
+            )
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    // MARK: - Toolbar and Overlays
+
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            Image("SwoopyLogo")
+                .resizable()
+                .scaledToFit()
+                .frame(height: 28)
+                .accessibilityHidden(true)
+                .padding(.vertical, 4)
+        }
+    }
+
+    @ViewBuilder
+    private var errorOverlay: some View {
+        if let errorMessage = deckState.errorMessage {
+            VStack {
+                Spacer()
+                Text(errorMessage)
+                    .padding()
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            .animation(.easeInOut, value: deckState.errorMessage)
+        }
+    }
+
+    // MARK: - Full Screen Covers
+
+    private var uploadFormView: some View {
+        NavigationStack {
+            UploadFindView()
+                .environmentObject(svc)
+                .environmentObject(loc)
+                .environmentObject(draftStore)
+        }
+    }
+
+    private var feedMapView: some View {
+        FeedMapScreen()
+            .environmentObject(svc)
+            .environmentObject(loc)
+            .ignoresSafeArea()
+    }
+
+    // MARK: - Action Handlers
+
+    private func handleViewAppear() {
+        if cameraService == nil {
+            cameraService = CameraService(draftStore: draftStore)
+        }
+    }
+
+    private func handleUploadFormDismiss() {
+        seg = .feed
+        showFeedMap = false
+        Task { await fetchFeedBridge() }
+    }
+
+    @MainActor private func handleReservationConfirm(_ item: CKTrashItem) async {
+        do {
+            try? await reserveBridge(item)
+            await fetchFeedBridge()
+            withAnimation(.easeOut(duration: 0.18)) {
+                sheetMode = .info
+            }
+        }
+    }
+
+    private func handleOpenMaps(for item: CKTrashItem) {
+        let mi = MKMapItem(placemark: MKPlacemark(coordinate: item.coordinate))
+        mi.name = item.title
+        mi.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeTransit])
+    }
+
+    private func handleReservationClose() {
+        withAnimation(.easeOut(duration: 0.18)) {
+            showReserveSheet = false
+            sheetMode = .prompt
+        }
+    }
+
     // MARK: - Action Handlers
     
     @MainActor
@@ -457,10 +497,9 @@ extension SwipeDeckView {
     //
     // MARK: - Stack of up to 3 cards
     //
-    
     private struct DeckStack: View {
-        @Environment(AppRouter.self) var router
         @ObservedObject var deckState: DeckState
+        let router:   AppRouter// Add router as a parameter to DeckStack
         
         var body: some View {
             ZStack {
@@ -491,6 +530,7 @@ extension SwipeDeckView {
             .animation(.spring(response: 0.32, dampingFraction: 0.88), value: deckState.activeIndex)
         }
     }
+
     
     
     private struct GlassSegmented: View {
@@ -533,6 +573,7 @@ extension SwipeDeckView {
             .buttonStyle(.plain)
         }
     }
+    
     
     //
     // MARK: - Reserve sheet (two-step)
@@ -594,9 +635,11 @@ extension SwipeDeckView {
         @EnvironmentObject var loc: LocationManager
         @Environment(\.dismiss) private var dismiss
         
-        @State private var region = MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
-            span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)
+        @State private var cameraPosition: MapCameraPosition = .region(
+            MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
+                span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)
+            )
         )
         
         private var streetPins: [TrashDTO] {
@@ -616,13 +659,20 @@ extension SwipeDeckView {
         
         var body: some View {
             NavigationStack {
-                Map(coordinateRegion: $region, interactionModes: .all, showsUserLocation: true, annotationItems: streetPins) { item in
-                    MapAnnotation(coordinate: item.exactCoordinate ?? item.approxCoordinate!) {
-                        Image(systemName: "mappin.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.red)
-                            .shadow(radius: 1)
+                Map(position: $cameraPosition) {
+                    ForEach(streetPins, id: \.id) { item in
+                        if let coord = item.exactCoordinate ?? item.approxCoordinate {
+                            MapKit.Annotation("", coordinate: coord) {
+                                Image(systemName: "mappin.circle.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(.red)
+                                    .shadow(radius: 1)
+                            }
+                        }
                     }
+                    
+                    // Add user location annotation with green circle
+                    UserAnnotation()
                 }
                 .ignoresSafeArea(.all)
                 .onDisappear {
@@ -641,18 +691,16 @@ extension SwipeDeckView {
                         }
                         .buttonStyle(.plain)
                     }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            recenter()
-                        } label: {
-                            Image(systemName: "location.circle.fill").font(.title2)
-                        }
-                    }
                 }
                 .task {
                     if loc.authorization == .notDetermined { loc.request() }
                     if let c = loc.userLocation?.coordinate {
-                        region.center = c
+                        cameraPosition = .region(
+                            MKCoordinateRegion(
+                                center: c,
+                                span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                            )
+                        )
                     }
                 }
             }
@@ -673,9 +721,11 @@ extension SwipeDeckView {
                 
                 DispatchQueue.main.async {
                     withAnimation(.easeInOut(duration: 0.8)) {
-                        self.region = MKCoordinateRegion(
-                            center: coordinate,
-                            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                        self.cameraPosition = .region(
+                            MKCoordinateRegion(
+                                center: coordinate,
+                                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                            )
                         )
                     }
                 }

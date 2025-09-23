@@ -71,7 +71,7 @@ struct AppTabView: View {
                 cameraService = CameraService(draftStore: draftStore)
             }
         }
-        .onChange(of: draftStore.lastCaptureTick) { _ in
+        .onChange(of: draftStore.lastCaptureTick) {
             // Show upload form when new photo is captured
             if !draftStore.photos.isEmpty && !showUpload {
                 showUpload = true
