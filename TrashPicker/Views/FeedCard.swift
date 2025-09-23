@@ -73,6 +73,14 @@ struct FeedCard: View {
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: item.createdAt, relativeTo: Date())
     }
+    
+    private var feedPrimaryInfo: String {
+        if item.mode?.lowercased() == "home" {
+            return "From home (address hidden)"
+        } else {
+            return distanceString
+        }
+    }
 
     // MARK: - View
 
@@ -237,24 +245,54 @@ struct FeedCard: View {
                     }
                 }
         )
-        .fullScreenCover(isPresented: $showDetailOverlay) {
-            FeedDetailOverlay(
-                item: item,
-                currentImageIndex: $currentImageIndex,
-                onDismiss: { showDetailOverlay = false },
-                onSave: { 
-                    showDetailOverlay = false
-                    Task { 
-                        await triggerReserve()
-                        // Navigation is handled in triggerReserve()
+        .overlay(
+            // Feed detail overlay using BigCardOverlay
+            Group {
+                if showDetailOverlay {
+                    ZStack {
+                        // Backdrop
+                        Color.black.opacity(0.35)
+                            .ignoresSafeArea(.all)
+                            .onTapGesture {
+                                showDetailOverlay = false
+                            }
+                            .zIndex(1)
+                        
+                        // Big card overlay
+                        BigCardOverlay(
+                            images: [item.photoURL?.absoluteString ?? ""],
+                            primaryInfo: feedPrimaryInfo,
+                            statusInfo: "Posted \(timeAgoString)",
+                            statusColor: mutedText,
+                            description: item.desc,
+                            mode: item.mode?.lowercased() == "street" ? .street : .home,
+                            exactLocation: item.coordinate,
+                            ownerName: "Anonymous User",
+                            memberSince: item.createdAt,
+                            pickupsCount: item.interestedCount,
+                            variant: .feed,
+                            onDismiss: {
+                                showDetailOverlay = false
+                            },
+                            onPrimaryAction: {
+                                showDetailOverlay = false
+                                Task {
+                                    await triggerReserve()
+                                }
+                            },
+                            onSecondaryAction: {
+                                showDetailOverlay = false
+                                Task { await triggerPass() }
+                            },
+                            onTertiaryAction: nil
+                        )
+                        .zIndex(2)
                     }
-                },
-                onPass: { 
-                    showDetailOverlay = false
-                    Task { await triggerPass() }
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showDetailOverlay)
                 }
-            )
-        }
+            }
+        )
     }
 
     // MARK: - Actions
@@ -307,108 +345,3 @@ struct FeedCard: View {
     private func advancePhoto() { nextPhoto() }
 
 }
-
-// MARK: - Feed Detail Overlay
-
-struct FeedDetailOverlay: View {
-    let item: CKTrashItem
-    @Binding var currentImageIndex: Int
-    let onDismiss: () -> Void
-    let onSave: () -> Void
-    let onPass: () -> Void
-    
-    @State private var dragOffset: CGSize = .zero
-    @Namespace var imageTransition
-    
-    // Design tokens - matching reservation overlay
-    let primaryColor = Color(hex: "00513F")
-    private let accentColor = Color(hex: "B4DD4E")
-    private let dangerColor = Color(hex: "C44242")
-    let mutedColor = Color(hex: "656565")
-    
-    var body: some View {
-        ZStack {
-            // Backdrop
-            Color.black.opacity(0.35)
-                .ignoresSafeArea()
-                .onTapGesture {
-                    onDismiss()
-                }
-            
-            // Container
-            VStack(spacing: 0) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        // Image carousel
-                        imageCarousel
-                        
-                        // Content with 20pt spacing between sections per spec
-                        VStack(alignment: .leading, spacing: 20) {
-                            metaSection
-                            
-                            if let description = item.desc, !description.isEmpty {
-                                descriptionSection(description)
-                            }
-                            
-                            locationSection
-                            sharedBySection
-                        }
-                        .padding(.horizontal, 24) // 24pt side padding per spec
-                    }
-                }
-                
-                // Buttons (pinned to bottom) - aligned with image left edge
-                buttonsSection
-                    .padding(.horizontal, 24) // Match content padding for alignment
-                    .padding(.vertical, 16)
-            }
-            .frame(
-                width: min(UIScreen.main.bounds.width * 0.8, 600),
-                height: UIScreen.main.bounds.height * 0.8
-            )
-            .background(Color(.systemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 28))
-            .shadow(color: .black.opacity(0.12), radius: 24, x: 0, y: 8)
-            .offset(y: dragOffset.height)
-            .gesture(
-                DragGesture()
-                    .onChanged { value in
-                        if value.translation.height > 0 {
-                            dragOffset = value.translation
-                        }
-                    }
-                    .onEnded { value in
-                        if value.translation.height > 120 {
-                            onDismiss()
-                        } else {
-                            withAnimation(.spring()) {
-                                dragOffset = .zero
-                            }
-                        }
-                    }
-            )
-            
-            // Close button with glassmorphic background
-            VStack {
-                HStack {
-                    Spacer()
-                    Button(action: onDismiss) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.primary)
-                            .frame(width: 32, height: 32)
-                            .background(.ultraThinMaterial, in: Circle())
-                    }
-                    .padding(.top, 16)
-                    .padding(.trailing, 20)
-                }
-                Spacer()
-            }
-            .frame(
-                width: min(UIScreen.main.bounds.width * 0.8, 600),
-                height: UIScreen.main.bounds.height * 0.8
-            )
-        }
-    }
-}
-
