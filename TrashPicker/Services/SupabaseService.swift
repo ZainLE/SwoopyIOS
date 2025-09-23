@@ -35,8 +35,8 @@ final class SupabaseService: NSObject, ObservableObject {
     
     // User profile computed properties
     var displayName: String {
-        session?.user.userMetadata["full_name"]?.description 
-        ?? session?.user.userMetadata["name"]?.description 
+        session?.user.userMetadata["full_name"]?.description
+        ?? session?.user.userMetadata["name"]?.description
         ?? "Your Name"
     }
     
@@ -61,7 +61,7 @@ final class SupabaseService: NSObject, ObservableObject {
     }
 
     // Supabase client with OAuth callback configuration
-    private static let callbackURL = URL(string: "swoopy://auth-callback")!
+    private static let callbackURL = URL(string: "swoopy://auth/callback")!
     
     let client: SupabaseClient = {
         SupabaseClient(
@@ -125,6 +125,8 @@ final class SupabaseService: NSObject, ObservableObject {
         try await client.auth.signInWithOAuth(
             provider: .google
         )
+        let s = try? await client.auth.session
+        applyAuthSession(s)
     }
 
     /// Native Apple Sign-In (no Apple client secret needed on iOS).K
