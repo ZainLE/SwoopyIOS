@@ -13,7 +13,7 @@ struct ActionBar: View {
     let onReserve: () -> Void
     
     // Design tokens
-    private let primary = Color(hex: 0x00513F)      // #00513F
+    private let primary = Color(hex: "#00513F")      // #00513F
     private let chromeSidePadding: CGFloat = 16     // Match tab bar content padding
     private let buttonRadius: CGFloat = 59
     

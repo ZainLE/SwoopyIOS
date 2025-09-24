@@ -20,7 +20,7 @@ struct UploadFindView: View {
     init() {
         // Configure appearance only once globally
         if !Self.hasConfiguredAppearance {
-            UISegmentedControl.appearance().selectedSegmentTintColor = UIColor(Color.brandDark)
+            UISegmentedControl.appearance().selectedSegmentTintColor = UIColor(AppTheme.ColorToken.primary)
             if #available(iOS 13.0, *) {
                 UISegmentedControl.appearance().backgroundColor = UIColor.secondarySystemBackground
             } else {
@@ -53,107 +53,11 @@ struct UploadFindView: View {
         ScrollView {
             VStack(spacing: 16) {
                 Spacer(minLength: 16)
-
-                // Provide image *
-                sectionLabel("Provide image", required: true)
-                helper("Upload or take up to 3 pictures of your item (front, detail, size). Clear photos help others decide quickly.")
-
-                photoRow
-
-                if showValidation && draftStore.photos.isEmpty {
-                    validationHint("Please add at least one photo.")
-                }
-
-                // Condition *
-                VStack(alignment: .leading, spacing: 8) {
-                    sectionLabel("Condition", required: true)
-                    ConditionSegmentedPicker(selection: $vm.condition)
-                }
-                .padding(.top, 16)
-
-                if showValidation && vm.condition == nil {
-                    validationHint("Please select a condition.")
-                }
-
-                // Provide Description (toggle row -> expands)
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle(isOn: $vm.wantsDescription.animation()) {
-                        Text("Provide Description")
-                            .font(.subheadline.weight(.semibold))
-                    }
-                    .toggleStyle(.switch)
-                    .tint(Color.brandDark)
-                    .padding(.top, 16)
-
-                    if vm.wantsDescription {
-                        helper("Write up to 100 characters (optional).")
-                        VStack(spacing: 8) {
-                            TextField("Add details about the product", text: $vm.descriptionText, axis: .vertical)
-                                .textInputAutocapitalization(.sentences)
-                                .lineLimit(1...4)
-                                .padding(12)
-                                .frame(maxWidth: .infinity)
-                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 99))
-                                .overlay(RoundedRectangle(cornerRadius: 99).stroke(Color.brandDark.opacity(0.20), lineWidth: 1))
-                            
-                            HStack {
-                                Spacer()
-                                Button("Done") {
-                                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                                }
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(Color.brandDark)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
-                                .background(Color.brandDark.opacity(0.1))
-                                .clipShape(Capsule())
-                            }
-                        }
-                    }
-                }
-
-                // Pickup Location *
-                VStack(alignment: .leading, spacing: 12) {
-                    sectionLabel("Pickup Location", required: true)
-                    PickupModeSegmentedPicker(selection: $vm.mode)
-                    mapCard
-                }
-                .padding(.top, 16)
-
-                if showValidation && !vm.hasChosenModeOrLocation {
-                    validationHint("Please confirm your pickup mode.")
-                }
-
-                // CTA
-                PrimaryCTAButton(title: "Share Your Find", enabled: canSubmit) {
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    if !canSubmit {
-                        showValidation = true
-                        validationText = "Please complete required fields."
-                        return
-                    }
-                    
-                    Task {
-                        // Start loading state
-                        isPosting = true
-                        defer { isPosting = false }
-                        
-                        do {
-                            try await uploadWithRetry()
-                            
-                            // Success - clear draft, show success toast, and dismiss
-                            draftStore.clearDraft()
-                            showSuccessToast()
-                            dismiss()
-                        } catch {
-                            // Show error feedback
-                            showValidation = true
-                            validationText = "Upload failed. Please try again."
-                            print("Upload error:", error.localizedDescription)
-                        }
-                    }
-                }
-                .padding(.top, 8)
+                photoSection
+                conditionSection
+                descriptionSection
+                pickupSection
+                ctaButton
             }
             .frame(maxWidth: maxWidth)
             .padding(.horizontal, sidePadding)
@@ -162,68 +66,187 @@ struct UploadFindView: View {
         .background(Color(.systemBackground))
         .scrollDismissesKeyboard(.immediately)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text("Upload your find")
-                    .font(.headline.weight(.semibold))
-                    .foregroundColor(.primary)
-            }
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button {
-                    // Clear draft store when dismissing
-                    draftStore.clearDraft()
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.title3.weight(.semibold))
-                        .foregroundColor(Color.brandDark)
-                }
-            }
-        }
-        .onAppear {
-            if loc.authorization == CLAuthorizationStatus.notDetermined { loc.request() }
-            Task {
-                vm.bootstrapLocation(loc.userLocation?.coordinate)
-            }
-        }
+        .toolbar { toolbarContent }
+        .onAppear { handleOnAppear() }
         .onChange(of: loc.userLocation) { _, newValue in
             vm.bootstrapLocation(newValue?.coordinate)
         }
-        // Note: Notification-based prefill removed - now using direct initialPhoto parameter
-        // Image sources (use working camera implementations)
-        .fullScreenCover(isPresented: $showCamera) {
-            CameraCaptureView { image in
-                if let img = image {
-                    if let index = showActionForTile, draftStore.photos.indices.contains(index) {
-                        draftStore.replacePhoto(at: index, with: img)
-                    } else if draftStore.canAddPhoto {
-                        draftStore.insertPrimary(img)
+        .fullScreenCover(isPresented: $showCamera) { cameraView }
+        .sheet(isPresented: $showPicker) { photoPickerView }
+    }
+
+    // MARK: - Subviews
+
+    private var photoSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("Provide image", required: true)
+            helper("Upload or take up to 3 pictures of your item (front, detail, size). Clear photos help others decide quickly.")
+            photoRow
+            if showValidation && draftStore.photos.isEmpty {
+                validationHint("Please add at least one photo.")
+            }
+        }
+    }
+
+    private var conditionSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionLabel("Condition", required: true)
+            ConditionSegmentedPicker(selection: $vm.condition)
+            
+            if showValidation && vm.condition == nil {
+                validationHint("Please select a condition.")
+            }
+        }
+        .padding(.top, 16)
+    }
+
+
+    private var descriptionSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: $vm.wantsDescription.animation()) {
+                Text("Provide Description")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .toggleStyle(.switch)
+            .tint(AppTheme.ColorToken.brandDark)  // Updated to theme
+            .padding(.top, 16)
+
+            if vm.wantsDescription {
+                helper("Write up to 100 characters (optional).")
+                VStack(spacing: 8) {
+                    TextField("Add details about the product", text: $vm.descriptionText, axis: .vertical)
+                        .textInputAutocapitalization(.sentences)
+                        .lineLimit(1...4)
+                        .padding(12)
+                        .frame(maxWidth: .infinity)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 99))
+                        .overlay(RoundedRectangle(cornerRadius: 99).stroke(AppTheme.ColorToken.brandDark.opacity(0.20), lineWidth: 1))
+                    
+                    HStack {
+                        Spacer()
+                        Button("Done") {
+                            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(AppTheme.ColorToken.brandDark)  // Updated to theme
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(AppTheme.ColorToken.brandDark.opacity(0.1))  // Updated to theme
+                        .clipShape(Capsule())
                     }
                 }
             }
-            .ignoresSafeArea(.all)
-            .background(Color.black)
         }
-        .sheet(isPresented: $showPicker) {
-            PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                Text("Choose Photo")
-                    .font(.headline)
-                    .padding()
+    }
+
+    private var pickupSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionLabel("Pickup Location", required: true)
+            PickupModeSegmentedPicker(selection: $vm.mode)
+            mapCard
+            
+            if showValidation && !vm.hasChosenModeOrLocation {
+                validationHint("Please confirm your pickup mode.")
             }
-            .onChange(of: selectedPhotoItem) { newItem in
-                Task {
-                    if let newItem = newItem,
-                       let data = try? await newItem.loadTransferable(type: Data.self),
-                       let image = UIImage(data: data) {
-                        await MainActor.run {
-                            if let index = showActionForTile, draftStore.photos.indices.contains(index) {
-                                draftStore.replacePhoto(at: index, with: image)
-                            } else if draftStore.canAddPhoto {
-                                draftStore.insertPrimary(image)
-                            }
-                            selectedPhotoItem = nil
-                            showPicker = false
+        }
+        .padding(.top, 16)
+    }
+
+
+    private var ctaButton: some View {
+        PrimaryCTAButton(title: "Share Your Find", enabled: canSubmit) {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            if !canSubmit {
+                showValidation = true
+                validationText = "Please complete required fields."
+                return
+            }
+            
+            Task {
+                isPosting = true
+                defer { isPosting = false }
+                
+                do {
+                    try await uploadWithRetry()
+                    draftStore.clearDraft()
+                    showSuccessToast()
+                    dismiss()
+                } catch {
+                    showValidation = true
+                    validationText = "Upload failed. Please try again."
+                    print("Upload error:", error.localizedDescription)
+                }
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    // MARK: - Helper Views and Logic
+
+    private func handleOnAppear() {
+        if loc.authorization == CLAuthorizationStatus.notDetermined {
+            loc.request()
+        }
+        Task {
+            vm.bootstrapLocation(loc.userLocation?.coordinate)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            Text("Upload your find")
+                .font(.headline.weight(.semibold))
+                .foregroundColor(AppTheme.ColorToken.primary)
+        }
+        ToolbarItem(placement: .navigationBarTrailing) {
+            Button {
+                draftStore.clearDraft()
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.title3.weight(.semibold))
+                    .foregroundColor(AppTheme.ColorToken.brandDark)
+            }
+        }
+    }
+
+
+
+
+    private var cameraView: some View {
+        CameraCaptureView { image in
+            if let img = image {
+                if let index = showActionForTile, draftStore.photos.indices.contains(index) {
+                    draftStore.replacePhoto(at: index, with: img)
+                } else if draftStore.canAddPhoto {
+                    draftStore.insertPrimary(img)
+                }
+            }
+        }
+        .ignoresSafeArea(.all)
+        .background(Color.black)
+    }
+
+    private var photoPickerView: some View {
+        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
+            Text("Choose Photo")
+                .font(.headline)
+                .padding()
+        }
+        .onChange(of: selectedPhotoItem) {
+            Task {
+                if let newItem = selectedPhotoItem,
+                   let data = try? await newItem.loadTransferable(type: Data.self),
+                   let image = UIImage(data: data) {
+                    await MainActor.run {
+                        if let index = showActionForTile, draftStore.photos.indices.contains(index) {
+                            draftStore.replacePhoto(at: index, with: image)
+                        } else if draftStore.canAddPhoto {
+                            draftStore.insertPrimary(image)
                         }
+                        selectedPhotoItem = nil
+                        showPicker = false
                     }
                 }
             }
@@ -356,7 +379,7 @@ struct UploadFindView: View {
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         
         // Set app color
-        alert.view.tintColor = UIColor(Color.brandDark)
+        alert.view.tintColor = UIColor(AppTheme.ColorToken.primary)
         
         // Present the alert with better error handling
         DispatchQueue.main.async {
@@ -398,7 +421,7 @@ struct UploadFindView: View {
                 // Address text outside the map
                 Text(vm.addressText)
                     .font(.footnote)
-                    .foregroundStyle(Color.textMuted)
+                    .foregroundStyle(AppTheme.ColorToken.mutedGray)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 4)
             }
@@ -416,7 +439,7 @@ struct UploadFindView: View {
     }
 
     private func helper(_ text: String) -> some View {
-        Text(text).font(.caption).foregroundStyle(Color.textMuted)
+        Text(text).font(.caption).foregroundStyle(AppTheme.ColorToken.mutedGray)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -739,7 +762,7 @@ private struct InlineUploadMap: View {
             Map(position: $camera, interactionModes: .all) {
                 if mode == .home, let c = selectedCoord {
                     MapCircle(center: c, radius: 500)
-                        .foregroundStyle(Color.brandDark.opacity(0.20))
+                        .foregroundStyle(AppTheme.ColorToken.primary.opacity(0.20))
                     Annotation("Home area", coordinate: c) {
                         Image(systemName: "house.circle.fill")
                             .font(.title2)
@@ -809,26 +832,27 @@ private struct PhotoTile: View {
                 } else {
                     Image(systemName: "photo.badge.plus")
                         .font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(Color.brandDark)
+                        .foregroundStyle(AppTheme.ColorToken.primary)
                 }
             }
             .frame(width: width, height: height)
             .background(Color.clear)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.brandDark.opacity(0.40), lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppTheme.ColorToken.primary.opacity(0.40), lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
 }
 
-private struct ChipGroup<Item: CaseIterable & Hashable>: View {
+private struct ChipGroup<Item: CaseIterable & Hashable>: View where Item.AllCases == [Item] {
     let items: Item.AllCases
     @Binding var selection: Item?
     let label: (Item) -> String
 
     var body: some View {
         FlexibleRow(spacing: 8) {
-            ForEach(Array(items), id: \.self) { item in
+            // Disambiguate to the non-Binding ForEach initializer
+            SwiftUI.ForEach(items as [Item], id: \.self) { (item: Item) in
                 let isOn = selection == item
                 Button {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -836,13 +860,14 @@ private struct ChipGroup<Item: CaseIterable & Hashable>: View {
                 } label: {
                     Text(label(item))
                         .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 14).padding(.vertical, 8)
-                        .foregroundStyle(isOn ? .white : Color.brandDark)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .foregroundStyle(isOn ? .white : AppTheme.ColorToken.darkGreen)
                         .background(
-                            Capsule().fill(isOn ? Color.brandDark : .clear)
+                            Capsule().fill(isOn ? AppTheme.ColorToken.darkGreen : .clear)
                         )
                         .overlay(
-                            Capsule().stroke(Color.brandDark, lineWidth: isOn ? 0 : 1)
+                            Capsule().stroke(AppTheme.ColorToken.darkGreen, lineWidth: isOn ? 0 : 1)
                         )
                 }
                 .buttonStyle(.plain)
@@ -850,6 +875,7 @@ private struct ChipGroup<Item: CaseIterable & Hashable>: View {
         }
     }
 }
+
 
 private struct ConditionSegmentedPicker: View {
     @Binding var selection: Condition?
@@ -861,8 +887,6 @@ private struct ConditionSegmentedPicker: View {
     private let verticalInset: CGFloat = 11
     private var cornerRadius: CGFloat { segmentHeight / 2 }
     
-    // Design tokens
-    private let primaryColor = Color(hex: 0x00513F) // #00513F
     
     var body: some View {
         HStack(spacing: 0) {
@@ -889,7 +913,7 @@ private struct ConditionSegmentedPicker: View {
                             Group {
                                 if isSelected {
                                     Capsule()
-                                        .fill(primaryColor)
+                                        .fill(AppTheme.ColorToken.primary)
                                         .matchedGeometryEffect(id: "conditionThumb", in: thumbAnimation)
                                 }
                             }
@@ -921,8 +945,6 @@ private struct PickupModeSegmentedPicker: View {
     private let verticalInset: CGFloat = 11
     private var cornerRadius: CGFloat { segmentHeight / 2 }
     
-    // Design tokens
-    private let primaryColor = Color(hex: 0x00513F) // #00513F
     
     var body: some View {
         HStack(spacing: 0) {
@@ -949,7 +971,7 @@ private struct PickupModeSegmentedPicker: View {
                             Group {
                                 if isSelected {
                                     Capsule()
-                                        .fill(primaryColor)
+                                        .fill(AppTheme.ColorToken.primary)
                                         .matchedGeometryEffect(id: "pickupThumb", in: thumbAnimation)
                                 }
                             }
@@ -987,9 +1009,9 @@ private struct ModeChips: View {
         } label: {
             Text(title).font(.subheadline.weight(.semibold))
                 .padding(.horizontal, 14).padding(.vertical, 8)
-                .foregroundStyle(isOn ? .white : Color.brandDark)
-                .background(Capsule().fill(isOn ? Color.brandDark : .clear))
-                .overlay(Capsule().stroke(Color.brandDark, lineWidth: isOn ? 0 : 1))
+                .foregroundStyle(isOn ? .white : AppTheme.ColorToken.primary)
+                .background(Capsule().fill(isOn ? AppTheme.ColorToken.primary : .clear))
+                .overlay(Capsule().stroke(AppTheme.ColorToken.primary, lineWidth: isOn ? 0 : 1))
         }
         .buttonStyle(.plain)
     }
@@ -1004,10 +1026,10 @@ private struct PrimaryCTAButton: View {
         Button(action: action) {
             Text(title)
                 .font(.headline.weight(.semibold))
-                .foregroundStyle(Color.brandDark)
+                .foregroundStyle(AppTheme.ColorToken.primary)
                 .frame(maxWidth: .infinity)
                 .frame(height: 52)
-                .background(Color.brandLime.opacity(enabled ? 1 : 0.6))
+                .background(AppTheme.ColorToken.accent.opacity(enabled ? 1 : 0.6))
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .shadow(color: enabled ? .black.opacity(0.08) : .clear, radius: 8, y: 2)
         }

@@ -112,13 +112,7 @@ struct ReservationsView: View {
     @Namespace private var imageTransition
     
     // Design tokens
-    private let primaryColor = Color(hex: 0x00513F) // #00513F
-    private let accentColor = Color(hex: 0xB4DD4E) // #B4DD4E
-    private let dangerColor = Color(hex: 0xC44242) // #C44242
-    private let successColor = Color(hex: 0x6AA54A) // #6AA54A
-    private let mutedColor = Color(hex: 0x656565) // #656565
-    private let chromeSidePadding: CGFloat = 24
-    
+
     var body: some View {
         NavigationStack {
             Group {
@@ -127,7 +121,7 @@ struct ReservationsView: View {
                     VStack(spacing: 16) {
                         Text("No active reservations yet.")
                             .font(.title2)
-                            .foregroundColor(mutedColor)
+                            .foregroundColor(AppTheme.ColorToken.mutedGray)
                         
                         Text("Browse the feed to find items you'd like to reserve")
                             .font(.body)
@@ -141,7 +135,7 @@ struct ReservationsView: View {
                         .foregroundColor(.white)
                         .frame(height: 48)
                         .frame(minWidth: 120)
-                        .background(primaryColor)
+                        .background(AppTheme.ColorToken.primary)
                         .clipShape(Capsule())
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -154,7 +148,7 @@ struct ReservationsView: View {
                                     reservation: reservation,
                                     isLoading: loadingReservations.contains(reservation.id),
                                     imageTransition: imageTransition,
-                                    onTap: { 
+                                    onTap: {
                                         selectedReservation = reservation
                                         showDetailOverlay = true
                                     },
@@ -166,7 +160,7 @@ struct ReservationsView: View {
                                 .id(reservation.id) // EXPLICIT ID for better diffing
                             }
                         }
-                        .padding(.horizontal, chromeSidePadding)
+                        .padding(.horizontal, AppTheme.Spacing.chromeSide)
                         .padding(.vertical, 12) // REDUCED padding
                     }
                     .scrollIndicators(.hidden) // HIDE scroll indicators
@@ -190,7 +184,7 @@ struct ReservationsView: View {
                                 .padding(.vertical, 12)
                                 .background(Color.black.opacity(0.8))
                                 .clipShape(Capsule())
-                                .padding(.horizontal, chromeSidePadding)
+                                .padding(.horizontal, AppTheme.Spacing.chromeSide)
                                 .padding(.bottom, 100)
                         }
                         .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -198,32 +192,56 @@ struct ReservationsView: View {
                     }
                 }
             )
-            .fullScreenCover(isPresented: $showDetailOverlay) {
-                if let reservation = selectedReservation {
-                    ReservationDetailOverlay(
-                        reservation: reservation,
-                        isLoading: loadingReservations.contains(reservation.id),
-                        imageTransition: imageTransition,
-                        onDismiss: {
-                            showDetailOverlay = false
-                            selectedReservation = nil
-                        },
-                        onPickUp: { 
-                            onPickup(reservationId: reservation.reservation.id)
-                            showDetailOverlay = false
-                            selectedReservation = nil
-                        },
-                        onCancel: { 
-                            onCancel(reservationId: reservation.reservation.id)
-                            showDetailOverlay = false
-                            selectedReservation = nil
-                        },
-                        onDirections: { onDirections(post: reservation.post) },
-                        onContact: { onContact(post: reservation.post) }
-                    )
-                    .background(Color.clear) // Transparent background for fullScreenCover
+            .overlay(
+                // Detail overlay using BigCardOverlay
+                Group {
+                    if showDetailOverlay, let reservation = selectedReservation {
+                        ZStack {
+                            // Backdrop
+                            Color.black.opacity(0.35)
+                                .ignoresSafeArea(.all)
+                                .onTapGesture {
+                                    showDetailOverlay = false
+                                    selectedReservation = nil
+                                }
+                                .zIndex(1)
+                            
+                            // Big card overlay
+                            BigCardOverlay(
+                                images: reservation.post.images.map { $0.url },
+                                primaryInfo: primaryInfoText(for: reservation),
+                                statusInfo: statusText(for: reservation),
+                                statusColor: statusColor(for: reservation),
+                                description: reservation.post.description,
+                                mode: reservation.post.mode == .street ? .street : .home,
+                                exactLocation: reservation.post.exactLocation?.coordinate,
+                                ownerName: reservation.post.owner.name,
+                                memberSince: reservation.post.owner.memberSince,
+                                pickupsCount: reservation.post.owner.pickupsCount,
+                                variant: reservationVariant(for: reservation),
+                                onDismiss: {
+                                    showDetailOverlay = false
+                                    selectedReservation = nil
+                                },
+                                onPrimaryAction: {
+                                    handlePrimaryAction(for: reservation)
+                                },
+                                onSecondaryAction: {
+                                    onCancel(reservationId: reservation.reservation.id)
+                                    showDetailOverlay = false
+                                    selectedReservation = nil
+                                },
+                                onTertiaryAction: reservation.post.mode == .street ? {
+                                    onDirections(post: reservation.post)
+                                } : nil
+                            )
+                            .zIndex(2)
+                        }
+                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showDetailOverlay)
+                    }
                 }
-            }
+            )
         }
     }
     
@@ -232,7 +250,7 @@ struct ReservationsView: View {
     private var activeReservations: [ReservationRow] {
         reservations.filter { reservation in
             // Street: active and not expired, Home: pending or active
-            (reservation.post.mode == .street ? 
+            (reservation.post.mode == .street ?
                 (reservation.reservation.status == .active && !reservation.isExpired) :
                 (reservation.reservation.status == .pending || reservation.reservation.status == .active)
             ) &&
@@ -381,6 +399,87 @@ struct ReservationsView: View {
         loadingReservations.remove(reservationId)
     }
     
+    // MARK: - BigCardOverlay Helper Methods
+    
+    private func primaryInfoText(for reservation: ReservationRow) -> String {
+        switch reservation.post.mode {
+        case .street:
+            if let distance = reservation.post.distanceKm {
+                return String(format: "≈ %.1f km away", distance)
+            } else {
+                return "Street pickup"
+            }
+        case .home:
+            return "From home (address hidden)"
+        }
+    }
+    
+    private func statusText(for reservation: ReservationRow) -> String {
+        switch (reservation.post.mode, reservation.reservation.status) {
+        case (.street, .active):
+            return "Pickup in: \(formatTimeRemaining(reservation.timeRemaining))"
+        case (.home, .pending):
+            return "Waiting for giver's confirmation"
+        case (.home, .active):
+            return "Confirmed! Contact the owner to pick it up"
+        default:
+            return "Posted \(formatRelativeTime(reservation.reservation.requestedAt)) ago"
+        }
+    }
+    
+    private func statusColor(for reservation: ReservationRow) -> Color {
+        switch (reservation.post.mode, reservation.reservation.status) {
+        case (.street, .active):
+            return AppTheme.ColorToken.danger // #C44242
+        case (.home, .pending):
+            return AppTheme.ColorToken.danger // #C44242
+        case (.home, .active):
+            return AppTheme.ColorToken.danger // #6AA54A
+        default:
+            return AppTheme.ColorToken.mutedGray
+        }
+    }
+    
+    private func reservationVariant(for reservation: ReservationRow) -> BigCardOverlay.Variant {
+        switch (reservation.post.mode, reservation.reservation.status) {
+        case (.street, .active):
+            return .reservations(.streetActive)
+        case (.home, .pending):
+            return .reservations(.homePending)
+        case (.home, .active):
+            return .reservations(.homeActive)
+        default:
+            return .reservations(.homePending)
+        }
+    }
+    
+    private func handlePrimaryAction(for reservation: ReservationRow) {
+        switch (reservation.post.mode, reservation.reservation.status) {
+        case (.street, .active):
+            onPickup(reservationId: reservation.reservation.id)
+            showDetailOverlay = false
+            selectedReservation = nil
+        case (.home, .pending):
+            onContact(post: reservation.post)
+        case (.home, .active):
+            onContact(post: reservation.post)
+        default:
+            break
+        }
+    }
+    
+    private func formatTimeRemaining(_ timeInterval: TimeInterval) -> String {
+        let hours = Int(timeInterval) / 3600
+        let minutes = Int(timeInterval) % 3600 / 60
+        return "\(hours)h \(minutes)m"
+    }
+    
+    private func formatRelativeTime(_ date: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+    
     // MARK: - Helper Methods
     
     private func presentAlert(_ alert: UIAlertController) {
@@ -514,15 +613,7 @@ private struct ReservationCard: View {
     @State private var timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     
     // Design tokens
-    private let primaryColor = Color(hex: 0x00513F) // #00513F
-    private let accentColor = Color(hex: 0xB4DD4E) // #B4DD4E
-    private let dangerColor = Color(hex: 0xC44242) // #C44242
-    private let successColor = Color(hex: 0x6AA54A) // #6AA54A
-    private let mutedColor = Color(hex: 0x656565) // #656565
-    private let thumbnailSize: CGFloat = 64
-    private let cardRadius: CGFloat = 28
-    private let buttonHeight: CGFloat = 50
-    
+  
     init(reservation: ReservationRow, isLoading: Bool = false, imageTransition: Namespace.ID, onTap: @escaping () -> Void, onPickUp: @escaping () -> Void, onCancel: @escaping () -> Void, onDirections: @escaping () -> Void, onContact: @escaping () -> Void) {
         self.reservation = reservation
         self.isLoading = isLoading
@@ -546,9 +637,9 @@ private struct ReservationCard: View {
                         .aspectRatio(contentMode: .fill)
                 } placeholder: {
                     Rectangle()
-                        .fill(Color.gray.opacity(0.2))
+                        .fill(AppTheme.ColorToken.mutedGray.opacity(0.2))
                 }
-                .frame(width: thumbnailSize, height: thumbnailSize)
+                .frame(width: AppSize.thumbnail, height: AppSize.thumbnail)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .matchedGeometryEffect(id: "image-\(reservation.id)", in: imageTransition)
                 
@@ -557,12 +648,12 @@ private struct ReservationCard: View {
                     // Condition line
                     HStack(spacing: 6) {
                         Circle()
-                            .fill(accentColor)
+                            .fill(AppTheme.ColorToken.accent)
                             .frame(width: 8, height: 8)
                         
                         Text(reservation.post.condition.displayText)
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(primaryColor)
+                            .foregroundColor(AppTheme.ColorToken.primary)
                         
                         Spacer()
                     }
@@ -588,7 +679,7 @@ private struct ReservationCard: View {
                 .padding(.bottom, 16)
         }
         .background(Color(.systemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: cardRadius))
+        .clipShape(RoundedRectangle(cornerRadius: AppRadius.card, style: .continuous))
         .shadow(color: .black.opacity(0.08), radius: 4, x: 0, y: 2)
         .onTapGesture {
             onTap()
@@ -644,11 +735,11 @@ private struct ReservationCard: View {
     private var statusColor: Color {
         switch (reservation.post.mode, reservation.reservation.status) {
         case (.street, .active):
-            return dangerColor // #C44242
+            return AppTheme.ColorToken.danger // #C44242
         case (.home, .pending):
-            return dangerColor // #C44242
+            return AppTheme.ColorToken.danger // #C44242
         case (.home, .active):
-            return successColor // #6AA54A
+            return AppTheme.ColorToken.danger // #6AA54A
         default:
             return .secondary
         }
@@ -676,7 +767,7 @@ private struct ReservationCard: View {
         case .home:
             Text("Location details are kept private for home pickups")
                 .font(.system(size: 14, weight: .regular))
-                .foregroundColor(mutedColor)
+                .foregroundColor(AppTheme.ColorToken.mutedGray)
         }
     }
     
@@ -685,7 +776,7 @@ private struct ReservationCard: View {
         HStack(spacing: 12) {
             // SIMPLIFIED avatar - no overlay to reduce draw calls
             RoundedRectangle(cornerRadius: 4)
-                .fill(primaryColor.opacity(0.15))
+                .fill(AppTheme.ColorToken.primary.opacity(0.15))
                 .frame(width: 28, height: 28)
             
             VStack(alignment: .leading, spacing: 1) {
@@ -724,10 +815,10 @@ private struct ReservationCard: View {
                     Text("Pick up")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.white)
-                        .frame(height: buttonHeight)
+                        .frame(height: AppSize.buttonHeight)
                         .frame(maxWidth: .infinity)
                 }
-                .background(primaryColor)
+                .background(AppTheme.ColorToken.primary)
                 .clipShape(RoundedRectangle(cornerRadius: 29))
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
@@ -736,14 +827,14 @@ private struct ReservationCard: View {
                     Text("Cancel")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.black)
-                        .frame(height: buttonHeight)
+                        .frame(height: AppSize.buttonHeight)
                         .frame(maxWidth: .infinity)
                 }
                 .background(Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 29))
                 .overlay(
                     RoundedRectangle(cornerRadius: 29)
-                        .stroke(primaryColor, lineWidth: 2)
+                        .stroke(AppTheme.ColorToken.primary, lineWidth: 2)
                 )
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
@@ -751,11 +842,11 @@ private struct ReservationCard: View {
                 Button(action: onDirections) {
                     Text("Directions")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(primaryColor)
-                        .frame(height: buttonHeight)
+                        .foregroundColor(AppTheme.ColorToken.primary)
+                        .frame(height: AppSize.buttonHeight)
                         .frame(maxWidth: .infinity)
                 }
-                .background(accentColor)
+                .background(AppTheme.ColorToken.accent)
                 .clipShape(RoundedRectangle(cornerRadius: 29))
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
@@ -768,10 +859,10 @@ private struct ReservationCard: View {
                     Text("Contact")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.white)
-                        .frame(height: buttonHeight)
+                        .frame(height: AppSize.buttonHeight)
                         .frame(maxWidth: .infinity)
                 }
-                .background(primaryColor.opacity(0.4))
+                .background(AppTheme.ColorToken.primary.opacity(0.4))
                 .clipShape(RoundedRectangle(cornerRadius: 29))
                 .disabled(true)
                 
@@ -779,14 +870,14 @@ private struct ReservationCard: View {
                     Text("Cancel")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.black)
-                        .frame(height: buttonHeight)
+                        .frame(height: AppSize.buttonHeight)
                         .frame(maxWidth: .infinity)
                 }
                 .background(Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 29))
                 .overlay(
                     RoundedRectangle(cornerRadius: 29)
-                        .stroke(primaryColor, lineWidth: 2)
+                        .stroke(AppTheme.ColorToken.primary, lineWidth: 2)
                 )
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
@@ -799,10 +890,10 @@ private struct ReservationCard: View {
                     Text("Contact")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.white)
-                        .frame(height: buttonHeight)
+                        .frame(height: AppSize.buttonHeight)
                         .frame(maxWidth: .infinity)
                 }
-                .background(primaryColor)
+                .background(AppTheme.ColorToken.primary)
                 .clipShape(RoundedRectangle(cornerRadius: 29))
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
@@ -811,14 +902,14 @@ private struct ReservationCard: View {
                     Text("Cancel")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.black)
-                        .frame(height: buttonHeight)
+                        .frame(height: AppSize.buttonHeight)
                         .frame(maxWidth: .infinity)
                 }
                 .background(Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 29))
                 .overlay(
                     RoundedRectangle(cornerRadius: 29)
-                        .stroke(primaryColor, lineWidth: 2)
+                        .stroke(AppTheme.ColorToken.primary, lineWidth: 2)
                 )
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
@@ -835,132 +926,3 @@ private struct ReservationCard: View {
         return "\(hours)h \(minutes)m"
     }
 }
-
-// MARK: - ReservationDetailOverlay
-
-struct ReservationDetailOverlay: View {
-    let reservation: ReservationRow
-    let isLoading: Bool
-    let imageTransition: Namespace.ID
-    let onDismiss: () -> Void
-    let onPickUp: () -> Void
-    let onCancel: () -> Void
-    let onDirections: () -> Void
-    let onContact: () -> Void
-    
-    @State var currentImageIndex = 0
-    @State private var dragOffset: CGSize = .zero
-    @State private var timeRemaining: TimeInterval
-    @State private var timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-    
-    // Design tokens
-    let dtPrimaryColor = Color(hex: "00513F")
-    let dtAccentColor = Color(hex: "B4DD4E")
-    let dtDangerColor = Color(hex: "C44242")
-    let dtSuccessColor = Color(hex: "6AA54A")
-    let dtMutedColor = Color(hex: "656565")
-    
-    init(reservation: ReservationRow, isLoading: Bool, imageTransition: Namespace.ID, onDismiss: @escaping () -> Void, onPickUp: @escaping () -> Void, onCancel: @escaping () -> Void, onDirections: @escaping () -> Void, onContact: @escaping () -> Void) {
-        self.reservation = reservation
-        self.isLoading = isLoading
-        self.imageTransition = imageTransition
-        self.onDismiss = onDismiss
-        self.onPickUp = onPickUp
-        self.onCancel = onCancel
-        self.onDirections = onDirections
-        self.onContact = onContact
-        self._timeRemaining = State(initialValue: reservation.timeRemaining)
-    }
-    
-    var body: some View {
-        ZStack {
-            // Backdrop
-            Color.black.opacity(0.35)
-                .ignoresSafeArea()
-                .onTapGesture {
-                    onDismiss()
-                }
-            
-            // Container
-            VStack(spacing: 0) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        // Image carousel
-                        imageCarousel
-                        
-                        // Content with 20pt spacing between sections per spec
-                        VStack(alignment: .leading, spacing: 20) {
-                            metaSection
-                            
-                            if let description = reservation.post.description, !description.isEmpty {
-                                descriptionSection(description)
-                            }
-                            
-                            locationSection
-                            sharedBySection
-                        }
-                        .padding(.horizontal, 24) // 24pt side padding per spec
-                    }
-                    .padding(.vertical, 16)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                
-                // Buttons (pinned to bottom) - aligned with image left edge
-                buttonsSection
-                    .padding(.horizontal, 24) // Match content padding for alignment
-                    .padding(.vertical, 16)
-            }
-            .frame(
-                maxWidth: .infinity,
-                maxHeight: .infinity
-            )
-            .background(Color(.systemBackground))
-            .clipShape(RoundedRectangle(cornerRadius: 28))
-            .shadow(color: .black.opacity(0.12), radius: 24, x: 0, y: 8)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 40)
-            .frame(maxWidth: UIScreen.main.bounds.width * 0.8, maxHeight: UIScreen.main.bounds.height * 0.8)
-            .offset(y: dragOffset.height)
-            .gesture(
-                DragGesture()
-                    .onChanged { value in
-                        if value.translation.height > 0 {
-                            dragOffset = value.translation
-                        }
-                    }
-                    .onEnded { value in
-                        if value.translation.height > 120 {
-                            onDismiss()
-                        } else {
-                            withAnimation(.spring()) {
-                                dragOffset = .zero
-                            }
-                        }
-                    }
-            )
-            
-            // Close button with glassmorphic background - positioned on top of card
-            VStack {
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundColor(.primary)
-                        .frame(width: 36, height: 36)
-                        .background(.ultraThinMaterial, in: Circle())
-                }
-                .padding(.top, 20)
-                
-                Spacer()
-            }
-            .frame(
-                maxWidth: UIScreen.main.bounds.width * 0.8, maxHeight: UIScreen.main.bounds.height * 0.8
-            )
-        }
-        .onReceive(timer) { _ in
-            if reservation.post.mode == .street {
-                timeRemaining = reservation.timeRemaining
-            }
-        }
-    }
-}
-

@@ -192,12 +192,12 @@ struct SwipeDeckView: View {
             .navigationBarTitleDisplayMode(.inline)
             .onAppear { handleViewAppear() }
             .task { await fetchFeedBridge() }
-            .onChange(of: seg) { newValue in
+            .onChange(of: seg) { oldValue, newValue in
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
                     showFeedMap = (newValue == .map)
                 }
             }
-            .onChange(of: showFeedMap) { newValue in
+            .onChange(of: showFeedMap) { oldValue, newValue in
                 if !newValue {
                     withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
                         seg = .feed
@@ -213,6 +213,7 @@ struct SwipeDeckView: View {
             }
         }
     }
+
 
     // MARK: - Main Content Components
 
@@ -694,9 +695,9 @@ extension SwipeDeckView {
                     
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(action: recenter) {
-                            Image(systemName: "location.north.line.fill")
+                            Image(systemName: "location.fill")
                                 .font(.title3.weight(.semibold))
-                                .foregroundColor(Color.brandDark)
+                                .foregroundColor(AppTheme.ColorToken.primary)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Center on my location")

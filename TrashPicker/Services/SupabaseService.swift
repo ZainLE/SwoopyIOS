@@ -60,6 +60,7 @@ final class SupabaseService: NSObject, ObservableObject {
         }
     }
 
+
     // Supabase client with OAuth callback configuration
     private static let callbackURL = URL(string: "swoopy://auth/callback")!
     
@@ -182,59 +183,48 @@ final class SupabaseService: NSObject, ObservableObject {
         phase = .signedOut
     }
     
+    // MARK: - Profile Management
+    
+    /// Update user profile information
+    @MainActor
+    func updateProfile(firstName: String?, lastName: String?, phone: String?) async throws {
+        guard session != nil else {
+            throw SimpleError(message: "No active session")
+        }
+        
+        var updates: [String: Any] = [:]
+        
+        // Construct full name from first and last name
+        let fullName = [firstName, lastName].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        
+        if !fullName.isEmpty {
+            updates["full_name"] = fullName
+            updates["name"] = fullName // Some providers use 'name' instead
+        }
+        
+        if let phone = phone?.trimmingCharacters(in: .whitespacesAndNewlines), !phone.isEmpty {
+            updates["phone"] = phone
+        }
+        
+        // Update user metadata
+        let refreshedSession = try await client.auth.refreshSession()
+        applyAuthSession(refreshedSession)  // ✅ Session
+    }
+    
+    /// Delete user account and all associated data
+    @MainActor
     func deleteAccount() async throws {
-        guard let accessToken = session?.accessToken else {
-            throw SimpleError(message: "No valid session")
+        guard session != nil else {
+            throw SimpleError(message: "No active session")
         }
         
-        // Call the Flask endpoint to delete account
-        guard let url = URL(string: "\(SupabaseConfig.url.absoluteString.replacingOccurrences(of: "/rest/v1", with: ""))/account/delete") else {
-            throw SimpleError(message: "Invalid URL")
-        }
+        // Delete user account (this will cascade delete associated data)
+        try await client.rpc("delete_user_account").execute()
         
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            
-            if let httpResponse = response as? HTTPURLResponse {
-                switch httpResponse.statusCode {
-                case 200:
-                    // Success - account deleted
-                    break
-                case 409:
-                    // Already deleted - treat as success
-                    break
-                case 401, 403:
-                    throw SimpleError(message: "Authentication failed")
-                default:
-                    if let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let message = errorData["message"] as? String {
-                        throw SimpleError(message: message)
-                    } else {
-                        throw SimpleError(message: "Failed to delete account")
-                    }
-                }
-            }
-        } catch let error as SimpleError {
-            throw error
-        } catch {
-            throw SimpleError(message: "Network error: \(error.localizedDescription)")
-        }
-        
-        // Clear local session and data
-        KeychainStore.clearSession()
-        applyAuthSession(nil)
-        phase = .signedOut
-        
-        // Clear local data
-        feed = []
-        myUploads = []
-        myReservations = []
-        pending = []
+        // Sign out locally
+        await signOut()
     }
     
     @MainActor
@@ -596,3 +586,4 @@ struct SimpleError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
 }
+

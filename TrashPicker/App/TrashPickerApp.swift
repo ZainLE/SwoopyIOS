@@ -25,7 +25,7 @@ struct TrashPickerApp: App {
                         await svc.handleOAuthRedirect(url)
                     }
                 }
-                .tint(Color(hex: 0x00513F))
+                .tint(AppTheme.ColorToken.primary)
         }
     }
 }

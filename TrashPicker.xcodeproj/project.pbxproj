@@ -44,6 +44,7 @@
 			membershipExceptions = (
 				Info.plist,
 				Views/AppleSignInbutton.swift,
+				Views/Untitled.swift,
 			);
 			target = 8E7AB91A2E68ACE8002CC686 /* TrashPicker */;
 		};

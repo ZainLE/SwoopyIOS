@@ -21,8 +21,8 @@ final class ProfileVM: ObservableObject {
         // Get data from Supabase session first
         if let session = supabaseService.session {
             userEmail = session.user.email ?? "No email"
-            displayName = session.user.userMetadata["full_name"]?.description 
-                ?? session.user.userMetadata["name"]?.description 
+            displayName = session.user.userMetadata["full_name"]?.description
+                ?? session.user.userMetadata["name"]?.description
                 ?? "Your Name"
             createdAt = session.user.createdAt
         }
@@ -74,6 +74,7 @@ struct ProfileView: View {
     @State private var showingSignOutError = false
     @State private var showingDeleteError = false
     @State private var errorMessage = ""
+    @State private var showingAccountDetails = false
     
     init() {
         // We'll need to inject the service in the view's initializer or use a different approach
@@ -86,45 +87,48 @@ struct ProfileView: View {
             List {
                 // MARK: - Account Section
                 Section {
-                    HStack(spacing: 16) {
-                        // Avatar
-                        Image(systemName: "person.circle.fill")
-                            .font(.system(size: 48))
-                            .foregroundColor(AppColor.brandGreen)
-                        
-                        VStack(alignment: .leading, spacing: 4) {
-                            // Display name
-                            Text(viewModel.displayName)
-                                .font(AppFont.h3)
-                                .foregroundColor(AppColor.text)
+                    Button(action: { showingAccountDetails = true }) {
+                        HStack(spacing: 16) {
+                            // Avatar
+                            Image(systemName: "person.circle.fill")
+                                .font(.system(size: 48))
+                                .foregroundColor(AppColor.brandGreen)
                             
-                            // Email
-                            Text(viewModel.userEmail)
-                                .font(AppFont.sub)
-                                .foregroundColor(AppColor.muted)
-                            
-                            // Member info
-                            VStack(alignment: .leading, spacing: 2) {
-                                if viewModel.createdAt != nil {
-                                    Text("Member since: \(viewModel.memberSinceText)")
+                            VStack(alignment: .leading, spacing: 4) {
+                                // Display name
+                                Text(viewModel.displayName)
+                                    .font(AppFont.h3)
+                                    .foregroundColor(AppColor.text)
+                                
+                                // Email
+                                Text(viewModel.userEmail)
+                                    .font(AppFont.sub)
+                                    .foregroundColor(AppColor.muted)
+                                
+                                // Member info
+                                VStack(alignment: .leading, spacing: 2) {
+                                    if viewModel.createdAt != nil {
+                                        Text("Member since: \(viewModel.memberSinceText)")
+                                            .font(AppFont.sub)
+                                            .foregroundColor(AppColor.muted)
+                                    }
+                                    
+                                    Text("Account age: \(viewModel.accountAgeText)")
                                         .font(AppFont.sub)
                                         .foregroundColor(AppColor.muted)
                                 }
-                                
-                                Text("Account age: \(viewModel.accountAgeText)")
-                                    .font(AppFont.sub)
-                                    .foregroundColor(AppColor.muted)
                             }
+                            
+                            Spacer()
+                            
+                            // Chevron for account details
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(AppColor.muted)
                         }
-                        
-                        Spacer()
-                        
-                        // Chevron for future account details
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(AppColor.muted)
+                        .padding(.vertical, 8)
                     }
-                    .padding(.vertical, 8)
+                    .buttonStyle(.plain)
                 } header: {
                     Text("Account")
                         .font(AppFont.h2)
@@ -191,12 +195,14 @@ struct ProfileView: View {
                                 .foregroundColor(.white)
                             Spacer()
                         }
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 14)
                         .background(AppColor.brandGreen)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .clipShape(RoundedRectangle(cornerRadius: 99))
                     }
-                    .listRowInsets(EdgeInsets())
+                    .buttonStyle(.plain)
+                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
                     .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
                     
                     // Delete Account Button
                     Button(action: { showingDeleteConfirmation = true }) {
@@ -205,7 +211,7 @@ struct ProfileView: View {
                             if isDeleting {
                                 ProgressView()
                                     .scaleEffect(0.8)
-                                    .foregroundColor(.white)
+                                    .tint(.white)
                             } else {
                                 Text("Delete Account")
                                     .font(AppFont.label)
@@ -213,27 +219,25 @@ struct ProfileView: View {
                             }
                             Spacer()
                         }
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 14)
                         .background(Color.red)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .clipShape(RoundedRectangle(cornerRadius: 99))
                     }
+                    .buttonStyle(.plain)
                     .disabled(isDeleting)
-                    .listRowInsets(EdgeInsets())
+                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
                     .listRowBackground(Color.clear)
-                } footer: {
-                    Text("Danger Zone")
-                        .font(AppFont.sub)
-                        .foregroundColor(AppColor.muted)
+                    .listRowSeparator(.hidden)
                 }
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Profile")
             .navigationBarTitleDisplayMode(.large)
-            .task { 
+            .task {
                 await svc.fetchMyStuff()
                 await viewModel.load()
             }
-            .refreshable { 
+            .refreshable {
                 await svc.fetchMyStuff()
                 await viewModel.load()
             }
@@ -270,6 +274,16 @@ struct ProfileView: View {
                 Button("OK") { }
             } message: {
                 Text(errorMessage)
+            }
+            .sheet(isPresented: $showingAccountDetails) {
+                AccountDetailsView()
+                    .environmentObject(svc)
+            }
+            .onAppear {
+                // Refresh profile data when returning from account details
+                Task {
+                    await viewModel.load()
+                }
             }
         }
     }
@@ -421,4 +435,3 @@ extension CKTrashItem {
     var cityText: String { city }
     var mapCoordinate: CLLocationCoordinate2D? { coordinate }
 }
-
