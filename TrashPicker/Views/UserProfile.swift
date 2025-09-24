@@ -31,7 +31,11 @@ final class UserProfileStore: ObservableObject {
            let p = try? JSONDecoder().decode(UserProfile.self, from: data) {
             self.profile = p
         } else {
+            #if DEBUG
             self.profile = UserProfile(username: "Your Name", email: "you@example.com", phone: "", address: "", avatarFilename: nil)
+            #else
+            self.profile = UserProfile(username: "", email: "", phone: "", address: "", avatarFilename: nil)
+            #endif
             save()
         }
     }

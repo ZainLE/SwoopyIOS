@@ -98,7 +98,9 @@ final class CKTrashService: ObservableObject {
     private let ioQueue = DispatchQueue(label: "cktrash.io", qos: .utility)
 
     init() {
+        #if DEBUG
         seedIfNeeded()
+        #endif
         // load history once
         self.reservationHistory = loadHistorySync().sorted { ($0.completedAt ?? $0.reservedAt) > ($1.completedAt ?? $1.reservedAt) }
         Task { await refreshViews() }
@@ -348,6 +350,7 @@ final class CKTrashService: ObservableObject {
         }
     }
 
+    #if DEBUG
     // Seed demo data
     private func seedIfNeeded() {
         guard !UserDefaults.standard.bool(forKey: seededKey) else { return }
@@ -414,4 +417,5 @@ final class CKTrashService: ObservableObject {
         UIGraphicsEndImageContext()
         return img
     }
+    #endif
 }

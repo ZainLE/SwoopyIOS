@@ -10,8 +10,8 @@ import CoreLocation
 import UIKit // for UIImpactFeedbackGenerator
 
 struct FeedCard: View {
-    // Injected from parent
-    let item: CKTrashItem
+    // Injected from parent - can be either CKTrashItem or Post
+    let item: Any
     @ObservedObject var deckState: DeckState
     let isActiveCard: Bool // Whether this is the active (top) card
     let router: AppRouter
@@ -47,23 +47,129 @@ struct FeedCard: View {
     private var imageHeight: CGFloat { collapsedImageHeight }
     private var cardHeight: CGFloat { collapsedCardHeight }
 
+    // MARK: - Computed Properties for Both Item Types
+    
+    private var itemId: String {
+        if let ckItem = item as? CKTrashItem {
+            return String(describing: ckItem.id)
+        } else if let post = item as? Post {
+            return post.id
+        }
+        return ""
+    }
+    
+    private var itemTitle: String {
+        if let ckItem = item as? CKTrashItem {
+            return ckItem.title
+        } else if let post = item as? Post {
+            return post.title
+        }
+        return ""
+    }
+    
+    private var itemCondition: String? {
+        if let ckItem = item as? CKTrashItem {
+            return ckItem.condition
+        } else if let post = item as? Post {
+            return post.condition.rawValue
+        }
+        return nil
+    }
+    
+    private var itemMode: String? {
+        if let ckItem = item as? CKTrashItem {
+            return ckItem.mode
+        } else if let post = item as? Post {
+            return post.mode.rawValue
+        }
+        return nil
+    }
+    
+    private var itemCreatedAt: Date {
+        if let ckItem = item as? CKTrashItem {
+            return ckItem.createdAt
+        } else if let post = item as? Post {
+            return ISO8601DateFormatter().date(from: post.expiresAt) ?? Date() // Using expiresAt as placeholder
+        }
+        return Date()
+    }
+    
+    private var itemDescription: String? {
+        if let ckItem = item as? CKTrashItem {
+            return ckItem.desc
+        } else if let post = item as? Post {
+            return post.description
+        }
+        return nil
+    }
+    
+    private var itemPrimaryImageURL: URL? {
+        if let ckItem = item as? CKTrashItem {
+            return ckItem.photoURL
+        } else if let post = item as? Post {
+            return post.primaryImageURL
+        }
+        return nil
+    }
+    
+    private var itemCoordinate: CLLocationCoordinate2D? {
+        if let ckItem = item as? CKTrashItem {
+            return ckItem.coordinate
+        } else if let post = item as? Post {
+            // For Post, we need to construct coordinate from exactLocation or approxLocation
+            if let exact = post.exactLocation, 
+               let lat = Double(exact.lat ?? ""), 
+               let lng = Double(exact.lng ?? "") {
+                return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+            } else if let approx = post.approxLocation,
+                      let lat = Double(approx.lat ?? ""),
+                      let lng = Double(approx.lng ?? "") {
+                return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+            }
+        }
+        return nil
+    }
+    
+    private var itemOwnerName: String? {
+        if let ckItem = item as? CKTrashItem {
+            return nil // CKTrashItem doesn't have owner info
+        } else if let post = item as? Post {
+            return post.owner?.firstName
+        }
+        return nil
+    }
+    
+    private var itemInterestedCount: Int? {
+        if let ckItem = item as? CKTrashItem {
+            return ckItem.interestedCount
+        } else if let post = item as? Post {
+            return nil // Post doesn't have interested count
+        }
+        return nil
+    }
+
     // MARK: - Computed Strings
 
     private var conditionDisplayText: String {
-        let condition = item.condition
+        let condition = itemCondition
         switch condition?.lowercased() {
-        case "needs fixing", "needs_fixing": return "Needs Fixing"
+        case "bad", "needs fixing", "needs_fixing": return "Needs Fixing"
         case "usable": return "Usable"
         case "good": return "Good"
-        case "like new", "like_new": return "Like New"
+        case "excellent", "like new", "like_new": return "Like New"
         default: return condition?.capitalized ?? "Unknown"
         }
     }
 
     private var distanceString: String {
-        // Deterministic "fake" distance until we wire real location logic
+        // Use real distance from Post or deterministic fake for CKTrashItem
+        if let post = item as? Post, let distance = post.distance {
+            return String(format: "%.1f km away", distance)
+        }
+        
+        // Deterministic "fake" distance for CKTrashItem until we wire real location logic
         let distances = ["0,3 km away", "0,8 km away", "1,2 km away", "1,5 km away", "2,1 km away"]
-        let key = String(describing: item.id) // Works for UUID/CKRecord.ID/etc.
+        let key = itemId
         let hash = abs(key.hashValue)
         return distances[hash % distances.count]
     }
@@ -71,11 +177,11 @@ struct FeedCard: View {
     private var timeAgoString: String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: item.createdAt, relativeTo: Date())
+        return formatter.localizedString(for: itemCreatedAt, relativeTo: Date())
     }
     
     private var feedPrimaryInfo: String {
-        if item.mode?.lowercased() == "home" {
+        if itemMode?.lowercased() == "home" {
             return "From home (address hidden)"
         } else {
             return distanceString
@@ -88,7 +194,7 @@ struct FeedCard: View {
         VStack(spacing: 0) {
             // IMAGE AREA
             ZStack {
-                if let url = item.photoURL {
+                if let url = itemPrimaryImageURL {
                     AsyncImage(url: url) { image in
                         image
                             .resizable()
@@ -157,7 +263,7 @@ struct FeedCard: View {
             HStack {
                 // Left side
                 VStack(alignment: .leading, spacing: 4) {
-                    if item.mode?.lowercased() == "home" {
+                    if itemMode?.lowercased() == "home" {
                         Text("From home (address hidden)")
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundColor(.primary)
@@ -246,6 +352,7 @@ struct FeedCard: View {
                 }
         )
         .overlay(
+        
             // Feed detail overlay using BigCardOverlay
             Group {
                 if showDetailOverlay {
@@ -260,16 +367,16 @@ struct FeedCard: View {
                         
                         // Big card overlay
                         BigCardOverlay(
-                            images: [item.photoURL?.absoluteString ?? ""],
+                            images: [itemPrimaryImageURL?.absoluteString ?? ""],
                             primaryInfo: feedPrimaryInfo,
                             statusInfo: "Posted \(timeAgoString)",
                             statusColor: mutedText,
-                            description: item.desc,
-                            mode: item.mode?.lowercased() == "street" ? .street : .home,
-                            exactLocation: item.coordinate,
-                            ownerName: "Anonymous User",
-                            memberSince: item.createdAt,
-                            pickupsCount: item.interestedCount,
+                            description: itemDescription,
+                            mode: itemMode?.lowercased() == "street" ? .street : .home,
+                            exactLocation: itemCoordinate,
+                            ownerName: itemOwnerName ?? "Anonymous User",
+                            memberSince: itemCreatedAt,
+                            pickupsCount: itemInterestedCount,
                             variant: .feed,
                             onDismiss: {
                                 showDetailOverlay = false

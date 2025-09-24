@@ -7,6 +7,9 @@ enum SupabaseConfig {
     static let photosBucket = "item-photos"
     static let postsTable   = "items"
     
+    // API base URL for backend calls
+    static let apiBaseURL = "https://swoopy.eu"
+    
     // Read from Info.plist (DO NOT hardcode here in source)
     static let url: URL = {
         guard

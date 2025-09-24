@@ -42,7 +42,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         if let cb = oneShot { cb(nil); oneShot = nil }
+        #if DEBUG
         print("Location error:", error.localizedDescription)
+        #endif
     }
 }
 

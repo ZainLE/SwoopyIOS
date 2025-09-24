@@ -10,7 +10,7 @@ import CloudKit
 
 @MainActor
 class DeckState: ObservableObject {
-    @Published var items: [CKTrashItem] = []
+    @Published var items: [Any] = []
     @Published var activeIndex: Int = 0
     @Published var isAnimating: Bool = false
     @Published var isActing: Bool = false
@@ -19,11 +19,11 @@ class DeckState: ObservableObject {
     // Computed properties
     var hasCards: Bool { !items.isEmpty }
     var canAct: Bool { hasCards && !isAnimating && !isActing }
-    var activeCard: CKTrashItem? { 
+    var activeCard: Any? { 
         guard activeIndex < items.count else { return nil }
         return items[activeIndex] 
     }
-    var nextCard: CKTrashItem? {
+    var nextCard: Any? {
         let nextIndex = activeIndex + 1
         guard nextIndex < items.count else { return nil }
         return items[nextIndex]
@@ -31,7 +31,7 @@ class DeckState: ObservableObject {
     
     // MARK: - Public Actions
     
-    func updateItems(_ newItems: [CKTrashItem]) {
+    func updateItems<T>(_ newItems: [T]) {
         items = newItems
         activeIndex = 0
         isAnimating = false

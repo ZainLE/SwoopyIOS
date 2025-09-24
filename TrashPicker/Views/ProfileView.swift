@@ -335,6 +335,28 @@ private struct UploadRow: View {
     }
 }
 
+private struct UploadPostRow: View {
+    let post: Post
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Thumbnail(url: post.primaryImageURL)
+                .frame(width: 56, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(AppColor.stroke, lineWidth: 1))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(post.title).font(AppFont.h3)
+                Text(post.condition.rawValue.capitalized).font(AppFont.sub).foregroundColor(AppColor.muted)
+            }
+            Spacer()
+            if let createdDate = ISO8601DateFormatter().date(from: post.expiresAt) {
+                Text(createdDate, style: .time)
+                    .font(AppFont.sub).foregroundColor(AppColor.muted)
+            }
+        }
+    }
+}
+
 private struct ProfileReservationRow: View {
     let item: TrashDTO
 
@@ -383,26 +405,65 @@ private struct Thumbnail: View {
 
 private struct UploadsHistoryView: View {
     @EnvironmentObject var svc: SupabaseService
+    @State private var api: ApiService?
+    @State private var myPosts: [Post] = []
+    @State private var isLoading = false
     
     var body: some View {
         List {
-            if svc.myUploads.isEmpty {
+            if isLoading {
+                VStack(spacing: 16) {
+                    ProgressView()
+                        .scaleEffect(1.2)
+                        .tint(AppColor.brandGreen)
+                    
+                    Text("Loading your uploads...")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 40)
+            } else if myPosts.isEmpty {
                 ContentUnavailableView(
                     "No Uploads Yet",
                     systemImage: "tray",
                     description: Text("Your uploaded items will appear here")
                 )
             } else {
-                ForEach(svc.myUploads) { item in
-                    UploadRow(item: item)
+                ForEach(myPosts, id: \.id) { post in
+                    UploadPostRow(post: post)
                 }
             }
         }
         .navigationTitle("Your Uploads")
         .navigationBarTitleDisplayMode(.large)
-        .task { await svc.fetchMyStuff() }
-        .refreshable { await svc.fetchMyStuff() }
+        .task { 
+            if api == nil { api = ApiService(supabaseService: svc) }
+            await loadMyPosts()
+        }
+        .refreshable { 
+            await loadMyPosts()
+        }
     }
+    
+    @MainActor
+    private func loadMyPosts() async {
+        guard let api else { return }
+        isLoading = true
+        do {
+            let posts = try await fetchWithRetry(svc: svc) {
+                try await api.getMyPosts()
+            }
+            myPosts = posts
+        } catch {
+            #if DEBUG
+            print("Failed to load my posts: \(error.localizedDescription)")
+            #endif
+            myPosts = []
+        }
+        isLoading = false
+    }
+    
 }
 
 private struct ReservationHistoryView: View {

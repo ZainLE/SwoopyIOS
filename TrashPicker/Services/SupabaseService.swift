@@ -82,6 +82,12 @@ final class SupabaseService: NSObject, ObservableObject {
     func currentAccessTokenOrNil() -> String? {
         return session?.accessToken
     }
+    
+    /// Refresh the current session if needed
+    func refreshSessionIfNeeded() async throws {
+        let refreshedSession = try await client.auth.refreshSession()
+        applyAuthSession(refreshedSession)
+    }
 
     private override init() {
         super.init()
@@ -116,7 +122,9 @@ final class SupabaseService: NSObject, ObservableObject {
             let s = try await client.auth.session(from: url)
             applyAuthSession(s)
         } catch {
+            #if DEBUG
             print("OAuth redirect handling failed:", error.localizedDescription)
+            #endif
         }
     }
 
@@ -176,7 +184,9 @@ final class SupabaseService: NSObject, ObservableObject {
 
     func signOut() async {
         do { try await client.auth.signOut() } catch {
+            #if DEBUG
             print("signOut error:", error.localizedDescription)
+            #endif
         }
         KeychainStore.clearSession()
         applyAuthSession(nil)
@@ -270,7 +280,9 @@ final class SupabaseService: NSObject, ObservableObject {
                 )
             }
         } catch {
+            #if DEBUG
             print("fetchFeed:", error.localizedDescription)
+            #endif
         }
     }
 
@@ -373,13 +385,21 @@ final class SupabaseService: NSObject, ObservableObject {
     func cancelReservation(_ item: TrashDTO) async {
         struct Params: Encodable { let p_post_id: UUID }
         do { _ = try await client.rpc("clear_reservation", params: Params(p_post_id: item.id)).execute() }
-        catch { print("cancelReservation:", error.localizedDescription) }
+        catch { 
+            #if DEBUG
+            print("cancelReservation:", error.localizedDescription) 
+            #endif
+        }
     }
 
     func confirmPickup(_ item: TrashDTO) async {
         struct Params: Encodable { let p_post_id: UUID }
         do { _ = try await client.rpc("mark_picked_up", params: Params(p_post_id: item.id)).execute() }
-        catch { print("confirmPickup:", error.localizedDescription) }
+        catch { 
+            #if DEBUG
+            print("confirmPickup:", error.localizedDescription) 
+            #endif
+        }
     }
 }
 

@@ -7,78 +7,47 @@ import SwiftUI
 import MapKit
 import CoreLocation
 
-// MARK: - New Data Contract
+// MARK: - Supporting Types
 
-struct ReservationRow: Identifiable, Codable {
+enum ReservationStatus: String, CaseIterable {
+    case pending = "pending"
+    case active = "active"
+    case picked = "picked"
+    case canceled = "canceled"
+    case expired = "expired"
+}
+
+// MARK: - Flat UI Model for Reservations
+
+struct ReservationRow: Identifiable {
+    // identity
     let id: String
-    let reservation: ReservationData
-    let post: PostData
-    
-    struct ReservationData: Codable {
-        let id: String
-        let status: ReservationStatus
-        let requestedAt: Date
-        let approvedAt: Date?
-        
-        enum ReservationStatus: String, Codable, CaseIterable {
-            case pending, active, canceled, picked, expired
-        }
-    }
-    
-    struct PostData: Codable {
-        let id: String
-        let mode: PostMode
-        let condition: PostCondition
-        let images: [PostImage]
-        let distanceKm: Double?
-        let exactLocation: LocationCoordinate?
-        let approxLocation: LocationCoordinate?
-        let owner: OwnerData
-        let description: String?
-        
-        enum PostMode: String, Codable {
-            case street, home
-        }
-        
-        enum PostCondition: String, Codable {
-            case bad, good, excellent
-            
-            var displayText: String {
-                switch self {
-                case .bad: return "Needs Fixing"
-                case .good: return "Usable"
-                case .excellent: return "Like New"
-                }
-            }
-        }
-        
-        struct PostImage: Codable {
-            let url: String
-            let orderIndex: Int
-        }
-        
-        struct LocationCoordinate: Codable {
-            let lng: Double
-            let lat: Double
-            
-            var coordinate: CLLocationCoordinate2D {
-                CLLocationCoordinate2D(latitude: lat, longitude: lng)
-            }
-        }
-        
-        struct OwnerData: Codable {
-            let id: String
-            let name: String
-            let phone: String?
-            let avatarUrl: String?
-            let memberSince: Date?
-            let pickupsCount: Int?
-        }
-    }
+
+    // post basics
+    let title: String
+    let description: String?
+
+    // post meta
+    let condition: ItemCondition
+    let mode: ItemMode
+    let distanceKm: Double?
+    let primaryImageURL: URL?
+
+    // owner (uploader)
+    let ownerName: String
+    let ownerPhone: String?
+
+    // reservation state
+    let status: ReservationStatus
+    let requestedAt: Date
+    let approvedAt: Date?
+
+    // locations
+    let exactCoordinate: CLLocationCoordinate2D?   // for street
     
     // Computed properties for business logic
     var expiresAt: Date {
-        Calendar.current.date(byAdding: .hour, value: 6, to: reservation.requestedAt) ?? reservation.requestedAt
+        Calendar.current.date(byAdding: .hour, value: 6, to: requestedAt) ?? requestedAt
     }
     
     var isExpired: Bool {
@@ -88,9 +57,44 @@ struct ReservationRow: Identifiable, Codable {
     var timeRemaining: TimeInterval {
         max(0, expiresAt.timeIntervalSinceNow)
     }
-    
-    var primaryImage: String? {
-        post.images.first(where: { $0.orderIndex == 0 })?.url
+}
+
+// Nice helpers you can use directly in the View:
+extension ReservationRow {
+    var statusText: String {
+        switch status {
+        case .pending:  return "Pending confirmation"
+        case .active:   return "Active"
+        case .picked:   return "Completed"
+        case .canceled: return "Canceled"
+        case .expired:  return "Expired"
+        }
+    }
+}
+
+extension ReservationRow {
+    init(_ r: Reservation) {
+        let p = r.post
+
+        id = r.id
+        title = p.title
+        description = p.description
+        condition = p.condition
+        mode = p.mode
+        distanceKm = p.distance
+        primaryImageURL = p.primaryImageURL
+
+        ownerName = p.owner?.fullName ?? "Unknown"
+        ownerPhone = p.owner?.phone
+
+        // status + dates
+        status = ReservationStatus(rawValue: r.status) ?? .pending
+        let iso = ISO8601DateFormatter()
+        requestedAt = iso.date(from: r.requestedAt) ?? Date()
+        approvedAt = r.approvedAt.flatMap { iso.date(from: $0) }
+
+        // street coordinate (using Location.coordinate extension)
+        exactCoordinate = p.exactLocation?.coordinate
     }
 }
 
@@ -98,13 +102,17 @@ struct ReservationRow: Identifiable, Codable {
 
 struct ReservationsView: View {
     @EnvironmentObject var svc: SupabaseService
+    @State private var api: ApiService?
     @State private var reservations: [ReservationRow] = []
-    @State private var timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     
     // UI State Management
     @State private var loadingReservations: Set<String> = []
     @State private var showToast = false
     @State private var toastMessage = ""
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var showError = false
     
     // Overlay State
     @State private var selectedReservation: ReservationRow?
@@ -116,7 +124,45 @@ struct ReservationsView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if activeReservations.isEmpty {
+                if isLoading {
+                    // Loading state
+                    VStack(spacing: 16) {
+                        ProgressView()
+                            .scaleEffect(1.2)
+                            .tint(AppTheme.ColorToken.primary)
+                        
+                        Text("Loading your reservations...")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if showError {
+                    // Error state
+                    VStack(spacing: 16) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 48))
+                            .foregroundColor(.orange)
+                        
+                        Text(errorMessage ?? "Failed to load reservations")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.primary)
+                            .multilineTextAlignment(.center)
+                        
+                        Button("Try Again") {
+                            Task {
+                                await loadReservations()
+                            }
+                        }
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 12)
+                        .background(AppTheme.ColorToken.primary)
+                        .clipShape(Capsule())
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, 32)
+                } else if activeReservations.isEmpty {
                     // Empty state with CTA
                     VStack(spacing: 16) {
                         Text("No active reservations yet.")
@@ -152,10 +198,10 @@ struct ReservationsView: View {
                                         selectedReservation = reservation
                                         showDetailOverlay = true
                                     },
-                                    onPickUp: { onPickup(reservationId: reservation.reservation.id) },
-                                    onCancel: { onCancel(reservationId: reservation.reservation.id) },
-                                    onDirections: { onDirections(post: reservation.post) },
-                                    onContact: { onContact(post: reservation.post) }
+                                    onPickUp: { onPickup(reservationId: reservation.id) },
+                                    onCancel: { onCancel(reservationId: reservation.id) },
+                                    onDirections: { onDirections(reservation: reservation) },
+                                    onContact: { onContact(reservation: reservation) }
                                 )
                                 .id(reservation.id) // EXPLICIT ID for better diffing
                             }
@@ -163,12 +209,16 @@ struct ReservationsView: View {
                         .padding(.horizontal, AppTheme.Spacing.chromeSide)
                         .padding(.vertical, 12) // REDUCED padding
                     }
+                    .refreshable {
+                        await loadReservations()
+                    }
                     .scrollIndicators(.hidden) // HIDE scroll indicators
                 }
             }
             .navigationTitle("Your reservations")
             .navigationBarTitleDisplayMode(.inline)
             .task {
+                if api == nil { api = ApiService(supabaseService: svc) }
                 await loadReservations()
             }
             .overlay(
@@ -208,16 +258,16 @@ struct ReservationsView: View {
                             
                             // Big card overlay
                             BigCardOverlay(
-                                images: reservation.post.images.map { $0.url },
+                                images: reservation.primaryImageURL != nil ? [reservation.primaryImageURL!.absoluteString] : [],
                                 primaryInfo: primaryInfoText(for: reservation),
                                 statusInfo: statusText(for: reservation),
                                 statusColor: statusColor(for: reservation),
-                                description: reservation.post.description,
-                                mode: reservation.post.mode == .street ? .street : .home,
-                                exactLocation: reservation.post.exactLocation?.coordinate,
-                                ownerName: reservation.post.owner.name,
-                                memberSince: reservation.post.owner.memberSince,
-                                pickupsCount: reservation.post.owner.pickupsCount,
+                                description: reservation.description,
+                                mode: reservation.mode == .street ? .street : .home,
+                                exactLocation: reservation.exactCoordinate,
+                                ownerName: reservation.ownerName,
+                                memberSince: nil, // Not available in simplified model
+                                pickupsCount: nil, // Not available in simplified model
                                 variant: reservationVariant(for: reservation),
                                 onDismiss: {
                                     showDetailOverlay = false
@@ -227,12 +277,12 @@ struct ReservationsView: View {
                                     handlePrimaryAction(for: reservation)
                                 },
                                 onSecondaryAction: {
-                                    onCancel(reservationId: reservation.reservation.id)
+                                    onCancel(reservationId: reservation.id)
                                     showDetailOverlay = false
                                     selectedReservation = nil
                                 },
-                                onTertiaryAction: reservation.post.mode == .street ? {
-                                    onDirections(post: reservation.post)
+                                onTertiaryAction: reservation.mode == .street ? {
+                                    onDirections(reservation: reservation)
                                 } : nil
                             )
                             .zIndex(2)
@@ -250,25 +300,48 @@ struct ReservationsView: View {
     private var activeReservations: [ReservationRow] {
         reservations.filter { reservation in
             // Street: active and not expired, Home: pending or active
-            (reservation.post.mode == .street ?
-                (reservation.reservation.status == .active && !reservation.isExpired) :
-                (reservation.reservation.status == .pending || reservation.reservation.status == .active)
+            (reservation.mode == .street ?
+                (reservation.status == .active && !reservation.isExpired) :
+                (reservation.status == .pending || reservation.status == .active)
             ) &&
             // Exclude canceled, picked, expired
-            ![.canceled, .picked, .expired].contains(reservation.reservation.status)
+            ![.canceled, .picked, .expired].contains(reservation.status)
         }
     }
     
     // MARK: - Actions
     
+    @MainActor
     private func loadReservations() async {
-        // TODO: Load from backend
-        // For now, using mock data that matches the spec
-        await MainActor.run {
-            reservations = createMockReservations()
+        guard let api else { return }
+        isLoading = true
+        showError = false
+        
+        do {
+            let apiReservations = try await fetchWithRetry(svc: svc) {
+                try await api.getMyReservations()
+            }
+            await MainActor.run {
+                reservations = apiReservations.map(ReservationRow.init)
+                isLoading = false
+            }
+        } catch {
+            #if DEBUG
+            print("Failed to load reservations: \(error.localizedDescription)")
+            #endif
+            reservations = []
+            isLoading = false
+            
+            if error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
+                errorMessage = "Session expired. Please sign in again."
+            } else {
+                errorMessage = "Failed to load reservations. Please try again."
+            }
+            showError = true
         }
     }
     
+    @MainActor
     private func removeExpiredReservations() {
         let expiredIds = reservations.filter { $0.isExpired }.map { $0.id }
         if !expiredIds.isEmpty {
@@ -309,28 +382,24 @@ struct ReservationsView: View {
         presentAlert(alert)
     }
     
-    private func onDirections(post: ReservationRow.PostData) {
+    private func onDirections(reservation: ReservationRow) {
         // Only for street mode
-        guard post.mode == .street, let exactLoc = post.exactLocation else { return }
+        guard reservation.mode == .street, let exactCoord = reservation.exactCoordinate else { return }
         
-        let coordinate = exactLoc.coordinate
-        let mapItem = MKMapItem(placemark: MKPlacemark(coordinate: coordinate))
-        mapItem.name = "Pickup Location"
+        let mapItem = MKMapItem(placemark: MKPlacemark(coordinate: exactCoord))
+        mapItem.name = reservation.title
         mapItem.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking])
     }
     
-    private func onContact(post: ReservationRow.PostData) {
-        // Find the reservation to check status
-        guard let reservation = reservations.first(where: { $0.post.id == post.id }) else { return }
-        
-        switch reservation.reservation.status {
+    private func onContact(reservation: ReservationRow) {
+        switch reservation.status {
         case .pending:
             // Show inline tip - no call
             showToastMessage("Waiting for giver's confirmation")
             
         case .active:
             // Open phone dialer
-            guard let phoneNumber = post.owner.phone else {
+            guard let phoneNumber = reservation.ownerPhone else {
                 showToastMessage("No phone number available")
                 return
             }
@@ -349,24 +418,28 @@ struct ReservationsView: View {
     
     @MainActor
     private func handlePickup(reservationId: String) async {
+        guard let api else { return }
         // Add to loading state
         loadingReservations.insert(reservationId)
         
         do {
-            // TODO: Implement actual backend call
-            // await svc.updateReservationStatus(reservationId, status: .picked)
-            
-            // Simulate API call
-            try await Task.sleep(nanoseconds: 1_000_000_000)
+            // Call API to complete the reservation with retry
+            try await fetchWithRetry(svc: svc) {
+                try await api.completeReservation(reservationId)
+            }
             
             // Remove from list on success
-            reservations.removeAll { $0.reservation.id == reservationId }
+            reservations.removeAll { $0.id == reservationId }
             showToastMessage("Item marked as picked up")
             
         } catch {
             // Handle backend conflict or error
-            showToastMessage("Failed to update reservation. Please try again.")
-            await loadReservations() // Refresh list
+            if error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
+                showToastMessage("Session expired. Please sign in again.")
+            } else {
+                showToastMessage("Failed to update reservation. Please try again.")
+                await loadReservations() // Refresh list
+            }
         }
         
         // Remove from loading state
@@ -375,24 +448,35 @@ struct ReservationsView: View {
     
     @MainActor
     private func handleCancel(reservationId: String) async {
+        guard let api else { return }
         // Add to loading state
         loadingReservations.insert(reservationId)
         
+        // Find the reservation
+        guard let reservation = reservations.first(where: { $0.id == reservationId }) else {
+            loadingReservations.remove(reservationId)
+            showToastMessage("Reservation not found.")
+            return
+        }
+        
         do {
-            // TODO: Implement actual backend call
-            // await svc.updateReservationStatus(reservationId, status: .canceled)
-            
-            // Simulate API call
-            try await Task.sleep(nanoseconds: 1_000_000_000)
+            // Call API to cancel the reservation using reservation ID with retry
+            try await fetchWithRetry(svc: svc) {
+                try await api.cancelReservation(reservationId)
+            }
             
             // Remove from list on success
-            reservations.removeAll { $0.reservation.id == reservationId }
+            reservations.removeAll { $0.id == reservationId }
             showToastMessage("Reservation canceled")
             
         } catch {
             // Handle backend conflict or error
-            showToastMessage("Failed to cancel reservation. Please try again.")
-            await loadReservations() // Refresh list
+            if error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
+                showToastMessage("Session expired. Please sign in again.")
+            } else {
+                showToastMessage("Failed to cancel reservation. Please try again.")
+                await loadReservations() // Refresh list
+            }
         }
         
         // Remove from loading state
@@ -402,9 +486,9 @@ struct ReservationsView: View {
     // MARK: - BigCardOverlay Helper Methods
     
     private func primaryInfoText(for reservation: ReservationRow) -> String {
-        switch reservation.post.mode {
+        switch reservation.mode {
         case .street:
-            if let distance = reservation.post.distanceKm {
+            if let distance = reservation.distanceKm {
                 return String(format: "≈ %.1f km away", distance)
             } else {
                 return "Street pickup"
@@ -415,7 +499,7 @@ struct ReservationsView: View {
     }
     
     private func statusText(for reservation: ReservationRow) -> String {
-        switch (reservation.post.mode, reservation.reservation.status) {
+        switch (reservation.mode, reservation.status) {
         case (.street, .active):
             return "Pickup in: \(formatTimeRemaining(reservation.timeRemaining))"
         case (.home, .pending):
@@ -423,12 +507,12 @@ struct ReservationsView: View {
         case (.home, .active):
             return "Confirmed! Contact the owner to pick it up"
         default:
-            return "Posted \(formatRelativeTime(reservation.reservation.requestedAt)) ago"
+            return "Posted \(formatRelativeTime(reservation.requestedAt)) ago"
         }
     }
     
     private func statusColor(for reservation: ReservationRow) -> Color {
-        switch (reservation.post.mode, reservation.reservation.status) {
+        switch (reservation.mode, reservation.status) {
         case (.street, .active):
             return AppTheme.ColorToken.danger // #C44242
         case (.home, .pending):
@@ -441,7 +525,7 @@ struct ReservationsView: View {
     }
     
     private func reservationVariant(for reservation: ReservationRow) -> BigCardOverlay.Variant {
-        switch (reservation.post.mode, reservation.reservation.status) {
+        switch (reservation.mode, reservation.status) {
         case (.street, .active):
             return .reservations(.streetActive)
         case (.home, .pending):
@@ -454,15 +538,15 @@ struct ReservationsView: View {
     }
     
     private func handlePrimaryAction(for reservation: ReservationRow) {
-        switch (reservation.post.mode, reservation.reservation.status) {
+        switch (reservation.mode, reservation.status) {
         case (.street, .active):
-            onPickup(reservationId: reservation.reservation.id)
+            onPickup(reservationId: reservation.id)
             showDetailOverlay = false
             selectedReservation = nil
         case (.home, .pending):
-            onContact(post: reservation.post)
+            onContact(reservation: reservation)
         case (.home, .active):
-            onContact(post: reservation.post)
+            onContact(reservation: reservation)
         default:
             break
         }
@@ -495,109 +579,23 @@ struct ReservationsView: View {
         topController.present(alert, animated: true)
     }
     
+    @MainActor
     private func showToastMessage(_ message: String) {
         toastMessage = message
         showToast = true
         
         // Auto-hide after 3 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            showToast = false
+            withAnimation {
+                showToast = false
+            }
         }
     }
     
-    // MARK: - Mock Data
-    
-    private func createMockReservations() -> [ReservationRow] {
-        [
-            // Street reservation
-            ReservationRow(
-                id: "1",
-                reservation: ReservationRow.ReservationData(
-                    id: "res-1",
-                    status: .active,
-                    requestedAt: Date().addingTimeInterval(-3600), // 1 hour ago
-                    approvedAt: Date().addingTimeInterval(-3500)
-                ),
-                post: ReservationRow.PostData(
-                    id: "post-1",
-                    mode: .street,
-                    condition: .good,
-                    images: [ReservationRow.PostData.PostImage(url: "https://picsum.photos/200/200?random=1", orderIndex: 0)],
-                    distanceKm: 0.8,
-                    exactLocation: ReservationRow.PostData.LocationCoordinate(lng: 2.1686, lat: 41.3874),
-                    approxLocation: nil,
-                    owner: ReservationRow.PostData.OwnerData(
-                        id: "owner-1",
-                        name: "John Doe",
-                        phone: "+34123456789",
-                        avatarUrl: nil,
-                        memberSince: Date().addingTimeInterval(-86400 * 365),
-                        pickupsCount: 15
-                    ),
-                    description: "Great condition chair, perfect for home office"
-                )
-            ),
-            // Home reservation - pending
-            ReservationRow(
-                id: "2",
-                reservation: ReservationRow.ReservationData(
-                    id: "res-2",
-                    status: .pending,
-                    requestedAt: Date().addingTimeInterval(-7200), // 2 hours ago
-                    approvedAt: nil
-                ),
-                post: ReservationRow.PostData(
-                    id: "post-2",
-                    mode: .home,
-                    condition: .good,
-                    images: [ReservationRow.PostData.PostImage(url: "https://picsum.photos/200/200?random=2", orderIndex: 0)],
-                    distanceKm: 1.2,
-                    exactLocation: nil,
-                    approxLocation: ReservationRow.PostData.LocationCoordinate(lng: 2.1700, lat: 41.3900),
-                    owner: ReservationRow.PostData.OwnerData(
-                        id: "owner-2",
-                        name: "Jane Smith",
-                        phone: "+34987654321",
-                        avatarUrl: nil,
-                        memberSince: Date().addingTimeInterval(-86400 * 180),
-                        pickupsCount: 8
-                    ),
-                    description: nil
-                )
-            ),
-            // Home reservation - confirmed with contact
-            ReservationRow(
-                id: "3",
-                reservation: ReservationRow.ReservationData(
-                    id: "res-3",
-                    status: .active,
-                    requestedAt: Date().addingTimeInterval(-10800), // 3 hours ago
-                    approvedAt: Date().addingTimeInterval(-9000)
-                ),
-                post: ReservationRow.PostData(
-                    id: "post-3",
-                    mode: .home,
-                    condition: .excellent,
-                    images: [ReservationRow.PostData.PostImage(url: "https://picsum.photos/200/200?random=3", orderIndex: 0)],
-                    distanceKm: 2.1,
-                    exactLocation: nil,
-                    approxLocation: ReservationRow.PostData.LocationCoordinate(lng: 2.1650, lat: 41.3850),
-                    owner: ReservationRow.PostData.OwnerData(
-                        id: "owner-3",
-                        name: "Maria Garcia",
-                        phone: "+34555123456",
-                        avatarUrl: nil,
-                        memberSince: Date().addingTimeInterval(-86400 * 730),
-                        pickupsCount: 23
-                    ),
-                    description: "Barely used, excellent condition"
-                )
-            )
-        ]
-    }
 }
 
 // MARK: - ReservationCard
+
 
 private struct ReservationCard: View {
     let reservation: ReservationRow
@@ -631,7 +629,7 @@ private struct ReservationCard: View {
             // Collapsed content only - tap opens overlay
             HStack(alignment: .top, spacing: 12) {
                 // Thumbnail with matched geometry effect
-                AsyncImage(url: URL(string: reservation.primaryImage ?? "")) { image in
+                AsyncImage(url: reservation.primaryImageURL) { image in
                     image
                         .resizable()
                         .aspectRatio(contentMode: .fill)
@@ -651,7 +649,7 @@ private struct ReservationCard: View {
                             .fill(AppTheme.ColorToken.accent)
                             .frame(width: 8, height: 8)
                         
-                        Text(reservation.post.condition.displayText)
+                        Text(reservation.condition.displayText)
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(AppTheme.ColorToken.primary)
                         
@@ -685,7 +683,7 @@ private struct ReservationCard: View {
             onTap()
         }
         .onReceive(timer) { _ in
-            if reservation.post.mode == .street {
+            if reservation.mode == .street {
                 timeRemaining = reservation.timeRemaining
             }
         }
@@ -694,9 +692,9 @@ private struct ReservationCard: View {
     // MARK: - Computed Properties
     
     private var primaryInfoText: String {
-        switch reservation.post.mode {
+        switch reservation.mode {
         case .street:
-            if let distance = reservation.post.distanceKm {
+            if let distance = reservation.distanceKm {
                 return String(format: "≈ %.1f km away", distance)
             } else {
                 return "Street pickup"
@@ -707,9 +705,9 @@ private struct ReservationCard: View {
     }
     
     private var expandedPrimaryInfoText: String {
-        switch reservation.post.mode {
+        switch reservation.mode {
         case .street:
-            if let distance = reservation.post.distanceKm {
+            if let distance = reservation.distanceKm {
                 return String(format: "≈ %.1f km away", distance)
             } else {
                 return "Street pickup"
@@ -720,7 +718,7 @@ private struct ReservationCard: View {
     }
     
     private var statusText: String {
-        switch (reservation.post.mode, reservation.reservation.status) {
+        switch (reservation.mode, reservation.status) {
         case (.street, .active):
             return "Pickup in: \(formatTimeRemaining(timeRemaining))"
         case (.home, .pending):
@@ -733,7 +731,7 @@ private struct ReservationCard: View {
     }
     
     private var statusColor: Color {
-        switch (reservation.post.mode, reservation.reservation.status) {
+        switch (reservation.mode, reservation.status) {
         case (.street, .active):
             return AppTheme.ColorToken.danger // #C44242
         case (.home, .pending):
@@ -749,16 +747,16 @@ private struct ReservationCard: View {
     
     @ViewBuilder
     private var locationInfoView: some View {
-        switch reservation.post.mode {
+        switch reservation.mode {
         case .street:
-            if let exactLocation = reservation.post.exactLocation {
+            if let exactCoord = reservation.exactCoordinate {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Exact Location")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.primary)
                     
                     // REMOVED expensive map preview - just show coordinates
-                    Text("Lat: \(exactLocation.lat, specifier: "%.4f"), Lng: \(exactLocation.lng, specifier: "%.4f")")
+                    Text("Lat: \(exactCoord.latitude, specifier: "%.4f"), Lng: \(exactCoord.longitude, specifier: "%.4f")")
                         .font(.system(size: 12))
                         .foregroundColor(.secondary)
                 }
@@ -780,15 +778,14 @@ private struct ReservationCard: View {
                 .frame(width: 28, height: 28)
             
             VStack(alignment: .leading, spacing: 1) {
-                Text("Shared by \(reservation.post.owner.name)")
+                Text("Shared by \(reservation.ownerName)")
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(.primary)
                 
-                if let pickupsCount = reservation.post.owner.pickupsCount {
-                    Text("\(pickupsCount) pickups")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-                }
+                // Note: pickupsCount not available in flat model
+                Text("Community member")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
             }
             
             Spacer()
@@ -807,12 +804,24 @@ private struct ReservationCard: View {
     
     @ViewBuilder
     private var buttonsRow: some View {
-        switch (reservation.post.mode, reservation.reservation.status) {
+        switch (reservation.mode, reservation.status) {
         case (.street, .active):
-            // Street + active → Pick up (Primary filled), Cancel (White), Directions (Accent filled)
+            // Street → Left-aligned buttons: "Directions", "Picked up", "Cancel"
             HStack(spacing: 12) {
+                Button(action: onDirections) {
+                    Text("Directions")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(AppTheme.ColorToken.primary)
+                        .frame(height: AppSize.buttonHeight)
+                        .frame(maxWidth: .infinity)
+                }
+                .background(AppTheme.ColorToken.accent)
+                .clipShape(RoundedRectangle(cornerRadius: 29))
+                .disabled(isLoading)
+                .opacity(isLoading ? 0.6 : 1.0)
+                
                 Button(action: onPickUp) {
-                    Text("Pick up")
+                    Text("Picked up")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.white)
                         .frame(height: AppSize.buttonHeight)
@@ -839,48 +848,40 @@ private struct ReservationCard: View {
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
                 
-                Button(action: onDirections) {
-                    Text("Directions")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(AppTheme.ColorToken.primary)
-                        .frame(height: AppSize.buttonHeight)
-                        .frame(maxWidth: .infinity)
-                }
-                .background(AppTheme.ColorToken.accent)
-                .clipShape(RoundedRectangle(cornerRadius: 29))
-                .disabled(isLoading)
-                .opacity(isLoading ? 0.6 : 1.0)
+                Spacer() // Push buttons to the left (aligned with image)
             }
             
         case (.home, .pending):
-            // Home + pending → Contact (disabled), Cancel (White)
-            HStack(spacing: 12) {
-                Button(action: onContact) {
-                    Text("Contact")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(height: AppSize.buttonHeight)
-                        .frame(maxWidth: .infinity)
+            // Home + pending → Top-right "Pending confirmation" label + centered Cancel button
+            VStack(spacing: 12) {
+                // Pending confirmation label (top-right, muted)
+                HStack {
+                    Spacer()
+                    Text("Pending confirmation")
+                        .font(.system(size: 12))
+                        .foregroundColor(.black.opacity(0.5))
                 }
-                .background(AppTheme.ColorToken.primary.opacity(0.4))
-                .clipShape(RoundedRectangle(cornerRadius: 29))
-                .disabled(true)
                 
-                Button(action: onCancel) {
-                    Text("Cancel")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.black)
-                        .frame(height: AppSize.buttonHeight)
-                        .frame(maxWidth: .infinity)
+                // Cancel button centered
+                HStack {
+                    Spacer()
+                    Button(action: onCancel) {
+                        Text("Cancel")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.black)
+                            .frame(height: AppSize.buttonHeight)
+                            .frame(width: 120) // Fixed width for centered button
+                    }
+                    .background(Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 29))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 29)
+                            .stroke(AppTheme.ColorToken.primary, lineWidth: 2)
+                    )
+                    .disabled(isLoading)
+                    .opacity(isLoading ? 0.6 : 1.0)
+                    Spacer()
                 }
-                .background(Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: 29))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 29)
-                        .stroke(AppTheme.ColorToken.primary, lineWidth: 2)
-                )
-                .disabled(isLoading)
-                .opacity(isLoading ? 0.6 : 1.0)
             }
             
         case (.home, .active):

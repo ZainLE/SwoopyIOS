@@ -8,6 +8,7 @@ struct TrashPickerApp: App {
     }
 
     @StateObject private var svc = SupabaseService.shared
+    @StateObject private var api = ApiService(supabaseService: SupabaseService.shared)
     @StateObject private var loc = LocationManager()
     @StateObject private var ck  = CKTrashService()
     @StateObject private var draftStore = UploadDraftStore()
@@ -16,6 +17,7 @@ struct TrashPickerApp: App {
         WindowGroup {
             RootGateView()
                 .environmentObject(svc)
+                .environmentObject(api)
                 .environmentObject(loc)
                 .environmentObject(ck)
                 .environmentObject(draftStore)

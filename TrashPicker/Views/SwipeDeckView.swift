@@ -8,17 +8,7 @@
 import SwiftUI
 import MapKit
 
-// MARK: - Backend bridge toggle (switch when BE is ready)
-private enum BackendMode { case cloudKit, api, stub }
-private let BACKEND_MODE: BackendMode = .cloudKit   // keep CloudKit as default
-
-// Optional: configure API base when you flip to .api (left here for future)
-private enum APIConfig {
-    static let base = URL(string: "https://api.swoopy.eu/v1")!
-    static let feedPath = "/feed"            // GET    /v1/feed
-    static let reservePath = "/reservations" // POST   /v1/reservations
-    static func headers() -> [String:String] { [:] }
-}
+// Using real API service for feed data
 
 struct SwipeDeckView: View {
     @Environment(AppRouter.self) var router
@@ -27,9 +17,18 @@ struct SwipeDeckView: View {
     @EnvironmentObject var loc: LocationManager
     @EnvironmentObject var draftStore: UploadDraftStore
 
+    // API Service for feed data
+    @State private var api: ApiService?
+    @State private var posts: [Post] = []
+
     // Deck state management - single source of truth
     @StateObject private var deckState = DeckState()
-    @State private var hidden: Set<CKRecord.ID> = []
+    @State private var hidden: Set<String> = []
+
+    // Loading and error states
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var showError = false
 
     // Glass segmented control and map presentation
     fileprivate enum SegTab { case feed, map }
@@ -40,141 +39,14 @@ struct SwipeDeckView: View {
     // reserve sheet (two-step)
     @State private var showReserveSheet = false
     @State private var sheetMode: ReserveSheet.Mode = .prompt
-    @State private var sheetItem: CKTrashItem?
     
     // Camera and upload flow - using draft store
     @State private var showUploadForm = false
     @State private var cameraService: CameraService?
 
-    // Keep everything in CKTrashItem to match service
-    private var visible: [CKTrashItem] {
-        // Use inline sample data for testing, fallback to real feed
-        let feedItems = ck.feed.isEmpty ? sampleFeedItems : ck.feed
-        return feedItems.filter { !hidden.contains($0.id) && !ck.isMine($0) }
-    }
-    
-    // Inline sample data for design testing
-    private var sampleFeedItems: [CKTrashItem] {
-        // Build items in smaller steps to help the type-checker
-        let now = Date()
-        let baseCity = "San Francisco"
-
-        // Coordinates
-        let coord1 = CLLocationCoordinate2D(latitude: 37.7749, longitude: -122.4194)
-        let coord2 = CLLocationCoordinate2D(latitude: 37.7849, longitude: -122.4094)
-        let coord3 = CLLocationCoordinate2D(latitude: 37.7649, longitude: -122.4294)
-        let coord4 = CLLocationCoordinate2D(latitude: 37.7549, longitude: -122.4394)
-        let coord5 = CLLocationCoordinate2D(latitude: 37.7449, longitude: -122.4494)
-
-        // Photo URLs
-        let url1 = URL(string: "https://picsum.photos/400/400?random=1")
-        let url2 = URL(string: "https://picsum.photos/400/400?random=2")
-        let url3 = URL(string: "https://picsum.photos/400/400?random=3")
-        let url4 = URL(string: "https://picsum.photos/400/400?random=4")
-        let url5 = URL(string: "https://picsum.photos/400/400?random=5")
-
-        // Items
-        let item1 = CKTrashItem(
-            id: CKRecord.ID(),
-            title: "Vintage Wooden Chair",
-            category: "Furniture",
-            photoURL: url1,
-            coordinate: coord1,
-            city: baseCity,
-            createdAt: now.addingTimeInterval(-3600),
-            expiresAt: now.addingTimeInterval(86400 * 6),
-            status: "available",
-            reservedUntil: nil,
-            reservedBy: nil,
-            uploader: nil,
-            pickedUpAt: nil,
-            interestedCount: 3,
-            desc: "Beautiful vintage wooden chair in great condition. Perfect for a home office or dining room.",
-            condition: "good",
-            mode: "street"
-        )
-
-        let item2 = CKTrashItem(
-            id: CKRecord.ID(),
-            title: "Kitchen Appliances Set",
-            category: "Appliances",
-            photoURL: url2,
-            coordinate: coord2,
-            city: baseCity,
-            createdAt: now.addingTimeInterval(-7200),
-            expiresAt: now.addingTimeInterval(86400 * 5),
-            status: "available",
-            reservedUntil: nil,
-            reservedBy: nil,
-            uploader: nil,
-            pickedUpAt: nil,
-            interestedCount: 7,
-            desc: "Microwave, toaster, and coffee maker. All working perfectly.",
-            condition: "like new",
-            mode: "home"
-        )
-
-        let item3 = CKTrashItem(
-            id: CKRecord.ID(),
-            title: "Books Collection",
-            category: "Books",
-            photoURL: url3,
-            coordinate: coord3,
-            city: baseCity,
-            createdAt: now.addingTimeInterval(-10800),
-            expiresAt: now.addingTimeInterval(86400 * 4),
-            status: "available",
-            reservedUntil: nil,
-            reservedBy: nil,
-            uploader: nil,
-            pickedUpAt: nil,
-            interestedCount: 2,
-            desc: "Mix of fiction and non-fiction books. Great for students or book lovers.",
-            condition: "usable",
-            mode: "street"
-        )
-
-        let item4 = CKTrashItem(
-            id: CKRecord.ID(),
-            title: "Exercise Equipment",
-            category: "Sports",
-            photoURL: url4,
-            coordinate: coord4,
-            city: baseCity,
-            createdAt: now.addingTimeInterval(-14400),
-            expiresAt: now.addingTimeInterval(86400 * 3),
-            status: "available",
-            reservedUntil: nil,
-            reservedBy: nil,
-            uploader: nil,
-            pickedUpAt: nil,
-            interestedCount: 5,
-            desc: "Yoga mat, resistance bands, and dumbbells. Perfect for home workouts.",
-            condition: "needs fixing",
-            mode: "home"
-        )
-
-        let item5 = CKTrashItem(
-            id: CKRecord.ID(),
-            title: "Art Supplies",
-            category: "Art",
-            photoURL: url5,
-            coordinate: coord5,
-            city: baseCity,
-            createdAt: now.addingTimeInterval(-18000),
-            expiresAt: now.addingTimeInterval(86400 * 2),
-            status: "available",
-            reservedUntil: nil,
-            reservedBy: nil,
-            uploader: nil,
-            pickedUpAt: nil,
-            interestedCount: 1,
-            desc: "Paints, brushes, canvases, and drawing supplies. Great for artists or students.",
-            condition: "like new",
-            mode: "street"
-        )
-
-        return [item1, item2, item3, item4, item5]
+    // Convert Post objects to visible feed items
+    private var visible: [Post] {
+        return posts.filter { !hidden.contains($0.id) }
     }
 
     var body: some View {
@@ -191,7 +63,10 @@ struct SwipeDeckView: View {
             .toolbar { toolbarContent }
             .navigationBarTitleDisplayMode(.inline)
             .onAppear { handleViewAppear() }
-            .task { await fetchFeedBridge() }
+            .task { 
+                if api == nil { api = ApiService(supabaseService: svc) }
+                await fetchFeedBridge() 
+            }
             .onChange(of: seg) { oldValue, newValue in
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
                     showFeedMap = (newValue == .map)
@@ -219,7 +94,11 @@ struct SwipeDeckView: View {
 
     private var mainContentArea: some View {
         ZStack {
-            if visible.isEmpty {
+            if isLoading {
+                loadingView
+            } else if showError {
+                errorView
+            } else if visible.isEmpty {
                 emptyStateView
             } else {
                 feedContentView
@@ -227,6 +106,47 @@ struct SwipeDeckView: View {
             
             reservationSheetView
         }
+    }
+
+    private var loadingView: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .scaleEffect(1.2)
+                .tint(AppTheme.ColorToken.primary)
+            
+            Text("Loading nearby items...")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    private var errorView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 48))
+                .foregroundColor(.orange)
+            
+            Text(errorMessage ?? "Something went wrong")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.primary)
+                .multilineTextAlignment(.center)
+            
+            Button("Try Again") {
+                Task {
+                    await fetchFeedBridge()
+                    hidden.removeAll()
+                }
+            }
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+            .background(AppTheme.ColorToken.primary)
+            .clipShape(Capsule())
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 32)
     }
 
     private var emptyStateView: some View {
@@ -246,6 +166,10 @@ struct SwipeDeckView: View {
             DeckStack(deckState: deckState, router: router)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .padding(.top, 18)
+                .refreshable {
+                    await fetchFeedBridge()
+                    hidden.removeAll()
+                }
             
             ActionBar(
                 deckState: deckState,
@@ -259,12 +183,11 @@ struct SwipeDeckView: View {
 
     @ViewBuilder
     private var reservationSheetView: some View {
-        if showReserveSheet, let item = sheetItem {
+        if showReserveSheet {
             ReserveSheet(
                 mode: sheetMode,
-                item: item,
-                confirm: { Task { await handleReservationConfirm(item) } },
-                openMaps: { handleOpenMaps(for: item) },
+                confirm: { Task { await handleReservationConfirm() } },
+                openMaps: { handleOpenMaps() },
                 close: { handleReservationClose() }
             )
             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -331,19 +254,38 @@ struct SwipeDeckView: View {
         Task { await fetchFeedBridge() }
     }
 
-    @MainActor private func handleReservationConfirm(_ item: CKTrashItem) async {
+    @MainActor private func handleReservationConfirm() async {
+        // Use the active card from deck state
+        guard let post = deckState.activeCard as? Post else { return }
+        guard let api else { return }
+        
         do {
-            try? await reserveBridge(item)
+            // Call real API to reserve the post
+            _ = try await fetchWithRetry(svc: svc) {
+                try await api.reservePost(post.id)
+            }
+            
+            // Optimistically remove from feed
+            hidden.insert(post.id)
+            
+            // Refresh feed and show success
             await fetchFeedBridge()
             withAnimation(.easeOut(duration: 0.18)) {
                 sheetMode = .info
             }
+        } catch {
+            #if DEBUG
+            print("Failed to reserve post: \(error.localizedDescription)")
+            #endif
+            // Handle error - could show an alert or error state
         }
     }
 
-    private func handleOpenMaps(for item: CKTrashItem) {
-        let mi = MKMapItem(placemark: MKPlacemark(coordinate: item.coordinate))
-        mi.name = item.title
+    private func handleOpenMaps() {
+        guard let post = deckState.activeCard as? Post,
+              let coord = post.exactLocation?.coordinate else { return }
+        let mi = MKMapItem(placemark: MKPlacemark(coordinate: coord))
+        mi.name = post.title
         mi.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeTransit])
     }
 
@@ -358,33 +300,48 @@ struct SwipeDeckView: View {
     
     @MainActor
     private func handlePass() async {
-        guard let activeCard = deckState.activeCard else { return }
-        
         await deckState.triggerPass()
         
-        // Add to hidden set to remove from visible items
-        hidden.insert(activeCard.id)
+        // Pass: optimistically hide without API call
+        if let post = deckState.activeCard as? Post { 
+            hidden.insert(post.id) 
+        }
     }
     
     @MainActor
     private func handleReserve() async {
-        guard let activeCard = deckState.activeCard else { return }
+        guard let post = deckState.activeCard as? Post else { return }
+        guard let api else { return }
         
         do {
             try await deckState.triggerReserve()
             
-            // Show reservation sheet
-            sheetItem = activeCard
-            sheetMode = .prompt
-            withAnimation(.easeOut(duration: 0.18)) { 
-                showReserveSheet = true 
+            // Reserve: call real API
+            _ = try await fetchWithRetry(svc: svc) {
+                try await api.reservePost(post.id)
             }
+            
+            // Optimistically hide from feed
+            hidden.insert(post.id)
             
             // Complete the transition
             deckState.completeCardTransition()
             
         } catch {
             // Error handling is managed by DeckState
+            #if DEBUG
+            print("Failed to reserve post: \(error.localizedDescription)")
+            #endif
+            
+            // Show error to user
+            await MainActor.run {
+                if error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
+                    errorMessage = "Session expired. Please sign in again."
+                } else {
+                    errorMessage = "Failed to reserve item. Please try again."
+                }
+                showError = true
+            }
         }
     }
     
@@ -409,30 +366,58 @@ struct SwipeDeckView: View {
         }
     }
 
-    // MARK: - Tiny bridge helpers (CloudKit / API / Stub)
+    // MARK: - Feed Management
 
+    @MainActor
     private func fetchFeedBridge() async {
-        switch BACKEND_MODE {
-        case .cloudKit:
-            await ck.fetchFeed()
-        case .api:
-            // Fill when API is ready. Keep UI safe for now.
-            await MainActor.run { ck.feed = [] }
-        case .stub:
-            await MainActor.run { ck.feed = [] }
-        }
-    }
-
-    private func reserveBridge(_ item: CKTrashItem) async throws {
-        switch BACKEND_MODE {
-        case .cloudKit:
-            try await ck.reserve(item) // matches your existing signature
-        case .api:
-            try await API.reserve(itemId: String(describing: item.id), holdHours: 6)
-        case .stub:
+        guard let userLocation = loc.userLocation?.coordinate else {
+            errorMessage = "Location required to show nearby items"
+            showError = true
+            loc.request()
             return
         }
+        guard let api else { return }
+        
+        isLoading = true
+        showError = false
+        
+        do {
+            let feedQuery = FeedQuery(
+                lng: userLocation.longitude,
+                lat: userLocation.latitude,
+                radiusKm: 10,
+                category: nil,
+                mode: nil,
+                limit: 20
+            )
+            
+            let fetchedPosts = try await fetchWithRetry(svc: svc) { 
+                try await api.getFeed(query: feedQuery)
+            }
+            
+            posts = fetchedPosts
+            deckState.updateItems(visible)
+            isLoading = false
+        } catch {
+            #if DEBUG
+            print("Failed to fetch feed: \(error.localizedDescription)")
+            #endif
+            posts = []
+            deckState.updateItems([])
+            isLoading = false
+            
+            if error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
+                errorMessage = "Session expired. Please sign in again."
+            } else {
+                errorMessage = "Unable to load feed. Please try again."
+            }
+            showError = true
+        }
     }
+    
+    // MARK: - Helper Functions
+    
+
 }
 
 private struct PulsingLeafBadge: View {
@@ -583,7 +568,6 @@ extension SwipeDeckView {
     private struct ReserveSheet: View {
         enum Mode { case prompt, info }
         let mode: Mode
-        let item: CKTrashItem
         var confirm: () -> Void
         var openMaps: () -> Void
         var close: () -> Void
@@ -605,9 +589,9 @@ extension SwipeDeckView {
                         .buttonStyle(.borderedProminent)
                     }
                 } else {
-                    Text("Reserved until \(reservedUntilString(item))").font(.headline)
+                    Text("Reserved until \(reservedUntilString())").font(.headline)
                     HStack {
-                        Label(item.city, systemImage: "mappin.circle")
+                        Label("Location", systemImage: "mappin.circle")
                         Spacer()
                         Button(action: openMaps) { Label("Open in Maps", systemImage: "map") }
                             .buttonStyle(.bordered)
@@ -622,8 +606,7 @@ extension SwipeDeckView {
             .frame(maxHeight: .infinity, alignment: .bottom)
         }
         
-        private func reservedUntilString(_ item: CKTrashItem) -> String {
-            if let u = item.reservedUntil, u > Date() { return u.formatted(date: Date.FormatStyle.DateStyle.omitted, time: Date.FormatStyle.TimeStyle.shortened) }
+        private func reservedUntilString() -> String {
             let u = Calendar.current.date(byAdding: .hour, value: 6, to: Date())!
             return u.formatted(date: Date.FormatStyle.DateStyle.omitted, time: Date.FormatStyle.TimeStyle.shortened)
         }
@@ -636,6 +619,10 @@ extension SwipeDeckView {
         @EnvironmentObject var loc: LocationManager
         @Environment(\.dismiss) private var dismiss
         
+        @State private var api: ApiService?
+        
+        @State private var streetPosts: [Post] = []
+        
         @State private var cameraPosition: MapCameraPosition = .region(
             MKCoordinateRegion(
                 center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
@@ -643,31 +630,29 @@ extension SwipeDeckView {
             )
         )
         
-        private var streetPins: [TrashDTO] {
-            let now = Date()
-            return svc.feed.filter { item in
-                // LIVE ONLY
-                let live = (item.expiresAt > now)
-                && (item.reservedUntil == nil || item.reservedUntil! <= now)
-                && item.status.lowercased() == "available"
-                // STREET ONLY
-                let street = item.mode.lowercased() == "street"
-                // HAS COORD
-                let hasCoord = (item.exactCoordinate ?? item.approxCoordinate) != nil
-                return live && street && hasCoord
+        private var streetPins: [Post] {
+            return streetPosts.filter { post in
+                // Only show posts with valid exact location coordinates (street mode posts)
+                return post.exactLocation?.coordinate != nil
             }
         }
         
         var body: some View {
             NavigationStack {
                 Map(position: $cameraPosition) {
-                    ForEach(streetPins, id: \.id) { item in
-                        if let coord = item.exactCoordinate ?? item.approxCoordinate {
+                    ForEach(streetPins, id: \.id) { post in
+                        if let exactLoc = post.exactLocation,
+                           let coord = exactLoc.coordinate {
                             MapKit.Annotation("", coordinate: coord) {
-                                Image(systemName: "mappin.circle.fill")
-                                    .font(.title2)
-                                    .foregroundStyle(.red)
-                                    .shadow(radius: 1)
+                                Button(action: {
+                                    openInMaps(post: post, coord: coord)
+                                }) {
+                                    Image(systemName: "mappin.circle.fill")
+                                        .font(.title2)
+                                        .foregroundStyle(.red)
+                                        .shadow(radius: 1)
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -676,6 +661,9 @@ extension SwipeDeckView {
                     UserAnnotation()
                 }
                 .ignoresSafeArea(.all)
+                .refreshable {
+                    await fetchStreetPosts()
+                }
                 .onDisappear {
                     // Reset pill when map disappears
                     withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
@@ -704,6 +692,7 @@ extension SwipeDeckView {
                     }
                 }
                 .task {
+                    if api == nil { api = ApiService(supabaseService: svc) }
                     // Request location permission if needed
                     if loc.authorization == .notDetermined { 
                         loc.request() 
@@ -727,13 +716,11 @@ extension SwipeDeckView {
                         )
                     }
                     
-                    // Fetch feed data for the current location
-                    if let c = loc.userLocation?.coordinate {
-                        await svc.fetchFeed(near: c)
-                    }
+                    // Fetch street-only posts from API
+                    await fetchStreetPosts()
                 }
                 .onChange(of: loc.userLocation) { _, newLocation in
-                    // Update camera position when location changes
+                    // Update camera position and refresh posts when location changes
                     if let coordinate = newLocation?.coordinate {
                         Task { @MainActor in
                             // Only update if we don't already have a good position
@@ -746,9 +733,51 @@ extension SwipeDeckView {
                                 )
                             }
                         }
+                        
+                        // Refresh street posts for new location
+                        Task {
+                            await fetchStreetPosts()
+                        }
                     }
                 }
             }
+        }
+        
+        @MainActor
+        private func fetchStreetPosts() async {
+            guard let userLocation = loc.userLocation?.coordinate else {
+                loc.request()
+                return
+            }
+            guard let api else { return }
+            
+            do {
+                let feedQuery = FeedQuery(
+                    lng: userLocation.longitude,
+                    lat: userLocation.latitude,
+                    radiusKm: 10,
+                    category: nil,
+                    mode: "street", // Only fetch street posts
+                    limit: 50
+                )
+                
+                let fetchedPosts = try await fetchWithRetry(svc: svc) {
+                    try await api.getFeed(query: feedQuery)
+                }
+                streetPosts = fetchedPosts
+            } catch {
+                #if DEBUG
+                print("Failed to fetch street posts: \(error.localizedDescription)")
+                #endif
+                streetPosts = []
+            }
+        }
+        
+        
+        private func openInMaps(post: Post, coord: CLLocationCoordinate2D) {
+            let item = MKMapItem(placemark: MKPlacemark(coordinate: coord))
+            item.name = post.title
+            item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking])
         }
         
         private func recenter() {
@@ -760,7 +789,9 @@ extension SwipeDeckView {
             
             // Check if we have permission
             guard loc.authorization == .authorizedWhenInUse || loc.authorization == .authorizedAlways else {
+                #if DEBUG
                 print("Location permission not granted")
+                #endif
                 return
             }
             
@@ -780,7 +811,9 @@ extension SwipeDeckView {
             // Otherwise request a fresh location
             loc.requestOnce { coordinate in
                 guard let coordinate = coordinate else {
+                    #if DEBUG
                     print("Failed to get current location")
+                    #endif
                     return
                 }
                 
@@ -798,24 +831,6 @@ extension SwipeDeckView {
         }
     }
     
-    // MARK: - Minimal API client placeholder (kept for future .api mode)
-    private enum API {
-        struct ReservePayload: Encodable {
-            let item_id: String
-            let hold_hours: Int
-        }
-        
-        static func reserve(itemId: String, holdHours: Int) async throws {
-            var request = URLRequest(url: APIConfig.base.appending(path: APIConfig.reservePath))
-            request.httpMethod = "POST"
-            APIConfig.headers().forEach { request.setValue($1, forHTTPHeaderField: $0) }
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONEncoder().encode(ReservePayload(item_id: itemId, hold_hours: holdHours))
-            let (_, resp) = try await URLSession.shared.data(for: request)
-            guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                throw URLError(.badServerResponse)
-            }
-        }
-    }
     
 }
+
