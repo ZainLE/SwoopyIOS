@@ -212,6 +212,9 @@ struct UploadFindView: View {
                     showToast = false
                     submitState = .idle
                 } catch UploadError.imageProcessingFailed {
+                    #if DEBUG
+                    print("[CATCH] imageProcessingFailed")
+                    #endif
                     showValidation = true
                     validationText = "Image upload failed. Please try different photos."
                     submitState = .error
@@ -221,6 +224,10 @@ struct UploadFindView: View {
                     showToast = false
                     submitState = .idle
                 } catch {
+                    #if DEBUG
+                    print("[CATCH] generic error:", error.localizedDescription)
+                    print("[CATCH] error type:", type(of: error))
+                    #endif
                     showValidation = true
                     validationText = "Upload failed. Please try again."
                     submitState = .error
@@ -337,6 +344,14 @@ struct UploadFindView: View {
         // Generate a single draftId used for storage keys
         let draftId = UUID().uuidString
         
+        #if DEBUG
+        print("[SUBMIT START] draftId:", draftId)
+        print("[SUBMIT START] mode:", m.backendValue)
+        print("[SUBMIT START] images count:", draftStore.photos.count)
+        print("[SUBMIT START] hasAuthToken:", svc.hasAuthToken)
+        print("[SUBMIT START] token length:", svc.session?.accessToken.count ?? 0)
+        #endif
+        
         // First upload images to storage and get URLs
         let imageURLs = try await uploadImagesToStorage(draftId: draftId)
         
@@ -379,18 +394,27 @@ struct UploadFindView: View {
         let api = ApiService(supabaseService: svc)
         #if DEBUG
         print("[UPLOAD COMPLETE] images:", postImages.map { $0.url })
-        print("[POST payload] ", postCreate)
+        print("[POST payload] title:", postCreate.title)
+        print("[POST payload] mode:", postCreate.mode.rawValue)
+        print("[POST payload] condition:", postCreate.condition.rawValue)
+        print("[POST payload] images count:", postCreate.images.count)
+        print("[POST payload] exactLocation:", postCreate.exactLocation ?? "nil")
+        print("[POST payload] approxLocation:", postCreate.approxLocation ?? "nil")
         #endif
         do {
-            _ = try await fetchWithRetry(svc: svc) {
+            let postId = try await fetchWithRetry(svc: svc) {
                 try await api.createPost(postCreate)
             }
             #if DEBUG
-            print("[API OK] /post")
+            print("[API OK] /post returned postId:", postId)
             #endif
         } catch {
             #if DEBUG
             print("[API ERR] /post:", error.localizedDescription)
+            print("[API ERR] error type:", type(of: error))
+            if let apiError = error as? ApiServiceError {
+                print("[API ERR] ApiServiceError:", apiError.errorDescription ?? "unknown")
+            }
             #endif
             throw error
         }
@@ -410,6 +434,9 @@ struct UploadFindView: View {
         for (index, image) in draftStore.photos.enumerated() {
             // Convert UIImage -> JPEG data
             guard let data = image.jpegData(compressionQuality: 0.8), data.count > 0 else {
+                #if DEBUG
+                print("[UPLOAD ERR] JPEG encoding failed for index:", index)
+                #endif
                 throw UploadError.imageProcessingFailed
             }
 
@@ -417,20 +444,30 @@ struct UploadFindView: View {
             let path = "posts/\(userId)/\(draftId)/\(index).jpg"
 
             // 3) Upload to your Supabase Storage bucket (post-content)
-            //    upsert:true so re-tries don’t fail if same path is used
-            try await svc.client.storage
-                .from("post-content")
-                .upload(path: path,
-                        file: data,
-                        options: .init(cacheControl: "3600", contentType: "image/jpeg", upsert: true))
-            #if DEBUG
-            print("[UPLOAD OK]", path)
-            #endif
+            //    upsert:true so re-tries don't fail if same path is used
+            do {
+                try await svc.client.storage
+                    .from("post-content")
+                    .upload(path: path,
+                            file: data,
+                            options: .init(cacheControl: "3600", contentType: "image/jpeg", upsert: true))
+                #if DEBUG
+                print("[UPLOAD OK]", path)
+                #endif
+            } catch {
+                #if DEBUG
+                print("[UPLOAD ERR]", path, error.localizedDescription)
+                #endif
+                throw error
+            }
 
             // 4) Public bucket: derive URL via SDK and skip verification
             let publicURL = try svc.client.storage
                 .from("post-content")
                 .getPublicURL(path: path)
+            #if DEBUG
+            print("[UPLOAD URL]", publicURL.absoluteString)
+            #endif
             urls.append(publicURL)
         }
 
