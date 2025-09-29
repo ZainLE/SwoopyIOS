@@ -336,28 +336,44 @@ private struct UploadRow: View {
 }
 
 private struct UploadPostRow: View {
-    let post: Post
+    let post: Post  // Post.expiresAt is Date? in your model
 
     var body: some View {
         HStack(spacing: 12) {
             Thumbnail(url: post.primaryImageURL)
                 .frame(width: 56, height: 56)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(AppColor.stroke, lineWidth: 1))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(AppColor.stroke, lineWidth: 1)
+                )
+
             VStack(alignment: .leading, spacing: 4) {
-                Text(post.title).font(AppFont.h3)
-                Text(post.condition.rawValue.capitalized).font(AppFont.sub).foregroundColor(AppColor.muted)
+                Text(post.title)
+                    .font(AppFont.h3)
+
+                Text(post.condition.rawValue.capitalized)
+                    .font(AppFont.sub)
+                    .foregroundColor(AppColor.muted)
+
+                // When / expiry label
+                expiresView
             }
+
             Spacer()
-            if let created = post.createdAt {
-                Text(created, style: .time)
-                    .font(AppFont.sub)
-                    .foregroundColor(AppColor.muted)
-            } else if let expires = post.expiresAt {
-                Text(expires, style: .time)
-                    .font(AppFont.sub)
-                    .foregroundColor(AppColor.muted)
-            }
+        }
+    }
+
+    // Shows the expiration nicely if we have a Date
+    @ViewBuilder
+    private var expiresView: some View {
+        if let date = post.expiresAt {
+            // choose .time / .relative / .date to taste
+            Text(date, style: .time)
+                .font(AppFont.sub)
+                .foregroundColor(AppColor.muted)
+        } else {
+            EmptyView()
         }
     }
 }
@@ -386,20 +402,17 @@ private struct ProfileReservationRow: View {
 
 private struct Thumbnail: View {
     let url: URL?
+
     var body: some View {
-        Group {
-            if let url, url.isFileURL {
-                DownsampledImage(url: url, maxDimension: 100).scaledToFill()
-            } else if let url {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let img): img.resizable().scaledToFill()
-                    case .empty: Color.gray.opacity(0.15)
-                    case .failure: Color.gray.opacity(0.15)
-                    @unknown default: Color.gray.opacity(0.15)
-                    }
-                }
-            } else {
+        AsyncImage(url: url) { phase in
+            switch phase {
+            case .success(let image):
+                image.resizable().scaledToFill()
+            case .empty:
+                Color.gray.opacity(0.15)
+            case .failure:
+                Color.gray.opacity(0.15)
+            @unknown default:
                 Color.gray.opacity(0.15)
             }
         }

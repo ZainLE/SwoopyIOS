@@ -4,6 +4,141 @@ import SwiftUI
 
 // MARK: - Data Models
 
+// MARK: - HTTP Method
+enum HTTPMethod: String { case get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE" }
+
+// Helper wrappers to align with unified request helper expectations
+private extension ApiService {
+    var urlSession: URLSession { session }
+    func currentAccessTokenOrNil() -> String? { supabaseService.currentAccessTokenOrNil() }
+}
+
+// Helper to encode an `any Encodable` existential
+private struct AnyEncodable: Encodable {
+    private let _encode: (Encoder) throws -> Void
+    init(_ wrapped: any Encodable) { self._encode = { encoder in try wrapped.encode(to: encoder) } }
+    func encode(to encoder: Encoder) throws { try _encode(encoder) }
+}
+
+// MARK: - Unified request helper (Encodable body overload)
+extension ApiService {
+    @discardableResult
+    func makeRequest<R: Decodable>(
+        _ path: String,
+        method: HTTPMethod = .get,
+        body: (any Encodable)? = nil,
+        queryParams: [URLQueryItem]? = nil
+    ) async throws -> R {
+        var components = URLComponents(string: SupabaseConfig.apiBaseURL + path)!
+        if let queryParams, !queryParams.isEmpty { components.queryItems = queryParams }
+        guard let url = components.url else { throw ApiServiceError.invalidURL }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = method.rawValue
+
+        // Auth header
+        guard let token = currentAccessTokenOrNil(), !token.isEmpty else {
+            throw ApiServiceError.noAuthToken
+        }
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        // Optional JSON body
+        if let body {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let encoder = JSONEncoder()
+            req.httpBody = try encoder.encode(AnyEncodable(body))
+        }
+
+        let (data, resp) = try await urlSession.data(for: req)
+        guard let http = resp as? HTTPURLResponse else {
+            throw ApiServiceError.networkError(NSError(domain: "ApiService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response"]))
+        }
+
+        // Decode success
+        if (200..<300).contains(http.statusCode) {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try decoder.decode(R.self, from: data)
+        }
+
+        // Surface server error text for debugging
+        let text = String(data: data, encoding: .utf8) ?? ""
+        throw ApiServiceError.serverError("HTTP \(http.statusCode): \(text)")
+    }
+}
+
+// MARK: - Tolerant Decoding Helpers
+
+struct StringOrDouble: Decodable {
+    let value: Double
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        
+        // Try Double first
+        if let d = try? container.decode(Double.self) {
+            value = d
+            return
+        }
+        
+        // Try String and convert to Double
+        let s = try container.decode(String.self)
+        guard let d = Double(s) else {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: decoder.codingPath,
+                      debugDescription: "Expected number or numeric string, got: \(s)")
+            )
+        }
+        value = d
+    }
+}
+
+enum RFC1123OrISODate: Decodable {
+    case date(Date)
+    
+    var value: Date {
+        switch self {
+        case .date(let d): return d
+        }
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let s = try container.decode(String.self)
+        
+        // Try RFC-1123 first
+        let rfc1123 = DateFormatter()
+        rfc1123.locale = Locale(identifier: "en_US_POSIX")
+        rfc1123.timeZone = TimeZone(secondsFromGMT: 0)
+        rfc1123.dateFormat = "E, dd MMM yyyy HH:mm:ss zzz"
+        
+        if let d = rfc1123.date(from: s) {
+            self = .date(d)
+            return
+        }
+        
+        // Fallback to ISO-8601
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = iso.date(from: s) {
+            self = .date(d)
+            return
+        }
+        
+        // Try ISO-8601 without fractional seconds
+        iso.formatOptions = [.withInternetDateTime]
+        if let d = iso.date(from: s) {
+            self = .date(d)
+            return
+        }
+        
+        throw DecodingError.dataCorrupted(
+            .init(codingPath: decoder.codingPath,
+                  debugDescription: "Unsupported date format: \(s)")
+        )
+    }
+}
+
 struct PostImage: Codable, Identifiable {
     let id = UUID()
     let url: URL
@@ -67,6 +202,21 @@ extension Location {
         guard let latS = lat, let lngS = lng,
               let lat = Double(latS), let lng = Double(lngS) else { return nil }
         return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+    }
+}
+
+// Tolerant location that accepts String or Double
+struct TolerantLocation: Decodable {
+    let lat: StringOrDouble?
+    let lng: StringOrDouble?
+    
+    var coordinate: CLLocationCoordinate2D? {
+        guard let lat = lat?.value, let lng = lng?.value else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case lat, lng
     }
 }
 
@@ -329,6 +479,12 @@ class ApiService: ObservableObject {
                 do {
                     return try decoder.decode(T.self, from: data)
                 } catch {
+                    #if DEBUG
+                    print("[API decode] primary decode failed:", error.localizedDescription)
+                    if let bodyString = String(data: data, encoding: .utf8) {
+                        print("[API decode] response body:", bodyString)
+                    }
+                    #endif
                     // Try to decode as ApiResponse
                     do {
                         let apiResponse = try decoder.decode(ApiResponse<T>.self, from: data)
@@ -340,6 +496,9 @@ class ApiService: ObservableObject {
                             throw ApiServiceError.decodingError(error)
                         }
                     } catch {
+                        #if DEBUG
+                        print("[API decode] ApiResponse decode also failed:", error.localizedDescription)
+                        #endif
                         // Try to decode error message directly
                         if let errorDict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                            let errorMessage = errorDict["error"] as? String {
@@ -350,12 +509,30 @@ class ApiService: ObservableObject {
                 }
                 
             case 401:
+                #if DEBUG
+                print("[API] 401 Unauthorized")
+                if let bodyString = String(data: data, encoding: .utf8) {
+                    print("[API] 401 body:", bodyString)
+                }
+                #endif
                 throw ApiServiceError.unauthorized
                 
             case 404:
+                #if DEBUG
+                print("[API] 404 Not Found")
+                if let bodyString = String(data: data, encoding: .utf8) {
+                    print("[API] 404 body:", bodyString)
+                }
+                #endif
                 throw ApiServiceError.notFound
                 
             case 400...499:
+                #if DEBUG
+                print("[API] \(httpResponse.statusCode) Client Error")
+                if let bodyString = String(data: data, encoding: .utf8) {
+                    print("[API] \(httpResponse.statusCode) body:", bodyString)
+                }
+                #endif
                 if let errorResponse = try? JSONDecoder().decode(ApiResponse<String>.self, from: data) {
                     throw ApiServiceError.serverError(errorResponse.error ?? "Client error")
                 } else {
@@ -363,9 +540,21 @@ class ApiService: ObservableObject {
                 }
                 
             case 500...599:
+                #if DEBUG
+                print("[API] \(httpResponse.statusCode) Server Error")
+                if let bodyString = String(data: data, encoding: .utf8) {
+                    print("[API] \(httpResponse.statusCode) body:", bodyString)
+                }
+                #endif
                 throw ApiServiceError.serverError("Server error: \(httpResponse.statusCode)")
                 
             default:
+                #if DEBUG
+                print("[API] Unknown status code:", httpResponse.statusCode)
+                if let bodyString = String(data: data, encoding: .utf8) {
+                    print("[API] unknown status body:", bodyString)
+                }
+                #endif
                 throw ApiServiceError.unknownError
             }
         } catch let error as ApiServiceError {
@@ -390,16 +579,78 @@ class ApiService: ObservableObject {
     // MARK: - Posts
     
     func createPost(_ post: PostCreate) async throws -> String {
+        // Tolerant response structure - all fields optional
+        struct CreatePostResponse: Decodable {
+            let message: String?
+            let postId: String?
+            let post_id: String?
+            
+            enum CodingKeys: String, CodingKey {
+                case message
+                case postId = "postId"
+                case post_id = "post_id"
+            }
+        }
+        
         let encoder = JSONEncoder()
         let body = try encoder.encode(post)
         
-        struct CreatePostResponse: Codable {
-            let postId: String
-            let message: String
+        // Get auth token
+        guard let token = supabaseService.currentAccessTokenOrNil(), !token.isEmpty else {
+            throw ApiServiceError.noAuthToken
         }
         
-        let response: CreatePostResponse = try await makeRequest("/post", method: "POST", body: body)
-        return response.postId
+        // Build request manually for 2xx tolerance
+        guard let url = URL(string: "\(baseURL)/post") else {
+            throw ApiServiceError.invalidURL
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.httpBody = body
+        
+        #if DEBUG
+        print("[POST /post] URL:", url.absoluteString)
+        if let bodyString = String(data: body, encoding: .utf8) {
+            print("[POST /post] body:", bodyString)
+        }
+        #endif
+        
+        let (data, resp) = try await session.data(for: request)
+        guard let http = resp as? HTTPURLResponse else {
+            throw ApiServiceError.networkError(NSError(domain: "ApiService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Bad response"]))
+        }
+        
+        #if DEBUG
+        print("[POST /post] status:", http.statusCode)
+        if let bodyString = String(data: data, encoding: .utf8) {
+            print("[POST /post] raw body:", bodyString)
+        }
+        #endif
+        
+        // Treat any 2xx as success
+        guard (200...299).contains(http.statusCode) else {
+            #if DEBUG
+            print("[POST /post] non-2xx status:", http.statusCode)
+            #endif
+            throw ApiServiceError.serverError("Server returned status \(http.statusCode)")
+        }
+        
+        // Try to decode response, but don't fail if it's missing/different
+        if let decoded = try? JSONDecoder().decode(CreatePostResponse.self, from: data) {
+            let postId = decoded.postId ?? decoded.post_id ?? "unknown"
+            #if DEBUG
+            print("[POST /post] success, decoded postId:", postId)
+            #endif
+            return postId
+        } else {
+            #if DEBUG
+            print("[POST /post] success (2xx), but couldn't decode response - treating as success anyway")
+            #endif
+            return "success"
+        }
     }
     
     func getFeed(query: FeedQuery) async throws -> [Post] {
@@ -422,14 +673,89 @@ class ApiService: ObservableObject {
             queryItems.append(URLQueryItem(name: "mode", value: mode))
         }
         
-        struct FeedResponse: Codable {
-            let posts: [Post]
+        // Tolerant server response structure
+        struct ServerImage: Decodable {
+            let url: URL
+            let order_index: Int
+        }
+        
+        struct ServerPost: Decodable {
+            let id: String
+            let title: String
+            let description: String?
+            let category: String
+            let condition: String
+            let mode: String
+            let owner_id: String
+            let images: [ServerImage]
+            let exact_location: TolerantLocation?
+            let approx_location: TolerantLocation?
+            let created_at: RFC1123OrISODate?
+            let expires_at: RFC1123OrISODate?
+            let distance: StringOrDouble?
+            let owner: Profile?
+            let user_reservation: ReservationSummary?
+        }
+        
+        struct FeedResponse: Decodable {
+            let posts: [ServerPost]
         }
         
         let response: FeedResponse = try await makeRequest("/feed", queryParams: queryItems)
+        
+        // Map ServerPost to Post
+        let posts = response.posts.compactMap { serverPost -> Post? in
+            // Convert string condition/mode to enums
+            guard let condition = ItemCondition(rawValue: serverPost.condition),
+                  let mode = ItemMode(rawValue: serverPost.mode) else {
+                #if DEBUG
+                print("[getFeed] Skipping post \(serverPost.id) - invalid condition or mode")
+                #endif
+                return nil
+            }
+            
+            // Convert ServerImage to PostImage
+            let images = serverPost.images.map { serverImg in
+                PostImage(url: serverImg.url, orderIndex: serverImg.order_index)
+            }
+            
+            // Convert TolerantLocation to Location (string-based for backward compat)
+            let exactLocation: Location?
+            if let exact = serverPost.exact_location, let coord = exact.coordinate {
+                exactLocation = Location(lng: "\(coord.longitude)", lat: "\(coord.latitude)")
+            } else {
+                exactLocation = nil
+            }
+            
+            let approxLocation: Location?
+            if let approx = serverPost.approx_location, let coord = approx.coordinate {
+                approxLocation = Location(lng: "\(coord.longitude)", lat: "\(coord.latitude)")
+            } else {
+                approxLocation = nil
+            }
+            
+            return Post(
+                id: serverPost.id,
+                title: serverPost.title,
+                description: serverPost.description,
+                category: serverPost.category,
+                condition: condition,
+                mode: mode,
+                ownerId: serverPost.owner_id,
+                createdAt: serverPost.created_at?.value,
+                expiresAt: serverPost.expires_at?.value,
+                exactLocation: exactLocation,
+                approxLocation: approxLocation,
+                images: images,
+                distance: serverPost.distance?.value,
+                owner: serverPost.owner,
+                userReservation: serverPost.user_reservation
+            )
+        }
+        
         // Client fallback: filter out my own posts in case server didn't exclude
         if let me = supabaseService.userId?.uuidString {
-            let filtered = response.posts.filter { post in
+            let filtered = posts.filter { post in
                 // Prefer explicit ownerId, fall back to owner?.id if present
                 if post.ownerId == me { return false }
                 if let ownerProfileId = post.owner?.id, ownerProfileId == me { return false }
@@ -437,7 +763,7 @@ class ApiService: ObservableObject {
             }
             return filtered
         }
-        return response.posts
+        return posts
     }
 
     
@@ -560,4 +886,5 @@ extension Reservation {
 }
 
 //
+
 
