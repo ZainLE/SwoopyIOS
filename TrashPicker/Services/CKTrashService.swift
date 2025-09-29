@@ -12,6 +12,7 @@ import CloudKit
 // ---- Minimal CloudKit shims
 public struct CKRecord {
     public struct ID: Hashable, Codable { public let uuid: UUID; public init(_ u: UUID = UUID()) { uuid = u } }
+
     public struct Reference: Hashable, Codable { public let id: ID; public init(recordID: ID) { id = recordID } }
 }
 
@@ -35,7 +36,7 @@ struct CKTrashItem: Identifiable, Equatable, Hashable {
     // Optional extras (already in your project)
     var desc: String?
     var condition: String?           // "bad" | "good" | "excellent"
-    var mode: String?                // "home" | "street" - for privacy handling
+    var mode: String?                // "home" | "street" - for privacy handlingK
 
     var isExpired: Bool { Date() >= expiresAt }
     var isReservationActive: Bool { (reservedUntil ?? .distantPast) > Date() }
@@ -84,30 +85,27 @@ struct ReservationHistory: Identifiable, Codable, Hashable {
 
 final class CKTrashService: ObservableObject {
     static let shared = CKTrashService()
-
+    
     @Published var feed: [CKTrashItem] = []
     @Published var myUploads: [CKTrashItem] = []
     @Published var myReservations: [CKTrashItem] = []
     @Published var reservationHistory: [ReservationHistory] = [] // ⬅️ for Profile "History"
-
+    
     private let storeKey  = "local_trash_store_v2"
     private let seededKey = "local_trash_seeded_v2"
     private let historyKey = "local_reservation_history_v1"
-
+    
     private let me = UUID()
     private let ioQueue = DispatchQueue(label: "cktrash.io", qos: .utility)
-
+    
     init() {
-        #if DEBUG
-        seedIfNeeded()
-        #endif
         // load history once
         self.reservationHistory = loadHistorySync().sorted { ($0.completedAt ?? $0.reservedAt) > ($1.completedAt ?? $1.reservedAt) }
         Task { await refreshViews() }
     }
-
+    
     // MARK: Public API
-
+    
     func createTrash(
         image: UIImage,
         title: String,
@@ -119,7 +117,7 @@ final class CKTrashService: ObservableObject {
     ) async throws {
         let filename = "\(UUID().uuidString).jpg"
         let fileURL = photosDir().appendingPathComponent(filename)
-
+        
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             ioQueue.async {
                 guard let data = image.jpegData(compressionQuality: 0.85) else {
@@ -130,7 +128,7 @@ final class CKTrashService: ObservableObject {
                 catch { cont.resume(throwing: error) }
             }
         }
-
+        
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             ioQueue.async {
                 var all = self.loadSync()
@@ -159,13 +157,13 @@ final class CKTrashService: ObservableObject {
                 cont.resume(returning: ())
             }
         }
-
+        
         await refreshViews()
     }
-
+    
     func fetchFeed() async { await refreshViews() }
     func fetchMyStuff() async { await refreshViews() }
-
+    
     func reserve(_ item: CKTrashItem, hours: Int = 6) async throws {
         ioQueue.sync {
             var all = loadSync()
@@ -174,7 +172,7 @@ final class CKTrashService: ObservableObject {
             all[idx].reservedBy = me
             all[idx].reservedUntil = Calendar.current.date(byAdding: .hour, value: hours, to: Date())
             saveSync(all)
-
+            
             // ⬇️ history: create entry if not exists
             var hist = loadHistorySync()
             if !hist.contains(where: { $0.itemId == all[idx].id && $0.reservedAt > Date(timeIntervalSince1970: 0) && $0.outcome == nil }) {
@@ -193,7 +191,7 @@ final class CKTrashService: ObservableObject {
         }
         await refreshViews()
     }
-
+    
     func confirmPickup(_ item: CKTrashItem) async throws {
         ioQueue.sync {
             var all = loadSync()
@@ -206,7 +204,7 @@ final class CKTrashService: ObservableObject {
         }
         await refreshViews()
     }
-
+    
     func cancelReservation(_ item: CKTrashItem) async {
         ioQueue.sync {
             var all = loadSync()
@@ -222,7 +220,7 @@ final class CKTrashService: ObservableObject {
         }
         await refreshViews()
     }
-
+    
     func registerInterest(_ item: CKTrashItem) async {
         ioQueue.sync {
             var all = loadSync()
@@ -234,22 +232,22 @@ final class CKTrashService: ObservableObject {
         }
         await refreshViews()
     }
-
+    
     func isMine(_ item: CKTrashItem) -> Bool { item.uploader?.id.uuid == me }
     func reservationText(_ item: CKTrashItem) -> String {
         if let until = item.reservedUntil, until > Date() { return "Reserved until \(until.formatted(date: .omitted, time: .shortened))" }
         return "Not reserved"
     }
-
+    
     // MARK: Internals
-
+    
     private func refreshViews() async {
         // compute off-main
         let output: (feed: [CKTrashItem], uploads: [CKTrashItem], reserves: [CKTrashItem], history: [ReservationHistory]) = ioQueue.sync {
             var all = loadSync()
             var hist = loadHistorySync()
             let now = Date()
-
+            
             for i in all.indices {
                 if all[i].status != "picked", all[i].expiresAt < now { all[i].status = "expired" }
                 // detect expired reservations by me and close them
@@ -264,18 +262,18 @@ final class CKTrashService: ObservableObject {
             }
             saveSync(all)
             saveHistorySync(hist)
-
+            
             let open = all.filter { $0.status == "open" && $0.expiresAt > now && (($0.reservedUntil ?? .distantPast) < now) }
             let feed = open.map(map(_:)).sorted { $0.createdAt > $1.createdAt }
             let uploads = all.filter { $0.uploader == me }.map(map(_:)).sorted { $0.createdAt > $1.createdAt }
             let reserves = all.filter { $0.reservedBy == me && ($0.reservedUntil ?? .distantPast) > now }
                 .map(map(_:))
                 .sorted { ($0.reservedUntil ?? .distantPast) > ($1.reservedUntil ?? .distantPast) }
-
+            
             let history = hist.sorted { ($0.completedAt ?? $0.reservedAt) > ($1.completedAt ?? $1.reservedAt) }
             return (feed, uploads, reserves, history)
         }
-
+        
         // publish on main
         await MainActor.run {
             self.feed = output.feed
@@ -284,7 +282,7 @@ final class CKTrashService: ObservableObject {
             self.reservationHistory = output.history
         }
     }
-
+    
     private func map(_ r: LocalRecord) -> CKTrashItem {
         let url = r.photoFilename.map { photosDir().appendingPathComponent($0) }
         return CKTrashItem(
@@ -306,11 +304,11 @@ final class CKTrashService: ObservableObject {
             condition: r.condition
         )
     }
-
+    
     private func photosDir() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
-
+    
     // JSON helpers
     private func loadSync() -> [LocalRecord] {
         guard let data = UserDefaults.standard.data(forKey: storeKey) else { return [] }
@@ -321,7 +319,7 @@ final class CKTrashService: ObservableObject {
             UserDefaults.standard.set(data, forKey: storeKey)
         }
     }
-
+    
     private func loadHistorySync() -> [ReservationHistory] {
         guard let data = UserDefaults.standard.data(forKey: historyKey) else { return [] }
         return (try? JSONDecoder().decode([ReservationHistory].self, from: data)) ?? []
@@ -349,73 +347,5 @@ final class CKTrashService: ObservableObject {
             ))
         }
     }
-
-    #if DEBUG
-    // Seed demo data
-    private func seedIfNeeded() {
-        guard !UserDefaults.standard.bool(forKey: seededKey) else { return }
-        var all: [LocalRecord] = []
-        let base = CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686)
-        let cats = ["Plastic","Glass","Paper","E-Waste","Bulky","Other"]
-        let titles = ["Plastic bags", "Broken glass", "Cardboard pile", "Old monitor", "Sofa", "Mixed trash"]
-        let conditions = ["good","excellent","bad","good","excellent","bad"]
-        let descs = [
-            "Clean bags near the bin.",
-            "Shards in a box.",
-            "Folded cardboard.",
-            "Old but working monitor.",
-            "Two-seater couch.",
-            "Mixed, mostly plastic."
-        ]
-        for i in 0..<6 {
-            let dLat = Double.random(in: -0.01...0.01)
-            let dLon = Double.random(in: -0.01...0.01)
-            let coord = CLLocationCoordinate2D(latitude: base.latitude + dLat, longitude: base.longitude + dLon)
-            let title = titles[i]
-            let img = placeholderImage(text: String(title.prefix(1)))
-            let filename = "\(UUID().uuidString).jpg"
-            try? img.jpegData(compressionQuality: 0.85)?
-                .write(to: photosDir().appendingPathComponent(filename), options: .atomic)
-            let now = Date()
-            all.append(LocalRecord(
-                id: UUID(),
-                title: title,
-                category: cats[i % cats.count],
-                photoFilename: filename,
-                latitude: coord.latitude,
-                longitude: coord.longitude,
-                city: "Barcelona",
-                createdAt: now.addingTimeInterval(-Double(i)*3600),
-                expiresAt: now.addingTimeInterval(24*3600),
-                status: "open",
-                reservedUntil: nil,
-                reservedBy: nil,
-                uploader: UUID(),
-                pickedUpAt: nil,
-                interestedBy: [],
-                desc: descs[i],
-                condition: conditions[i]
-            ))
-        }
-        saveSync(all)
-        UserDefaults.standard.set(true, forKey: seededKey)
-    }
-
-    private func placeholderImage(text: String) -> UIImage {
-        let size = CGSize(width: 600, height: 400)
-        UIGraphicsBeginImageContextWithOptions(size, true, 0)
-        UIColor(hue: CGFloat.random(in: 0...1), saturation: 0.4, brightness: 0.95, alpha: 1).setFill()
-        UIBezierPath(rect: CGRect(origin: .zero, size: size)).fill()
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: UIFont.systemFont(ofSize: 200, weight: .bold),
-            .foregroundColor: UIColor.white.withAlphaComponent(0.9)
-        ]
-        let t = NSString(string: text)
-        let r = t.size(withAttributes: attrs)
-        t.draw(at: CGPoint(x: (size.width - r.width)/2, y: (size.height - r.height)/2), withAttributes: attrs)
-        let img = UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
-        UIGraphicsEndImageContext()
-        return img
-    }
-    #endif
+    
 }

@@ -6,6 +6,7 @@ import CoreLocation
 // MARK: - UploadFindView
 
 struct UploadFindView: View {
+    @Environment(AppRouter.self) var router
     @EnvironmentObject var loc: LocationManager
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var draftStore: UploadDraftStore
@@ -38,7 +39,11 @@ struct UploadFindView: View {
     @State private var showValidation = false
     @State private var validationText = ""
     @State private var selectedPhotoItem: PhotosPickerItem?
-    @State private var isPosting = false
+    // Submit state for UX
+    private enum SubmitState { case idle, uploading, success, error }
+    @State private var submitState: SubmitState = .idle
+    @State private var showToast = false
+    @State private var toastText = ""
 
     // Layout constants
     private let sidePadding: CGFloat = 20
@@ -73,6 +78,7 @@ struct UploadFindView: View {
         }
         .fullScreenCover(isPresented: $showCamera) { cameraView }
         .sheet(isPresented: $showPicker) { photoPickerView }
+        .overlay(alignment: .bottom) { successToastOverlay }
     }
 
     // MARK: - Subviews
@@ -154,38 +160,97 @@ struct UploadFindView: View {
 
 
     private var ctaButton: some View {
-        PrimaryCTAButton(title: "Share Your Find", enabled: canSubmit) {
+        Button {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             if !canSubmit {
                 showValidation = true
                 validationText = "Please complete required fields."
                 return
             }
-            
             Task {
-                isPosting = true
-                defer { isPosting = false }
-                
+                // Require auth before starting upload
+                guard svc.hasAuthToken else {
+                    showValidation = true
+                    validationText = "You’re not signed in. Please sign in and try again."
+                    submitState = .error
+                    toastText = "You’re not signed in. Please sign in and try again."
+                    showToast = true
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    showToast = false
+                    submitState = .idle
+                    return
+                }
+                submitState = .uploading
                 do {
                     try await uploadWithRetry()
                     draftStore.clearDraft()
+                    // Success: flash green + toast, then route to Feed
+                    submitState = .success
+                    toastText = "Your find was shared!"
+                    showToast = true
                     showSuccessToast()
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    showToast = false
+                    router.selectedTab = .feed
                     dismiss()
                 } catch UploadError.authenticationFailed {
                     showValidation = true
                     validationText = "Authentication failed. Please sign in again."
-                    #if DEBUG
-                    print("Upload error: Authentication failed")
-                    #endif
+                    submitState = .error
+                    toastText = "Authentication failed."
+                    showToast = true
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    showToast = false
+                    submitState = .idle
+                } catch UploadError.notAuthenticated {
+                    showValidation = true
+                    validationText = "You’re not signed in. Please sign in and try again."
+                    submitState = .error
+                    toastText = "You’re not signed in. Please sign in and try again."
+                    showToast = true
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    showToast = false
+                    submitState = .idle
+                } catch UploadError.imageProcessingFailed {
+                    showValidation = true
+                    validationText = "Image upload failed. Please try different photos."
+                    submitState = .error
+                    toastText = "Image upload failed."
+                    showToast = true
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    showToast = false
+                    submitState = .idle
                 } catch {
                     showValidation = true
                     validationText = "Upload failed. Please try again."
-                    #if DEBUG
-                    print("Upload error:", error.localizedDescription)
-                    #endif
+                    submitState = .error
+                    toastText = "Upload failed. Please try again."
+                    showToast = true
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    showToast = false
+                    submitState = .idle
                 }
             }
+        } label: {
+            HStack(spacing: 8) {
+                if submitState == .uploading {
+                    ProgressView().tint(AppTheme.ColorToken.primary)
+                }
+                Text("Share Your Find")
+            }
+            .font(AppFont.label)
+            .foregroundColor(AppColor.text)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(submitState == .success ? AppColor.darkGreen : AppColor.cta)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
+        .buttonStyle(.plain)
+        .disabled(!svc.hasAuthToken || submitState == .uploading)
+        .opacity(svc.hasAuthToken ? 1.0 : 0.5)
         .padding(.top, 8)
     }
 
@@ -269,30 +334,33 @@ struct UploadFindView: View {
             throw UploadError.invalidData
         }
         
+        // Generate a single draftId used for storage keys
+        let draftId = UUID().uuidString
+        
         // First upload images to storage and get URLs
-        let imageURLs = try await uploadImagesToStorage()
+        let imageURLs = try await uploadImagesToStorage(draftId: draftId)
         
         // Convert to PostImage format
         let postImages = imageURLs.enumerated().map { index, url in
             PostImage(url: url, orderIndex: index)
         }
         
-        // Build location strings in POINT format
-        let exactLocationString: String?
-        let approxLocationString: String?
+        // Build location arrays [lng, lat]
+        let exactLocationArray: [Double]?
+        let approxLocationArray: [Double]?
         
         if let coord = vm.currentCoordinate {
-            let pointString = "POINT(\(coord.longitude) \(coord.latitude))"
             if m == .street {
-                exactLocationString = pointString
-                approxLocationString = nil
+                exactLocationArray = [coord.longitude, coord.latitude]
+                approxLocationArray = nil
             } else {
-                exactLocationString = nil
-                approxLocationString = pointString
+                let a = approx(coord, meters: 500)
+                exactLocationArray = nil
+                approxLocationArray = [a.longitude, a.latitude]
             }
         } else {
-            exactLocationString = nil
-            approxLocationString = nil
+            exactLocationArray = nil
+            approxLocationArray = nil
         }
         
         // Create PostCreate object
@@ -303,24 +371,37 @@ struct UploadFindView: View {
             condition: ItemCondition(rawValue: cond.backendValue) ?? .good,
             mode: ItemMode(rawValue: m.backendValue) ?? .street,
             images: postImages,
-            exactLocation: exactLocationString,
-            approxLocation: approxLocationString
+            exactLocation: exactLocationArray,
+            approxLocation: approxLocationArray
         )
         
         // Use ApiService to create the post
         let api = ApiService(supabaseService: svc)
-        _ = try await fetchWithRetry(svc: svc) {
-            try await api.createPost(postCreate)
+        #if DEBUG
+        print("[UPLOAD COMPLETE] images:", postImages.map { $0.url })
+        print("[POST payload] ", postCreate)
+        #endif
+        do {
+            _ = try await fetchWithRetry(svc: svc) {
+                try await api.createPost(postCreate)
+            }
+            #if DEBUG
+            print("[API OK] /post")
+            #endif
+        } catch {
+            #if DEBUG
+            print("[API ERR] /post:", error.localizedDescription)
+            #endif
+            throw error
         }
     }
     
-    private func uploadImagesToStorage() async throws -> [URL] {
+    private func uploadImagesToStorage(draftId: String) async throws -> [URL] {
         // 0) Require an authenticated session (for user id + RLS)
         let session = try await svc.client.auth.session
         let userId = session.user.id
-
-        // 1) Group this upload under a single run id so images live together
-        let runId = UUID().uuidString
+        let token = session.accessToken
+        if token.isEmpty { throw UploadError.notAuthenticated }
 
         // 2) Upload each photo and collect URLs
         var urls: [URL] = []
@@ -328,12 +409,12 @@ struct UploadFindView: View {
 
         for (index, image) in draftStore.photos.enumerated() {
             // Convert UIImage -> JPEG data
-            guard let data = image.jpegData(compressionQuality: 0.85) else {
+            guard let data = image.jpegData(compressionQuality: 0.8), data.count > 0 else {
                 throw UploadError.imageProcessingFailed
             }
 
-            // Path: posts/<userId>/<runId>/<index>.jpg
-            let path = "posts/\(userId)/\(runId)/\(index).jpg"
+            // Path: posts/<userId>/<draftId>/<index>.jpg
+            let path = "posts/\(userId)/\(draftId)/\(index).jpg"
 
             // 3) Upload to your Supabase Storage bucket (post-content)
             //    upsert:true so re-tries don’t fail if same path is used
@@ -341,9 +422,12 @@ struct UploadFindView: View {
                 .from("post-content")
                 .upload(path: path,
                         file: data,
-                        options: .init(contentType: "image/jpeg", upsert: true))
+                        options: .init(cacheControl: "3600", contentType: "image/jpeg", upsert: true))
+            #if DEBUG
+            print("[UPLOAD OK]", path)
+            #endif
 
-            // 4) Get a URL for the uploaded object (public bucket assumed)
+            // 4) Public bucket: derive URL via SDK and skip verification
             let publicURL = try svc.client.storage
                 .from("post-content")
                 .getPublicURL(path: path)
@@ -361,9 +445,23 @@ struct UploadFindView: View {
         // Trigger success haptic
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        #if DEBUG
-        print("✅ Post uploaded successfully!")
-        #endif
+    }
+
+    private var successToastOverlay: some View {
+        Group {
+            if showToast {
+                Text(toastText)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(Color.black.opacity(0.85))
+                    .clipShape(Capsule())
+                    .padding(.bottom, 24)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: showToast)
     }
 
     // MARK: Sections
@@ -420,18 +518,12 @@ struct UploadFindView: View {
             guard let windowScene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
                   let window = windowScene.windows.first(where: { $0.isKeyWindow }),
                   let rootViewController = window.rootViewController else {
-                #if DEBUG
-                print("Could not find root view controller")
-                #endif
                 return
             }
-            
-            // Find the topmost presented view controller
             var topController = rootViewController
             while let presented = topController.presentedViewController {
                 topController = presented
             }
-            
             topController.present(alert, animated: true)
         }
     }
@@ -565,6 +657,7 @@ enum UploadError: Error {
     case imageEncodingFailed
     case networkError
     case authenticationFailed
+    case notAuthenticated
     case imageProcessingFailed
 }
 
@@ -630,34 +723,36 @@ func approx(_ c: CLLocationCoordinate2D, meters: Double = 500) -> CLLocationCoor
     return CLLocationCoordinate2D(latitude: lat, longitude: lon)
 }
 
+// MARK: - Supabase uploader with proper backend integration
 
-
-// Supabase uploader with proper backend integration
 struct SupabaseUploader: FindUploader {
     let supabaseService: SupabaseService
     let backendAPIURL: String
     let bearerToken: String
-    
+
     func uploadPostDraft(_ draft: PostDraft) async throws {
         // Step 1: Upload each image to Supabase Storage
         var uploadedImages: [PostImage] = []
-        
+
+        // Generate a single postId used for BOTH storage keys and API payload
+        let postId = UUID().uuidString
+
         for (index, imageRecord) in draft.images.enumerated() {
             guard let image = imageRecord.localImage else { continue }
-            
-            // Upload to Supabase Storage with draft ID for consistent paths
-            let publicURL = try await uploadImageToSupabaseStorage(image, draftId: draft.id, index: index)
-            
-            uploadedImages.append(PostImage(
-                url: URL(string: publicURL)!,
-                orderIndex: index
-            ))
+
+            // Upload to Supabase Storage with consistent path:
+            // post-content/posts/<userId>/<postId>/<index>.jpg
+            let publicURL = try await uploadImageToSupabaseStorage(image, postId: postId, index: index)
+
+            uploadedImages.append(
+                PostImage(url: URL(string: publicURL)!, orderIndex: index)
+            )
         }
-        
-        // Step 2: Prepare location data
-        let (exactLocation, approxLocation) = prepareLocationData(draft)
-        
-        // Step 3: Create PostCreate request using single source of truth
+
+        // Step 2: Prepare location data as arrays
+        let (exactArray, approxArray) = prepareLocationData(draft)
+
+        // Step 3: Create PostCreate payload using arrays and the same postId
         let postCreate = PostCreate(
             title: "Free item",
             description: draft.description,
@@ -665,34 +760,38 @@ struct SupabaseUploader: FindUploader {
             condition: ItemCondition(rawValue: draft.condition.backendValue)!,
             mode: ItemMode(rawValue: draft.mode.backendValue)!,
             images: uploadedImages,
-            exactLocation: exactLocation,
-            approxLocation: approxLocation
+            exactLocation: exactArray,
+            approxLocation: approxArray
         )
-        
+
         // Step 4: POST to your Flask backend
         try await postToBackend(postCreate)
     }
     
-    private func uploadImageToSupabaseStorage(_ image: UIImage, draftId: UUID, index: Int) async throws -> String {
+    private func uploadImageToSupabaseStorage(_ image: UIImage, postId: String, index: Int) async throws -> String {
         // 1) Resize and compress image
         let resizedImage = resizeImage(image, maxWidth: 1600)
-        guard let data = resizedImage.jpegData(compressionQuality: 0.85) else {
+        guard let data = resizedImage.jpegData(compressionQuality: 0.8), data.count > 0 else {
             throw UploadError.imageEncodingFailed
         }
         
         // 2) Get user ID from Supabase session
         let session = try await supabaseService.client.auth.session
         let userId = session.user.id
+        if session.accessToken.isEmpty { throw UploadError.notAuthenticated }
         
-        // 3) Generate storage path: posts/<userId>/<draftId>/<index>.jpg
-        let filename = "posts/\(userId)/\(draftId.uuidString)/\(index).jpg"
+        // 3) Generate storage path: posts/<userId>/<postId>/<index>.jpg
+        let filename = "posts/\(userId)/\(postId)/\(index).jpg"
         
         // 4) Upload to Supabase Storage bucket "post-content"
         _ = try await supabaseService.client.storage
             .from("post-content")
-            .upload(path: filename, file: data, options: .init(upsert: true))
+            .upload(path: filename, file: data, options: .init(cacheControl: "3600", contentType: "image/jpeg", upsert: true))
+        #if DEBUG
+        print("[UPLOAD OK]", filename)
+        #endif
         
-        // 5) Get public URL (assuming public bucket)
+        // 5) Public bucket: get public URL and skip verification
         let publicURL = try supabaseService.client.storage
             .from("post-content")
             .getPublicURL(path: filename)
@@ -719,24 +818,20 @@ struct SupabaseUploader: FindUploader {
         return resizedImage ?? image
     }
     
-    private func prepareLocationData(_ draft: PostDraft) -> (exact: String?, approx: String?) {
+    private func prepareLocationData(_ draft: PostDraft) -> (exact: [Double]?, approx: [Double]?) {
         guard let c = draft.coordinate else { return (nil, nil) }
-        
         switch draft.mode {
         case .street:
-            // POINT format: longitude first, latitude second
-            let wkt = "POINT(\(c.longitude) \(c.latitude))"
-            return (exact: wkt, approx: nil)
+            // Array format: [lng, lat]
+            return (exact: [c.longitude, c.latitude], approx: nil)
         case .home:
             let a = approx(c, meters: 500)
-            // POINT format: longitude first, latitude second
-            let wkt = "POINT(\(a.longitude) \(a.latitude))"
-            return (exact: nil, approx: wkt)
+            return (exact: nil, approx: [a.longitude, a.latitude])
         }
     }
     
     private func postToBackend(_ request: PostCreate) async throws {
-        guard let url = URL(string: "\(backendAPIURL)/post/") else {
+        guard let url = URL(string: "\(backendAPIURL)/post") else {
             throw URLError(.badURL)
         }
         
@@ -748,7 +843,10 @@ struct SupabaseUploader: FindUploader {
         let jsonData = try JSONEncoder().encode(request)
         urlRequest.httpBody = jsonData
         
-        let (_, response) = try await URLSession.shared.data(for: urlRequest)
+        // Ensure this backend call also benefits from auth refresh + retry
+        let (_, response): (Data, URLResponse) = try await fetchWithRetry(svc: supabaseService) {
+            try await URLSession.shared.data(for: urlRequest)
+        }
         
         guard let httpResponse = response as? HTTPURLResponse,
               200...299 ~= httpResponse.statusCode else {
@@ -1120,7 +1218,5 @@ private extension Array {
 
 // Keep old references working
 typealias AddTrashFlow = AddTrashView
-
-
 
 

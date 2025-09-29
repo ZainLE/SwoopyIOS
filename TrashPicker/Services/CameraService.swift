@@ -51,9 +51,6 @@ final class CameraService: NSObject, ObservableObject {
     /// Present camera with proper coordinator retention
     func presentCamera(from viewController: UIViewController) {
         guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
-            #if DEBUG
-            print("Camera not available")
-            #endif
             return
         }
         

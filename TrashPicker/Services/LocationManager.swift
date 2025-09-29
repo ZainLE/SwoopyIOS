@@ -6,16 +6,23 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     @Published var userLocation: CLLocation?
     private let manager = CLLocationManager()
     private var oneShot: ((CLLocationCoordinate2D?) -> Void)?
+    private var didUpgradeAccuracy = false
 
     override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBest
+        // Coarse-first strategy for faster startup
+        manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        manager.distanceFilter = 50
     }
 
     func request() {
         if manager.authorizationStatus == .notDetermined {
             manager.requestWhenInUseAuthorization()
+        }
+        // Provide last known location immediately if available
+        if let last = manager.location {
+            userLocation = last
         }
         manager.startUpdatingLocation()
     }
@@ -42,9 +49,14 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         if let cb = oneShot { cb(nil); oneShot = nil }
-        #if DEBUG
-        print("Location error:", error.localizedDescription)
-        #endif
+    }
+
+    // MARK: - Accuracy Upgrade
+    func upgradeToBestAccuracy() {
+        guard !didUpgradeAccuracy else { return }
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.distanceFilter = kCLDistanceFilterNone
+        didUpgradeAccuracy = true
     }
 }
 

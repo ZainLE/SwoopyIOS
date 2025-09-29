@@ -46,7 +46,7 @@ private struct RootGateView: View {
                         .frame(width: 140, height: 140)
                 }
                 .task { await svc.ensureSession() } // just in case
-            } else if svc.isAuthenticated {
+            } else if svc.isAuthenticated && ((svc.currentAccessTokenOrNil() ?? "").isEmpty == false) {
                 RootView()  // main app
             } else {
                 AuthView()  // always first on fresh install

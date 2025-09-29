@@ -22,8 +22,9 @@ struct PostCreate: Codable {
     let condition: ItemCondition
     let mode: ItemMode
     let images: [PostImage]
-    let exactLocation: String?
-    let approxLocation: String?
+    // Location is sent as [lng, lat] per backend contract
+    let exactLocation: [Double]?
+    let approxLocation: [Double]?
     
     enum CodingKeys: String, CodingKey {
         case title, description, category, condition, mode, images
@@ -79,7 +80,8 @@ struct Post: Codable, Identifiable {
     let condition: ItemCondition
     let mode: ItemMode
     let ownerId: String
-    let expiresAt: String
+    let createdAt: Date?
+    let expiresAt: Date?
     let exactLocation: Location?
     let approxLocation: Location?
     let images: [PostImage]
@@ -91,6 +93,7 @@ struct Post: Codable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case id, title, description, category, condition, mode, images, distance, owner
         case ownerId = "owner_id"
+        case createdAt = "created_at"
         case expiresAt = "expires_at"
         case exactLocation = "exact_location"
         case approxLocation = "approx_location"
@@ -234,7 +237,7 @@ enum ApiServiceError: Error, LocalizedError {
 
 @MainActor
 class ApiService: ObservableObject {
-    private let baseURL = SupabaseConfig.apiBaseURL
+    private let baseURL: String = "https://swoopy.eu/custom-api" // Decoupled from SupabaseConfig to avoid cross-target dependency
     private let session: URLSession
     private let supabaseService: SupabaseService
     
@@ -266,7 +269,11 @@ class ApiService: ObservableObject {
     }
     
     private func getAuthHeaders() throws -> [String: String] {
-        guard let token = supabaseService.currentAccessTokenOrNil() else {
+        guard supabaseService.isAuthenticated else {
+            throw ApiServiceError.noAuthToken
+        }
+        // Retrieve current access token from SupabaseService
+        guard let token = supabaseService.currentAccessTokenOrNil(), !token.isEmpty else {
             throw ApiServiceError.noAuthToken
         }
         return [
@@ -318,6 +325,7 @@ class ApiService: ObservableObject {
             switch httpResponse.statusCode {
             case 200...299:
                 let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
                 do {
                     return try decoder.decode(T.self, from: data)
                 } catch {
@@ -401,6 +409,10 @@ class ApiService: ObservableObject {
             URLQueryItem(name: "radius_km", value: "\(query.radiusKm)"),
             URLQueryItem(name: "limit", value: "\(query.limit)")
         ]
+        // Server-side exclusion hint: pass current user id if available
+        if let me = supabaseService.userId?.uuidString {
+            queryItems.append(URLQueryItem(name: "user_id", value: me))
+        }
         
         if let category = query.category {
             queryItems.append(URLQueryItem(name: "category", value: category))
@@ -415,8 +427,19 @@ class ApiService: ObservableObject {
         }
         
         let response: FeedResponse = try await makeRequest("/feed", queryParams: queryItems)
+        // Client fallback: filter out my own posts in case server didn't exclude
+        if let me = supabaseService.userId?.uuidString {
+            let filtered = response.posts.filter { post in
+                // Prefer explicit ownerId, fall back to owner?.id if present
+                if post.ownerId == me { return false }
+                if let ownerProfileId = post.owner?.id, ownerProfileId == me { return false }
+                return true
+            }
+            return filtered
+        }
         return response.posts
     }
+
     
     func getPost(_ postId: String) async throws -> Post {
         struct PostResponse: Codable {
@@ -503,8 +526,8 @@ extension Post {
     }
     
     var isExpired: Bool {
-        let expiresAt = ISO8601DateFormatter().date(from: expiresAt) ?? Date.distantPast
-        return expiresAt < Date()
+        guard let exp = expiresAt else { return false }
+        return exp < Date()
     }
     
     var reservationStatus: String? {
@@ -536,49 +559,5 @@ extension Reservation {
     }
 }
 
-// MARK: - Mock Data for Preview
+//
 
-#if DEBUG
-extension Post {
-    static let mock = Post(
-        id: "1",
-        title: "Test Item",
-        description: "Test description",
-        category: "electronics",
-        condition: .good,
-        mode: .street,
-        ownerId: "user123",
-        expiresAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(86400)),
-        exactLocation: Location(lng: "-122.4194", lat: "37.7749"),
-        approxLocation: nil,
-        images: [PostImage(url: URL(string: "https://example.com/image.jpg")!, orderIndex: 0)],
-        distance: 1.5,
-        owner: nil,
-        userReservation: nil
-    )
-}
-
-extension Reservation {
-    static let mock = Reservation(
-        id: "res1",
-        itemId: "1",
-        reserver: "user456",
-        status: "pending",
-        requestedAt: ISO8601DateFormatter().string(from: Date()),
-        approvedAt: nil,
-        startAt: nil,
-        endAt: nil,
-        pickedAt: nil,
-        canceledAt: nil,
-        post: Post.mock
-    )
-}
-
-extension ReservationSummary {
-    static let mock = ReservationSummary(
-        id: "res1",
-        status: "pending",
-        requestedAt: ISO8601DateFormatter().string(from: Date())
-    )
-}
-#endif

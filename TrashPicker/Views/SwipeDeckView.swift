@@ -19,6 +19,7 @@ struct SwipeDeckView: View {
 
     // API Service for feed data
     @State private var api: ApiService?
+    @State private var didKickOff = false
     @State private var posts: [Post] = []
 
     // Deck state management - single source of truth
@@ -29,6 +30,7 @@ struct SwipeDeckView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showError = false
+    @State private var showAuthError = false
 
     // Glass segmented control and map presentation
     fileprivate enum SegTab { case feed, map }
@@ -49,6 +51,8 @@ struct SwipeDeckView: View {
         return posts.filter { !hidden.contains($0.id) }
     }
 
+    // Use global helper on service: svc.hasAuthToken
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -63,9 +67,22 @@ struct SwipeDeckView: View {
             .toolbar { toolbarContent }
             .navigationBarTitleDisplayMode(.inline)
             .onAppear { handleViewAppear() }
-            .task { 
+            // INIT: create ApiService and gate the first fetch
+            .task {
                 if api == nil { api = ApiService(supabaseService: svc) }
-                await fetchFeedBridge() 
+                if svc.hasAuthToken {
+                    // TEMP: Xcode Console Extraction
+                    print("DEBUG TOKEN: \(svc.session?.accessToken ?? "No token")")
+                }
+                await maybeLoadFeed()
+            }
+            // When auth flips ready, fire once
+            .onChange(of: svc.isAuthenticated) { _, _ in
+                Task { await maybeLoadFeed() }
+            }
+            // Observe session/token as well to avoid races
+            .onChange(of: svc.session) { _, _ in
+                Task { await maybeLoadFeed() }
             }
             .onChange(of: seg) { oldValue, newValue in
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
@@ -90,12 +107,12 @@ struct SwipeDeckView: View {
     }
 
 
-    // MARK: - Main Content Components
-
     private var mainContentArea: some View {
         ZStack {
             if isLoading {
                 loadingView
+            } else if showAuthError {
+                authErrorView
             } else if showError {
                 errorView
             } else if visible.isEmpty {
@@ -103,7 +120,8 @@ struct SwipeDeckView: View {
             } else {
                 feedContentView
             }
-            
+
+            // Present the reservation sheet within the same ZStack so the property returns a single view
             reservationSheetView
         }
     }
@@ -136,6 +154,33 @@ struct SwipeDeckView: View {
                 Task {
                     await fetchFeedBridge()
                     hidden.removeAll()
+                }
+            }
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+            .background(AppTheme.ColorToken.primary)
+            .clipShape(Capsule())
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 32)
+    }
+    
+    private var authErrorView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "person.crop.circle.badge.exclamationmark")
+                .font(.system(size: 48))
+                .foregroundColor(.red)
+            
+            Text(errorMessage ?? "Session expired. Please sign in again.")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.primary)
+                .multilineTextAlignment(.center)
+            
+            Button("Sign In Again") {
+                Task {
+                    await svc.signOut()
                 }
             }
             .font(.system(size: 16, weight: .semibold))
@@ -274,9 +319,6 @@ struct SwipeDeckView: View {
                 sheetMode = .info
             }
         } catch {
-            #if DEBUG
-            print("Failed to reserve post: \(error.localizedDescription)")
-            #endif
             // Handle error - could show an alert or error state
         }
     }
@@ -329,9 +371,6 @@ struct SwipeDeckView: View {
             
         } catch {
             // Error handling is managed by DeckState
-            #if DEBUG
-            print("Failed to reserve post: \(error.localizedDescription)")
-            #endif
             
             // Show error to user
             await MainActor.run {
@@ -380,6 +419,7 @@ struct SwipeDeckView: View {
         
         isLoading = true
         showError = false
+        showAuthError = false
         
         do {
             let feedQuery = FeedQuery(
@@ -395,29 +435,37 @@ struct SwipeDeckView: View {
                 try await api.getFeed(query: feedQuery)
             }
             
+            // Presentation-layer filter: hide my own posts
             posts = fetchedPosts
             deckState.updateItems(visible)
+            // After first successful feed, upgrade location accuracy for better follow-up interactions
+            loc.upgradeToBestAccuracy()
             isLoading = false
         } catch {
-            #if DEBUG
-            print("Failed to fetch feed: \(error.localizedDescription)")
-            #endif
             posts = []
             deckState.updateItems([])
             isLoading = false
             
-            if error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
+            // Check for auth-specific errors
+            if error is AuthError || error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
                 errorMessage = "Session expired. Please sign in again."
+                showAuthError = true
             } else {
                 errorMessage = "Unable to load feed. Please try again."
+                showError = true
             }
-            showError = true
         }
     }
     
     // MARK: - Helper Functions
-    
 
+    @MainActor
+    private func maybeLoadFeed() async {
+        if api == nil { api = ApiService(supabaseService: svc) }
+        guard svc.hasAuthToken, didKickOff == false else { return }
+        didKickOff = true
+        await fetchFeedBridge()
+    }
 }
 
 private struct PulsingLeafBadge: View {
@@ -494,8 +542,7 @@ extension SwipeDeckView {
                     FeedCard(
                         item: activeCard,
                         deckState: deckState,
-                        isActiveCard: true,
-                        router: router
+                        isActiveCard: true
                     )
                     .zIndex(2)
                     .allowsHitTesting(!deckState.isAnimating)
@@ -505,8 +552,7 @@ extension SwipeDeckView {
                     FeedCard(
                         item: nextCard,
                         deckState: deckState,
-                        isActiveCard: false,
-                        router: router
+                        isActiveCard: false
                     )
                     .zIndex(1)
                     .allowsHitTesting(false)
@@ -766,9 +812,6 @@ extension SwipeDeckView {
                 }
                 streetPosts = fetchedPosts
             } catch {
-                #if DEBUG
-                print("Failed to fetch street posts: \(error.localizedDescription)")
-                #endif
                 streetPosts = []
             }
         }
@@ -789,9 +832,6 @@ extension SwipeDeckView {
             
             // Check if we have permission
             guard loc.authorization == .authorizedWhenInUse || loc.authorization == .authorizedAlways else {
-                #if DEBUG
-                print("Location permission not granted")
-                #endif
                 return
             }
             
@@ -811,9 +851,6 @@ extension SwipeDeckView {
             // Otherwise request a fresh location
             loc.requestOnce { coordinate in
                 guard let coordinate = coordinate else {
-                    #if DEBUG
-                    print("Failed to get current location")
-                    #endif
                     return
                 }
                 

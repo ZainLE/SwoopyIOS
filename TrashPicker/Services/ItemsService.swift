@@ -1,5 +1,6 @@
 import Foundation
-import Supabase
+// Supabase SDK must only be used for Auth/Storage. This service is retained to avoid breaking references,
+// but it no longer calls Supabase RPC/PostgREST for domain logic.
 
 // Wire model matching your DB “feed” shape
 struct FeedItem: Decodable, Identifiable {
@@ -28,22 +29,10 @@ final class ItemsService {
     static let shared = ItemsService()
     private init() {}
 
-    // Use the same authenticated client everywhere
-    private var c: SupabaseClient { SupabaseService.shared.client }
+    // NOTE: Domain logic should be performed via ApiService (Flask).
+    private var api: ApiService { ApiService(supabaseService: .shared) }
 
-    // Payloads for RPCs (snake_case must match SQL arg names)
-    private struct GetFeedParams: Encodable {
-        let lat: Double
-        let lon: Double
-        let radius_km: Int
-        let category: String?
-        let condition: String?
-    }
-
-    private struct ReservePostParams: Encodable {
-        let item_id: UUID
-        let hours: Int
-    }
+    // Payload DTOs are no longer used here; ApiService handles the HTTP layer.
 
     struct CreateItemDTO: Encodable {
         let title: String
@@ -68,30 +57,43 @@ final class ItemsService {
         category: String? = nil,
         condition: String? = nil
     ) async throws -> [FeedItem] {
-
-        let params = GetFeedParams(
-            lat: lat,
-            lon: lon,
-            radius_km: Int(radiusKm),
-            category: category,
-            condition: condition
-        )
-
-        // Decode directly to [FeedItem]
-        let response: PostgrestResponse<[FeedItem]> =
-            try await c.rpc("get_feed", params: params).execute()
-        return response.value
+        // Re-route to ApiService feed and map to FeedItem shape as best-effort.
+        let query = FeedQuery(lng: lon, lat: lat, radiusKm: radiusKm, category: category, mode: nil, limit: 50)
+        let posts: [Post] = try await api.getFeed(query: query)
+        return posts.map { p in
+            FeedItem(
+                id: UUID(uuidString: p.id) ?? UUID(),
+                uploader: UUID(uuidString: p.ownerId) ?? UUID(),
+                title: p.title,
+                description: p.description,
+                category: p.category,
+                condition: p.condition.rawValue,
+                mode: p.mode.rawValue,
+                lat: p.exactLocation?.coordinate?.latitude,
+                lon: p.exactLocation?.coordinate?.longitude,
+                approx_lat: p.approxLocation?.coordinate?.latitude,
+                approx_lon: p.approxLocation?.coordinate?.longitude,
+                photo_urls: p.images.sorted { $0.orderIndex < $1.orderIndex }.map { $0.url.absoluteString },
+                
+                created_at: p.createdAt ?? Date(),   // fallback to now
+                expires_at: p.expiresAt ?? Date(),   // fallback to now
+                
+                status: p.userReservation?.status ?? "available",
+                reserved_until: Optional<Date>.none,
+                reserved_by: Optional<UUID>.none,
+                picked_up_at: Optional<Date>.none
+            )
+        }
     }
 
     func insert(_ dto: CreateItemDTO) async throws {
-        _ = try await c
-            .from(SupabaseConfig.postsTable)
-            .insert(dto)
-            .execute()
+        // Domain create is via ApiService.createPost; ItemsService is deprecated for this path.
+        throw SimpleError(message: "Use ApiService.createPost for creating posts.")
     }
 
     func reservePost(itemId: UUID, hours: Int = 6) async throws {
-        let params = ReservePostParams(item_id: itemId, hours: hours)
-        _ = try await c.rpc("reserve_post", params: params).execute()
+        // Domain reserve is via ApiService.reservePost
+        _ = try await api.reservePost(itemId.uuidString)
     }
 }
+

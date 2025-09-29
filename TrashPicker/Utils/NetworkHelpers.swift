@@ -19,12 +19,23 @@ func fetchWithRetry<T>(
                 try await svc.refreshSessionIfNeeded()
                 return try await operation()  // retry once
             } catch {
-                // If still unauthorized, sign out
-                await svc.signOut()
-                throw error
+                // DO NOT auto-signOut() - surface auth error instead
+                throw AuthError.sessionExpired
             }
         }
         throw error
+    }
+}
+
+/// Auth-specific errors for better error handling
+enum AuthError: Error, LocalizedError {
+    case sessionExpired
+    
+    var errorDescription: String? {
+        switch self {
+        case .sessionExpired:
+            return "Session expired. Please sign in again."
+        }
     }
 }
 

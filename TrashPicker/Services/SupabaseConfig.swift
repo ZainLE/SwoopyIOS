@@ -4,11 +4,11 @@ import Foundation
 /// Reads keys from Info.plist (never hardcode secrets here).
 enum SupabaseConfig {
     // Storage / tables
-    static let photosBucket = "item-photos"
+    static let photosBucket = "post-content"
     static let postsTable   = "items"
     
     // API base URL for backend calls
-    static let apiBaseURL = "https://swoopy.eu"
+    static let apiBaseURL = "https://swoopy.eu/custom-api"
     
     // Read from Info.plist (DO NOT hardcode here in source)
     static let url: URL = {

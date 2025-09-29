@@ -349,9 +349,14 @@ private struct UploadPostRow: View {
                 Text(post.condition.rawValue.capitalized).font(AppFont.sub).foregroundColor(AppColor.muted)
             }
             Spacer()
-            if let createdDate = ISO8601DateFormatter().date(from: post.expiresAt) {
-                Text(createdDate, style: .time)
-                    .font(AppFont.sub).foregroundColor(AppColor.muted)
+            if let created = post.createdAt {
+                Text(created, style: .time)
+                    .font(AppFont.sub)
+                    .foregroundColor(AppColor.muted)
+            } else if let expires = post.expiresAt {
+                Text(expires, style: .time)
+                    .font(AppFont.sub)
+                    .foregroundColor(AppColor.muted)
             }
         }
     }
@@ -456,10 +461,8 @@ private struct UploadsHistoryView: View {
             }
             myPosts = posts
         } catch {
-            #if DEBUG
-            print("Failed to load my posts: \(error.localizedDescription)")
-            #endif
             myPosts = []
+            // Note: ProfileView doesn't show error messages, but AuthError is handled gracefully
         }
         isLoading = false
     }
@@ -496,3 +499,4 @@ extension CKTrashItem {
     var cityText: String { city }
     var mapCoordinate: CLLocationCoordinate2D? { coordinate }
 }
+

@@ -2,8 +2,8 @@ import Foundation
 
 enum DevMode {
     #if DEBUG
-    static let authBypassEnabled = false  // <— flip to false when you want to test real auth
-    static let mockDataEnabled   = true
+    static let authBypassEnabled = false  // must remain false in production builds and during QA
+    static let mockDataEnabled   = false
     #else
     static let authBypassEnabled = false
     static let mockDataEnabled   = false

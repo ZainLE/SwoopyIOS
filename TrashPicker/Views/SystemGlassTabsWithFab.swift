@@ -22,7 +22,7 @@ struct SystemGlassTabsWithFab: View {
                     .tabItem { Label("Feed", systemImage: "rectangle.grid.2x2.fill") }
                     .tag(0)
 
-                NavigationStack { ReservationsView() }
+                NavigationStack { ReservationsView(onGoToFeed: { tab = 0 }) }
                     .tabItem { Label("Reservations", systemImage: "clock.badge.checkmark") }
                     .tag(1)
 

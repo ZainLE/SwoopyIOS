@@ -14,7 +14,7 @@ struct FeedCard: View {
     let item: Any
     @ObservedObject var deckState: DeckState
     let isActiveCard: Bool // Whether this is the active (top) card
-    let router: AppRouter
+    @Environment(AppRouter.self) private var router
 
     // Local UI state
     @State private var dragOffset: CGSize = .zero
@@ -25,11 +25,6 @@ struct FeedCard: View {
     // Card position relative to the deck
     private var isNextCard: Bool { !isActiveCard }
     private var shouldShowStaged: Bool { isNextCard && (isDragging || deckState.isAnimating) }
-
-    // Design tokens
-    private let primary = Color(hex: "00513F")      // #00513F
-    private let accent = Color(hex: "B4DD4E")       // #B4DD4E
-    private let mutedText = Color(hex: "656565")    // #656565
 
     // Layout
     private let chromeSidePadding: CGFloat = 16
@@ -85,13 +80,22 @@ struct FeedCard: View {
         return nil
     }
     
-    private var itemCreatedAt: Date {
+    private var itemCreatedAt: Date? {
         if let ckItem = item as? CKTrashItem {
             return ckItem.createdAt
-        } else if let post = item as? Post {
-            return ISO8601DateFormatter().date(from: post.expiresAt) ?? Date() // Using expiresAt as placeholder
+        } else if item is Post {
+            return nil
         }
-        return Date()
+        return nil
+    }
+    
+    private var itemExpiresAt: Date? {
+        if let ckItem = item as? CKTrashItem {
+            return ckItem.expiresAt
+        } else if item is Post {
+            return nil
+        }
+        return nil
     }
     
     private var itemDescription: String? {
@@ -110,6 +114,15 @@ struct FeedCard: View {
             return post.primaryImageURL
         }
         return nil
+    }
+    
+    private var itemImageURLs: [URL] {
+        if let ckItem = item as? CKTrashItem {
+            return ckItem.photoURL.map { [$0] } ?? []
+        } else if let post = item as? Post {
+            return post.images.sorted { $0.orderIndex < $1.orderIndex }.map { $0.url }
+        }
+        return []
     }
     
     private var itemCoordinate: CLLocationCoordinate2D? {
@@ -174,10 +187,26 @@ struct FeedCard: View {
         return distances[hash % distances.count]
     }
 
-    private var timeAgoString: String {
+    private var postedAgoText: String? {
+        guard let created = itemCreatedAt else { return nil }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: itemCreatedAt, relativeTo: Date())
+        return formatter.localizedString(for: created, relativeTo: Date())
+    }
+
+    private var timeAgoString: String {
+        postedAgoText ?? ""
+    }
+    
+    private var expiresInText: String? {
+        guard let exp = itemExpiresAt else { return nil }
+        let now = Date()
+        if exp <= now { return "expired" }
+        let df = DateComponentsFormatter()
+        df.unitsStyle = .abbreviated
+        df.allowedUnits = [.day, .hour, .minute]
+        df.maximumUnitCount = 2
+        return df.string(from: now, to: exp)
     }
     
     private var feedPrimaryInfo: String {
@@ -194,7 +223,8 @@ struct FeedCard: View {
         VStack(spacing: 0) {
             // IMAGE AREA
             ZStack {
-                if let url = itemPrimaryImageURL {
+                let urls = itemImageURLs
+                if let url = (urls.indices.contains(currentImageIndex) ? urls[currentImageIndex] : urls.first) {
                     AsyncImage(url: url) { image in
                         image
                             .resizable()
@@ -247,9 +277,9 @@ struct FeedCard: View {
                 VStack {
                     Spacer()
                     HStack(spacing: 8) {
-                        ForEach(0..<3, id: \.self) { index in
+                        ForEach(0..<(itemImageURLs.count == 0 ? 0 : itemImageURLs.count), id: \.self) { index in
                             Circle()
-                                .fill(index == currentImageIndex ? primary : primary.opacity(0.35))
+                                .fill(index == currentImageIndex ? AppTheme.ColorToken.primary : AppTheme.ColorToken.primary.opacity(0.35))
                                 .frame(width: 6, height: 6)
                         }
                     }
@@ -273,9 +303,16 @@ struct FeedCard: View {
                             .foregroundColor(.primary)
                     }
 
-                    Text("Posted \(timeAgoString)")
-                        .font(.system(size: 12, weight: .regular))
-                        .foregroundColor(mutedText)
+                    if let posted = postedAgoText {
+                        Text("Posted \(posted)")
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundColor(AppTheme.ColorToken.mutedGray)
+                    }
+                    if let expiresText = expiresInText {
+                        Text("Expires in \(expiresText)")
+                            .font(.system(size: 12, weight: .regular))
+                            .foregroundColor(AppTheme.ColorToken.mutedGray)
+                    }
                 }
 
                 Spacer()
@@ -283,7 +320,7 @@ struct FeedCard: View {
                 // Right pill
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(accent)
+                        .fill(AppTheme.ColorToken.accent)
                         .frame(width: 8, height: 8)
 
                     Text(conditionDisplayText)
@@ -292,7 +329,7 @@ struct FeedCard: View {
                 }
                 .padding(.horizontal, 12)
                 .frame(height: 32)
-                .background(primary)
+                .background(AppTheme.ColorToken.primary)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .accessibilityLabel("Condition: \(conditionDisplayText)")
             }
@@ -367,10 +404,10 @@ struct FeedCard: View {
                         
                         // Big card overlay
                         BigCardOverlay(
-                            images: [itemPrimaryImageURL?.absoluteString ?? ""],
+                            images: itemImageURLs.map { $0.absoluteString },
                             primaryInfo: feedPrimaryInfo,
-                            statusInfo: "Posted \(timeAgoString)",
-                            statusColor: mutedText,
+                            statusInfo: timeAgoString.isEmpty ? "" : "Posted \(timeAgoString)",
+                            statusColor: AppTheme.ColorToken.mutedGray,
                             description: itemDescription,
                             mode: itemMode?.lowercased() == "street" ? .street : .home,
                             exactLocation: itemCoordinate,
@@ -441,12 +478,16 @@ struct FeedCard: View {
 
     private func nextPhoto() {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        currentImageIndex = (currentImageIndex + 1) % 3
+        let count = itemImageURLs.count
+        guard count > 0 else { return }
+        currentImageIndex = (currentImageIndex + 1) % count
     }
 
     private func previousPhoto() {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        currentImageIndex = currentImageIndex == 0 ? 2 : currentImageIndex - 1
+        let count = itemImageURLs.count
+        guard count > 0 else { return }
+        currentImageIndex = currentImageIndex == 0 ? (count - 1) : (currentImageIndex - 1)
     }
 
     private func advancePhoto() { nextPhoto() }

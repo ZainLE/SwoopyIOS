@@ -91,23 +91,29 @@ final class SupabaseService: NSObject, ObservableObject {
 
     private override init() {
         super.init()
-        let hasTokens = KeychainStore.loadSession() != nil
-        self.phase = hasTokens ? .checking : .signedOut   // ⬅️ key line: NO splash on first run
         Task { [weak self] in
-            await self?.restoreSessionIfPossible()          // only does work if tokens exist
-            await MainActor.run {
-                self?.didCheckSession = true
-            }
+            await self?.bootstrapAuth()
         }
     }
 
     // MARK: - Public Auth API
 
     func ensureSession() async {
-        // Only check if we're still in checking phase
-        guard phase == .checking else { return }
-        let s = try? await client.auth.session
-        applyAuthSession(s)
+        // Legacy shim: route to bootstrapAuth to resolve current status
+        await bootstrapAuth()
+    }
+
+    /// Runs once at launch to restore a cached session (if any).
+    func bootstrapAuth() async {
+        defer { didCheckSession = true }
+        do {
+            let s = try await client.auth.session
+            applyAuthSession(s)
+        } catch {
+            self.session = nil
+            self.isAuthenticated = false
+            self.phase = .signedOut
+        }
     }
 
     func refreshAuthState() async {
@@ -122,9 +128,7 @@ final class SupabaseService: NSObject, ObservableObject {
             let s = try await client.auth.session(from: url)
             applyAuthSession(s)
         } catch {
-            #if DEBUG
-            print("OAuth redirect handling failed:", error.localizedDescription)
-            #endif
+            // swallow
         }
     }
 
@@ -182,14 +186,16 @@ final class SupabaseService: NSObject, ObservableObject {
         applyAuthSession(s)
     }
 
+    /// Call this on successful login flows to store the session and mark authenticated.
+    func setSession(_ s: Session) {
+        applyAuthSession(s)
+    }
+
     func signOut() async {
-        do { try await client.auth.signOut() } catch {
-            #if DEBUG
-            print("signOut error:", error.localizedDescription)
-            #endif
-        }
+        do { try await client.auth.signOut(scope: .local) } catch { }
         KeychainStore.clearSession()
         applyAuthSession(nil)
+        // Keep didCheckSession = true so UI shows Auth immediately
         phase = .signedOut
     }
     
@@ -226,15 +232,9 @@ final class SupabaseService: NSObject, ObservableObject {
     /// Delete user account and all associated data
     @MainActor
     func deleteAccount() async throws {
-        guard session != nil else {
-            throw SimpleError(message: "No active session")
-        }
-        
-        // Delete user account (this will cascade delete associated data)
-        try await client.rpc("delete_user_account").execute()
-        
-        // Sign out locally
-        await signOut()
+        // Domain account deletion is not handled via Supabase RPC in the app layer.
+        // If needed, expose a Flask endpoint and call it via ApiService.
+        throw SimpleError(message: "Account deletion not supported from client.")
     }
     
     @MainActor
@@ -280,9 +280,6 @@ final class SupabaseService: NSObject, ObservableObject {
                 )
             }
         } catch {
-            #if DEBUG
-            print("fetchFeed:", error.localizedDescription)
-            #endif
         }
     }
 
@@ -316,8 +313,10 @@ final class SupabaseService: NSObject, ObservableObject {
     ) async throws {
         guard let uid = userId else { throw SimpleError(message: "No user/session") }
 
-        let photoURLs = try await ImageStorage.uploadJPEGs(client: client, images: images, uploader: uid)
-        guard !photoURLs.isEmpty else { throw SimpleError(message: "Image upload failed") }
+        // Use a deterministic postId for both DB row and storage object paths
+        let postId = UUID()
+        let signedURLs: [URL] = try await ImageStorage.uploadJPEGs(client: client, images: images, uploader: uid, postId: postId)
+        guard !signedURLs.isEmpty else { throw SimpleError(message: "Image upload failed") }
 
         var lat = coordinate.latitude, lon = coordinate.longitude
         var approxLat: Double? = nil, approxLon: Double? = nil
@@ -347,7 +346,7 @@ final class SupabaseService: NSObject, ObservableObject {
 
         let now = Date()
         let payload = Insert(
-            id: UUID(),
+            id: postId,
             uploader: uid,
             title: title,
             description: description?.prefix(100).description,
@@ -358,7 +357,7 @@ final class SupabaseService: NSObject, ObservableObject {
             lon: mode == "street" ? lon : nil,
             approx_lat: mode == "home" ? approxLat : nil,
             approx_lon: mode == "home" ? approxLon : nil,
-            photo_urls: photoURLs,
+            photo_urls: signedURLs.map { $0.absoluteString },
             created_at: ISOTime.isoString(now),
             expires_at: ISOTime.isoString(now.addingTimeInterval(24*3600)),
             status: "available"
@@ -377,29 +376,20 @@ final class SupabaseService: NSObject, ObservableObject {
     }
 
     func approve(reservationId: UUID, hours: Int = 6) async throws {
-        struct Params: Encodable { let p_reservation_id: UUID; let p_hours: Int }
-        let params = Params(p_reservation_id: reservationId, p_hours: hours)
-        _ = try await client.rpc("approve_reservation", params: params).execute()
+        let api = ApiService(supabaseService: self)
+        try await api.approveReservation(reservationId.uuidString)
     }
 
     func cancelReservation(_ item: TrashDTO) async {
-        struct Params: Encodable { let p_post_id: UUID }
-        do { _ = try await client.rpc("clear_reservation", params: Params(p_post_id: item.id)).execute() }
-        catch { 
-            #if DEBUG
-            print("cancelReservation:", error.localizedDescription) 
-            #endif
-        }
+        let api = ApiService(supabaseService: self)
+        do { _ = try await api.cancelReservation(item.id.uuidString) }
+        catch { /* swallow to keep UI responsive */ }
     }
 
     func confirmPickup(_ item: TrashDTO) async {
-        struct Params: Encodable { let p_post_id: UUID }
-        do { _ = try await client.rpc("mark_picked_up", params: Params(p_post_id: item.id)).execute() }
-        catch { 
-            #if DEBUG
-            print("confirmPickup:", error.localizedDescription) 
-            #endif
-        }
+        // For pickups we typically complete a reservation; depends on your domain.
+        // If you have a reservation id, call ApiService.completeReservation.
+        // Here we no-op on the service layer; views already call ApiService directly.
     }
 }
 
@@ -480,9 +470,16 @@ private extension SupabaseService {
         self.session = session
         if let s = session {
             self.userId = s.user.id
-            self.isAuthenticated = !Self.isAnonymousUser(s.user)
-            KeychainStore.saveSession(accessToken: s.accessToken, refreshToken: s.refreshToken)
-            if phase != .signedIn { phase = .signedIn }
+            // Authenticated only if we have a non-empty access token
+            let tokenOk = s.accessToken.isEmpty == false
+            self.isAuthenticated = tokenOk
+            if tokenOk {
+                KeychainStore.saveSession(accessToken: s.accessToken, refreshToken: s.refreshToken)
+                if phase != .signedIn { phase = .signedIn }
+            } else {
+                KeychainStore.clearSession()
+                if phase != .signedOut { phase = .signedOut }
+            }
         } else {
             self.userId = nil
             self.isAuthenticated = false
@@ -605,5 +602,14 @@ private enum ISOTime {
 struct SimpleError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
+}
+
+// MARK: - Auth readiness helper
+
+extension SupabaseService {
+    var hasAuthToken: Bool {
+        guard let token = session?.accessToken else { return false }
+        return token.isEmpty == false
+    }
 }
 
