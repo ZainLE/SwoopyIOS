@@ -8,12 +8,16 @@ import MapKit
 import CloudKit
 import CoreLocation
 import UIKit // for UIImpactFeedbackGenerator
+import Combine
 
 struct FeedCard: View {
     // Injected from parent - can be either CKTrashItem or Post
     let item: Any
     @ObservedObject var deckState: DeckState
     let isActiveCard: Bool // Whether this is the active (top) card
+    let isReserving: Bool
+    let onPass: () -> Void
+    let onReserve: () -> Void
     @Environment(AppRouter.self) private var router
 
     // Local UI state
@@ -21,6 +25,10 @@ struct FeedCard: View {
     @State private var isDragging = false
     @State private var currentImageIndex = 0
     @State private var showDetailOverlay = false
+    @State private var currentTime = Date() // For time remaining updates
+    
+    // Timer for updating time remaining every 60 seconds
+    private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     // Card position relative to the deck
     private var isNextCard: Bool { !isActiveCard }
@@ -199,14 +207,41 @@ struct FeedCard: View {
     }
     
     private var expiresInText: String? {
+        // For Post, use expiresAt (Date?)
+        if let post = item as? Post {
+            guard let exp = post.expiresAt else { return nil }
+            let now = currentTime
+            if exp <= now { return "expired" }
+            
+            let interval = exp.timeIntervalSince(now)
+            if interval < 3600 {
+                let mins = Int(interval / 60)
+                return "expires in \(mins)m"
+            } else if interval < 86400 {
+                let hours = Int(interval / 3600)
+                return "expires in \(hours)h"
+            } else {
+                let days = Int(interval / 86400)
+                return "expires in \(days)d"
+            }
+        }
+        
+        // For CKTrashItem, use itemExpiresAt
         guard let exp = itemExpiresAt else { return nil }
-        let now = Date()
+        let now = currentTime
         if exp <= now { return "expired" }
-        let df = DateComponentsFormatter()
-        df.unitsStyle = .abbreviated
-        df.allowedUnits = [.day, .hour, .minute]
-        df.maximumUnitCount = 2
-        return df.string(from: now, to: exp)
+        
+        let interval = exp.timeIntervalSince(now)
+        if interval < 3600 {
+            let mins = Int(interval / 60)
+            return "expires in \(mins)m"
+        } else if interval < 86400 {
+            let hours = Int(interval / 3600)
+            return "expires in \(hours)h"
+        } else {
+            let days = Int(interval / 86400)
+            return "expires in \(days)d"
+        }
     }
     
     private var feedPrimaryInfo: String {
@@ -221,125 +256,17 @@ struct FeedCard: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // IMAGE AREA
-            ZStack {
-                let urls = itemImageURLs
-                if let url = (urls.indices.contains(currentImageIndex) ? urls[currentImageIndex] : urls.first) {
-                    AsyncImage(url: url) { image in
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    } placeholder: {
-                        Rectangle().fill(.secondary.opacity(0.15))
-                    }
-                    .frame(width: cardWidth, height: imageHeight)
-                    .offset(y: -5)
-                } else {
-                    Rectangle()
-                        .fill(.secondary.opacity(0.15))
-                        .frame(width: cardWidth, height: imageHeight)
-                        .offset(y: -5)
-                }
+            imageAreaView()
+                .frame(height: imageHeight)
+                .clipped()
 
-                // Invisible tap zones for image paging
-                HStack(spacing: 0) {
-                    // Left 40% - previous photo
-                    Rectangle()
-                        .fill(Color.clear)
-                        .frame(width: cardWidth * 0.4)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            previousPhoto()
-                            showDetailOverlay = true
-                        }
-
-                    // Middle 20% - just expand
-                    Rectangle()
-                        .fill(Color.clear)
-                        .frame(width: cardWidth * 0.2)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            showDetailOverlay = true
-                        }
-
-                    // Right 40% - next photo
-                    Rectangle()
-                        .fill(Color.clear)
-                        .frame(width: cardWidth * 0.4)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            nextPhoto()
-                            showDetailOverlay = true
-                        }
-                }
-
-                // Pager dots
-                VStack {
-                    Spacer()
-                    HStack(spacing: 8) {
-                        ForEach(0..<(itemImageURLs.count == 0 ? 0 : itemImageURLs.count), id: \.self) { index in
-                            Circle()
-                                .fill(index == currentImageIndex ? AppTheme.ColorToken.primary : AppTheme.ColorToken.primary.opacity(0.35))
-                                .frame(width: 6, height: 6)
-                        }
-                    }
-                    .padding(.bottom, 16)
-                }
-            }
-            .frame(height: imageHeight)
-            .clipped()
-
-            // INFO BAR
-            HStack {
-                // Left side
-                VStack(alignment: .leading, spacing: 4) {
-                    if itemMode?.lowercased() == "home" {
-                        Text("From home (address hidden)")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundColor(.primary)
-                    } else {
-                        Text(distanceString)
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundColor(.primary)
-                    }
-
-                    if let posted = postedAgoText {
-                        Text("Posted \(posted)")
-                            .font(.system(size: 12, weight: .regular))
-                            .foregroundColor(AppTheme.ColorToken.mutedGray)
-                    }
-                    if let expiresText = expiresInText {
-                        Text("Expires in \(expiresText)")
-                            .font(.system(size: 12, weight: .regular))
-                            .foregroundColor(AppTheme.ColorToken.mutedGray)
-                    }
-                }
-
-                Spacer()
-
-                // Right pill
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(AppTheme.ColorToken.accent)
-                        .frame(width: 8, height: 8)
-
-                    Text(conditionDisplayText)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white)
-                }
-                .padding(.horizontal, 12)
-                .frame(height: 32)
-                .background(AppTheme.ColorToken.primary)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .accessibilityLabel("Condition: \(conditionDisplayText)")
-            }
-            .padding(.horizontal, chromeSidePadding)
-            .padding(.vertical, 16)
-            .frame(height: infoBarHeight)
-            .frame(maxWidth: .infinity)
-            .background(Color.white)
-            .onTapGesture { showDetailOverlay = true }
-
+            infoBarView()
+                .padding(.horizontal, chromeSidePadding)
+                .padding(.vertical, 16)
+                .frame(height: infoBarHeight)
+                .frame(maxWidth: .infinity)
+                .background(Color.white)
+                .onTapGesture { showDetailOverlay = true }
         }
         .frame(width: cardWidth, height: cardHeight)
         .background(Color.white)
@@ -355,124 +282,252 @@ struct FeedCard: View {
         .scaleEffect(isNextCard && !shouldShowStaged ? 0.98 : 1.0)
         .offset(y: isNextCard && !shouldShowStaged ? 10 : 0)
         .animation(.spring(response: 0.2, dampingFraction: 0.8), value: shouldShowStaged)
-        .highPriorityGesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in }
-                .onEnded { _ in }
-        )
-        .gesture(
-            DragGesture(minimumDistance: 6)
-                .onChanged { value in
-                    guard isActiveCard && deckState.canAct && !showDetailOverlay else { return }
-                    let wasDragging = isDragging
-                    isDragging = abs(value.translation.width) > 6 || abs(value.translation.height) > 6
-                    dragOffset = value.translation
-
-                    if !wasDragging && isDragging {
-                        // reveal animation handled by .animation modifier
-                    }
-                }
-                .onEnded { value in
-                    guard isActiveCard && deckState.canAct && !showDetailOverlay else { return }
-                    isDragging = false
-                    let threshold: CGFloat = 115
-
-                    if value.translation.width > threshold {
-                        Task { await triggerReserve() }
-                    } else if value.translation.width < -threshold {
-                        Task { await triggerPass() }
-                    } else {
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            dragOffset = .zero
-                        }
-                    }
-                }
-        )
-        .overlay(
-        
-            // Feed detail overlay using BigCardOverlay
-            Group {
-                if showDetailOverlay {
-                    ZStack {
-                        // Backdrop
-                        Color.black.opacity(0.35)
-                            .ignoresSafeArea(.all)
-                            .onTapGesture {
-                                showDetailOverlay = false
-                            }
-                            .zIndex(1)
-                        
-                        // Big card overlay
-                        BigCardOverlay(
-                            images: itemImageURLs.map { $0.absoluteString },
-                            primaryInfo: feedPrimaryInfo,
-                            statusInfo: timeAgoString.isEmpty ? "" : "Posted \(timeAgoString)",
-                            statusColor: AppTheme.ColorToken.mutedGray,
-                            description: itemDescription,
-                            mode: itemMode?.lowercased() == "street" ? .street : .home,
-                            exactLocation: itemCoordinate,
-                            ownerName: itemOwnerName ?? "Anonymous User",
-                            memberSince: itemCreatedAt,
-                            pickupsCount: itemInterestedCount,
-                            variant: .feed,
-                            onDismiss: {
-                                showDetailOverlay = false
-                            },
-                            onPrimaryAction: {
-                                showDetailOverlay = false
-                                Task {
-                                    await triggerReserve()
-                                }
-                            },
-                            onSecondaryAction: {
-                                showDetailOverlay = false
-                                Task { await triggerPass() }
-                            },
-                            onTertiaryAction: nil
-                        )
-                        .zIndex(2)
-                    }
-                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                    .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showDetailOverlay)
-                }
-            }
-        )
+        .gesture(mainDragGesture())
+        .onReceive(timer) { _ in currentTime = Date() }
+        .overlay(reservingOverlayView())
+        .overlay(detailOverlayView())
     }
 
+    // MARK: - Sections
+
+    @ViewBuilder
+    private func imageAreaView() -> some View {
+        ZStack {
+            imageContentView()
+
+            tapZonesView()
+            pagerDotsView()
+        }
+        .frame(width: cardWidth, height: imageHeight)
+        .clipped()
+    }
+
+    @ViewBuilder
+    private func imageContentView() -> some View {
+        let urls = itemImageURLs
+        if let url = (urls.indices.contains(currentImageIndex) ? urls[currentImageIndex] : urls.first) {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let img):
+                    img.resizable()
+                        .scaledToFill()
+                        .frame(width: cardWidth, height: imageHeight)
+                        .clipped()
+                default:
+                    Rectangle()
+                        .fill(.secondary.opacity(0.15))
+                        .frame(width: cardWidth, height: imageHeight)
+                }
+            }
+        } else {
+            Rectangle()
+                .fill(.secondary.opacity(0.15))
+                .frame(width: cardWidth, height: imageHeight)
+        }
+    }
+
+    @ViewBuilder
+    private func tapZonesView() -> some View {
+        HStack(spacing: 0) {
+            // Left 40% - previous photo
+            Color.clear
+                .frame(width: cardWidth * 0.4)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    previousPhoto()
+                    showDetailOverlay = true
+                }
+
+            // Middle 20% - expand
+            Color.clear
+                .frame(width: cardWidth * 0.2)
+                .contentShape(Rectangle())
+                .onTapGesture { showDetailOverlay = true }
+
+            // Right 40% - next photo
+            Color.clear
+                .frame(width: cardWidth * 0.4)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    nextPhoto()
+                    showDetailOverlay = true
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func pagerDotsView() -> some View {
+        VStack {
+            Spacer()
+            let count = itemImageURLs.count
+            HStack(spacing: 8) {
+                ForEach(0..<count, id: \.self) { index in
+                    Circle()
+                        .fill(index == currentImageIndex ? AppTheme.ColorToken.primary : AppTheme.ColorToken.primary.opacity(0.35))
+                        .frame(width: 6, height: 6)
+                }
+            }
+            .padding(.bottom,16)
+        }
+    }
+
+    @ViewBuilder
+    private func infoBarView() -> some View {
+        HStack {
+            // Left side
+            VStack(alignment: .leading, spacing: 4) {
+                if itemMode?.lowercased() == "home" {
+                    Text("From home (address hidden)")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.primary)
+                } else {
+                    Text(distanceString)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.primary)
+                }
+
+                if let posted = postedAgoText {
+                    Text("Posted \(posted)")
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundColor(AppTheme.ColorToken.mutedGray)
+                }
+                if let expiresText = expiresInText {
+                    Text("Expires in \(expiresText)")
+                        .font(.system(size: 12, weight: .regular))
+                        .foregroundColor(AppTheme.ColorToken.mutedGray)
+                }
+            }
+
+            Spacer()
+
+            // Right pill
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(AppTheme.ColorToken.accent)
+                    .frame(width: 8, height: 8)
+
+                Text(conditionDisplayText)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 32)
+            .background(AppTheme.ColorToken.primary)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .accessibilityLabel("Condition: \(conditionDisplayText)")
+        }
+    }
+
+    // MARK: - Gestures
+
+    private func mainDragGesture() -> some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                guard isActiveCard && deckState.canAct && !showDetailOverlay && !isReserving else { return }
+                let wasDragging = isDragging
+                isDragging = abs(value.translation.width) > 6 || abs(value.translation.height) > 6
+                dragOffset = value.translation
+                if !wasDragging && isDragging {
+                    // reveal animation handled by .animation modifier
+                }
+            }
+            .onEnded { value in
+                guard isActiveCard && deckState.canAct && !showDetailOverlay && !isReserving else { return }
+                isDragging = false
+                let threshold: CGFloat = 115
+
+                if value.translation.width > threshold {
+                    onReserve()
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        dragOffset = CGSize(width: cardWidth + 100, height: 0)
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        dragOffset = .zero
+                    }
+                } else if value.translation.width < -threshold {
+                    onPass()
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        dragOffset = CGSize(width: -(cardWidth + 100), height: 0)
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        dragOffset = .zero
+                    }
+                } else {
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        dragOffset = .zero
+                    }
+                }
+            }
+    }
+
+    // MARK: - Overlays
+
+    @ViewBuilder
+    private func reservingOverlayView() -> some View {
+        Group {
+            if isReserving && isActiveCard {
+                VStack {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                            .scaleEffect(0.9)
+                            .padding(12)
+                            .background(.ultraThinMaterial, in: Circle())
+                            .padding(.trailing, 16)
+                            .padding(.top, 16)
+                    }
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func detailOverlayView() -> some View {
+        Group {
+            if showDetailOverlay {
+                ZStack {
+                    // Backdrop
+                    Color.black.opacity(0.35)
+                        .ignoresSafeArea(.all)
+                        .onTapGesture { showDetailOverlay = false }
+                        .zIndex(1)
+
+                    // Big card overlay
+                    BigCardOverlay(
+                        images: itemImageURLs.map { $0.absoluteString },
+                        primaryInfo: feedPrimaryInfo,
+                        statusInfo: timeAgoString.isEmpty ? "" : "Posted \(timeAgoString)",
+                        statusColor: AppTheme.ColorToken.mutedGray,
+                        description: itemDescription,
+                        mode: itemMode?.lowercased() == "street" ? .street : .home,
+                        exactLocation: itemCoordinate,
+                        ownerName: itemOwnerName ?? "Anonymous User",
+                        memberSince: itemCreatedAt,
+                        pickupsCount: itemInterestedCount,
+                        variant: .feed,
+                        onDismiss: {
+                            showDetailOverlay = false
+                        },
+                        onPrimaryAction: {
+                            showDetailOverlay = false
+                            onReserve()
+                        },
+                        onSecondaryAction: {
+                            showDetailOverlay = false
+                            onPass()
+                        },
+                        onTertiaryAction: nil
+                    )
+                    .zIndex(2)
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showDetailOverlay)
+            }
+        }
+    }
     // MARK: - Actions
-
-    @MainActor
-    private func triggerReserve() async {
-        do {
-            try await deckState.triggerReserve()
-            withAnimation(.easeOut(duration: 0.3)) {
-                dragOffset = CGSize(width: cardWidth + 100, height: 0)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                deckState.completeCardTransition()
-                dragOffset = .zero
-            }
-            
-            // Navigate to reservations tab after successful reservation
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                router.selectedTab = .reservations
-            }
-        } catch {
-            // DeckState handles error reporting/logging
-        }
-    }
-
-    @MainActor
-    private func triggerPass() async {
-        await deckState.triggerPass()
-        withAnimation(.easeOut(duration: 0.3)) {
-            dragOffset = CGSize(width: -(cardWidth + 100), height: 0)
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            deckState.completeCardTransition()
-            dragOffset = .zero
-        }
-    }
+    // Actions are now handled by parent SwipeDeckView
 
     // MARK: - Expansion / Photos
 

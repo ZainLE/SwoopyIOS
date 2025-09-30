@@ -7,30 +7,98 @@
 
 import SwiftUI
 import MapKit
+import Combine
 
 // Using real API service for feed data
 
+// MARK: - Debug Logging
+
+/// Centralized debug logger with component tags
+private let VERBOSE_LOGS = true
+
+@inline(__always)
+private func dbg(_ tag: String, _ items: Any...) {
+#if DEBUG
+    guard VERBOSE_LOGS else { return }
+    let message = items.map { "\($0)" }.joined(separator: " ")
+    print("[\(tag)] \(message)")
+#endif
+}
+
+// MARK: - Hidden Posts Store (24h dismissed, 2h reserved)
+private class HiddenPostsStore {
+    static let shared = HiddenPostsStore()
+    private let dismissedKey = "feed.dismissed"
+    private let reservedKey = "feed.reserved"
+    private let dismissedTTL: TimeInterval = 24 * 3600 // 24 hours
+    private let reservedTTL: TimeInterval = 2 * 3600   // 2 hours
+    
+    func saveDismissed(_ ids: Set<String>) {
+        let dict = ids.reduce(into: [String: Date]()) { $0[$1] = Date() }
+        UserDefaults.standard.set(dict, forKey: dismissedKey)
+    }
+    
+    func saveReserved(_ ids: Set<String>) {
+        let dict = ids.reduce(into: [String: Date]()) { $0[$1] = Date() }
+        UserDefaults.standard.set(dict, forKey: reservedKey)
+    }
+    
+    func loadDismissed() -> Set<String> {
+        guard let dict = UserDefaults.standard.dictionary(forKey: dismissedKey) as? [String: Date] else {
+            return []
+        }
+        return reapExpired(dict, ttl: dismissedTTL)
+    }
+    
+    func loadReserved() -> Set<String> {
+        guard let dict = UserDefaults.standard.dictionary(forKey: reservedKey) as? [String: Date] else {
+            return []
+        }
+        return reapExpired(dict, ttl: reservedTTL)
+    }
+    
+    private func reapExpired(_ dict: [String: Date], ttl: TimeInterval) -> Set<String> {
+        let now = Date()
+        let valid = dict.filter { now.timeIntervalSince($0.value) < ttl }
+        return Set(valid.keys)
+    }
+    
+    // Helper to check if a post ID is hidden (checks both sets with their respective TTLs)
+    func isHidden(_ id: String) -> Bool {
+        let dismissed = loadDismissed()
+        let reserved = loadReserved()
+        return dismissed.contains(id) || reserved.contains(id)
+    }
+}
+
 struct SwipeDeckView: View {
     @Environment(AppRouter.self) var router
-    @EnvironmentObject var ck: CKTrashService
-    @EnvironmentObject var svc: SupabaseService
-    @EnvironmentObject var loc: LocationManager
-    @EnvironmentObject var draftStore: UploadDraftStore
+    @EnvironmentObject private var ck: CKTrashService
+    @EnvironmentObject private var svc: SupabaseService
+    @EnvironmentObject private var loc: LocationManager
+    @EnvironmentObject private var draftStore: UploadDraftStore
 
     // API Service for feed data
     @State private var api: ApiService?
     @State private var didKickOff = false
     @State private var posts: [Post] = []
+    @State private var lastServerPayload: Set<String> = [] // Track server IDs for stray detection
 
     // Deck state management - single source of truth
     @StateObject private var deckState = DeckState()
-    @State private var hidden: Set<String> = []
+    
+    // Hidden posts tracking with 24h TTL
+    @State private var dismissedIds: Set<String> = []
+    @State private var reservedIds: Set<String> = []
 
     // Loading and error states
     @State private var isLoading = false
+    @State private var isReserving = false
     @State private var errorMessage: String?
     @State private var showError = false
     @State private var showAuthError = false
+    @State private var successMessage: String?
+    @State private var showSuccess = false
 
     // Glass segmented control and map presentation
     fileprivate enum SegTab { case feed, map }
@@ -48,7 +116,17 @@ struct SwipeDeckView: View {
 
     // Convert Post objects to visible feed items
     private var visible: [Post] {
-        return posts.filter { !hidden.contains($0.id) }
+        return posts.filter { post in
+            !dismissedIds.contains(post.id) && !reservedIds.contains(post.id)
+        }
+    }
+
+    // MARK: - Helpers
+    private func markReserved(postId: String) {
+        // Persist into 2h TTL set and remove card from deck
+        reservedIds.insert(postId)
+        HiddenPostsStore.shared.saveReserved(reservedIds)
+        deckState.completeCardTransition()
     }
 
     // Use global helper on service: svc.hasAuthToken
@@ -97,6 +175,7 @@ struct SwipeDeckView: View {
                 }
             }
             .overlay { errorOverlay }
+            .overlay { successOverlay }
             .fullScreenCover(isPresented: $showUploadForm, onDismiss: { handleUploadFormDismiss() }) {
                 uploadFormView
             }
@@ -153,7 +232,6 @@ struct SwipeDeckView: View {
             Button("Try Again") {
                 Task {
                     await fetchFeedBridge()
-                    hidden.removeAll()
                 }
             }
             .font(.system(size: 16, weight: .semibold))
@@ -199,7 +277,6 @@ struct SwipeDeckView: View {
             refresh: {
                 Task {
                     await fetchFeedBridge()
-                    hidden.removeAll()
                 }
             },
             makePost: { handleMakePost() }
@@ -208,18 +285,23 @@ struct SwipeDeckView: View {
 
     private var feedContentView: some View {
         VStack(spacing: 0) {
-            DeckStack(deckState: deckState, router: router)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                .padding(.top, 18)
-                .refreshable {
-                    await fetchFeedBridge()
-                    hidden.removeAll()
-                }
+            DeckStack(
+                deckState: deckState,
+                router: router,
+                isReserving: isReserving,
+                onPass: { Task { await handlePassAction() } },
+                onReserve: { Task { await handleReserveAction() } }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .padding(.top, 18)
+            .refreshable {
+                await fetchFeedBridge()
+            }
             
             ActionBar(
                 deckState: deckState,
-                onPass: { Task { await handlePass() } },
-                onReserve: { Task { await handleReserve() } }
+                onPass: { Task { await handlePassAction() } },
+                onReserve: { Task { await handleReserveAction() } }
             )
             .padding(.top, 16)
             .padding(.bottom, 16)
@@ -266,6 +348,24 @@ struct SwipeDeckView: View {
             .animation(.easeInOut, value: deckState.errorMessage)
         }
     }
+    
+    @ViewBuilder
+    private var successOverlay: some View {
+        if showSuccess, let successMessage {
+            VStack {
+                Spacer()
+                Text(successMessage)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding()
+                    .background(AppTheme.ColorToken.primary, in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal)
+                    .padding(.bottom, 100)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showSuccess)
+        }
+    }
 
     // MARK: - Full Screen Covers
 
@@ -310,8 +410,9 @@ struct SwipeDeckView: View {
                 try await api.reservePost(post.id)
             }
             
-            // Optimistically remove from feed
-            hidden.insert(post.id)
+            // Add to reserved set
+            reservedIds.insert(post.id)
+            HiddenPostsStore.shared.saveReserved(reservedIds)
             
             // Refresh feed and show success
             await fetchFeedBridge()
@@ -341,46 +442,94 @@ struct SwipeDeckView: View {
     // MARK: - Action Handlers
     
     @MainActor
-    private func handlePass() async {
+    private func handlePassAction() async {
+        guard let post = deckState.activeCard as? Post else { return }
+        guard !isReserving else { return } // Prevent action during reserve
+        
+        dbg("ACTION", "pass \(post.id.prefix(8))")
+        
         await deckState.triggerPass()
         
-        // Pass: optimistically hide without API call
-        if let post = deckState.activeCard as? Post { 
-            hidden.insert(post.id) 
-        }
+        // Pass: add to dismissed set with 24h TTL
+        dismissedIds.insert(post.id)
+        HiddenPostsStore.shared.saveDismissed(dismissedIds)
     }
     
     @MainActor
-    private func handleReserve() async {
+    private func handleReserveAction() async {
         guard let post = deckState.activeCard as? Post else { return }
         guard let api else { return }
+        guard !isReserving else { return } // Prevent double-tap
+        
+        dbg("ACTION", "reserve start \(post.id.prefix(8))")
+        
+        isReserving = true
+        deckState.isActing = true
         
         do {
-            try await deckState.triggerReserve()
-            
             // Reserve: call real API
-            _ = try await fetchWithRetry(svc: svc) {
+            let reservationId = try await fetchWithRetry(svc: svc) {
                 try await api.reservePost(post.id)
             }
             
-            // Optimistically hide from feed
-            hidden.insert(post.id)
+            dbg("ACTION", "reserve ok \(reservationId.prefix(8))")
             
-            // Complete the transition
-            deckState.completeCardTransition()
+            // Trigger card animation
+            try await deckState.triggerReserve()
+            
+            // Mark locally (2h TTL) and remove card
+            markReserved(postId: post.id)
+            
+            // Optional: background refresh; do not block UI
+            Task { await fetchFeedBridge() }
+            
+            // Show success toast
+            successMessage = "Reserved for 2h 🎉"
+            showSuccess = true
+            
+            isReserving = false
+            deckState.isActing = false
+            
+            // Hide success after 2 seconds
+            Task {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                showSuccess = false
+            }
+            
+        } catch let error as ReserveError {
+            dbg("ACTION", "reserve fail \(error.localizedDescription)")
+            
+            isReserving = false
+            deckState.isActing = false
+            
+            // Map error to user-friendly message
+            switch error {
+            case .ownPost:
+                errorMessage = "You can't reserve your own post"
+            case .alreadyReserved:
+                errorMessage = "Already reserved by someone else"
+            case .expired:
+                errorMessage = "This post has expired"
+            case .unauthorized:
+                errorMessage = "Session expired. Please sign in again."
+                showAuthError = true
+            case .notFound:
+                errorMessage = "Post not found"
+            case .backend(let msg):
+                errorMessage = msg
+            case .network:
+                errorMessage = "Network error. Please try again."
+            }
+            showError = true
             
         } catch {
-            // Error handling is managed by DeckState
+            dbg("ACTION", "reserve fail \(error.localizedDescription)")
             
-            // Show error to user
-            await MainActor.run {
-                if error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
-                    errorMessage = "Session expired. Please sign in again."
-                } else {
-                    errorMessage = "Failed to reserve item. Please try again."
-                }
-                showError = true
-            }
+            isReserving = false
+            deckState.isActing = false
+            
+            errorMessage = "Failed to reserve item. Please try again."
+            showError = true
         }
     }
     
@@ -417,31 +566,66 @@ struct SwipeDeckView: View {
         }
         guard let api else { return }
         
+        // Load and reap expired hidden posts
+        dismissedIds = HiddenPostsStore.shared.loadDismissed()
+        reservedIds = HiddenPostsStore.shared.loadReserved()
+        
+        let totalHidden = dismissedIds.count + reservedIds.count
+        dbg("FEED", "dismissed count=\(dismissedIds.count) reserved count=\(reservedIds.count) after reap=\(totalHidden)")
+        
         isLoading = true
         showError = false
         showAuthError = false
         
         do {
-            let feedQuery = FeedQuery(
+            dbg("FEED", "request lat=\(userLocation.latitude) lng=\(userLocation.longitude) radius=10 limit=30")
+            
+            let q = FeedQuery(
                 lng: userLocation.longitude,
                 lat: userLocation.latitude,
-                radiusKm: 10,
+                radiusKm: 10.0,
                 category: nil,
                 mode: nil,
-                limit: 20
+                limit: 30
             )
-            
-            let fetchedPosts = try await fetchWithRetry(svc: svc) { 
-                try await api.getFeed(query: feedQuery)
+            let fetchedPosts = try await fetchWithRetry(svc: svc) {
+                try await api.getFeed(query: q)
             }
             
-            // Presentation-layer filter: hide my own posts
-            posts = fetchedPosts
+            dbg("FEED", "response count=\(fetchedPosts.count)")
+            
+            // Filter out own posts (case-insensitive)
+            let myId = (svc.userId?.uuidString ?? "").lowercased()
+            dbg("FEED", "self-id=\(myId.prefix(8))...") // No PII
+            
+            let filtered = fetchedPosts.filter { post in
+                let ownerIdMatch = post.ownerId.lowercased() != myId
+                let ownerMatch = post.owner?.id.lowercased() != myId
+                return ownerIdMatch && ownerMatch
+            }
+            
+            dbg("FEED", "self-filter removed=\(fetchedPosts.count - filtered.count)")
+            
+            // Track server payload for stray detection
+            lastServerPayload = Set(filtered.map { $0.id })
+            
+            // Keep order as returned from API
+            posts = filtered
             deckState.updateItems(visible)
+            
+            // Stray item detection: check if any visible post wasn't in server payload
+            for post in visible {
+                if !lastServerPayload.contains(post.id) {
+                    dbg("FEED", "WARNING stray item \(post.id.prefix(8))")
+                }
+            }
+            
             // After first successful feed, upgrade location accuracy for better follow-up interactions
             loc.upgradeToBestAccuracy()
             isLoading = false
         } catch {
+            dbg("FEED", "error=\(error.localizedDescription)")
+            
             posts = []
             deckState.updateItems([])
             isLoading = false
@@ -533,7 +717,10 @@ extension SwipeDeckView {
     //
     private struct DeckStack: View {
         @ObservedObject var deckState: DeckState
-        let router:   AppRouter// Add router as a parameter to DeckStack
+        let router: AppRouter
+        let isReserving: Bool
+        let onPass: () -> Void
+        let onReserve: () -> Void
         
         var body: some View {
             ZStack {
@@ -542,17 +729,23 @@ extension SwipeDeckView {
                     FeedCard(
                         item: activeCard,
                         deckState: deckState,
-                        isActiveCard: true
+                        isActiveCard: true,
+                        isReserving: isReserving,
+                        onPass: onPass,
+                        onReserve: onReserve
                     )
                     .zIndex(2)
-                    .allowsHitTesting(!deckState.isAnimating)
+                    .allowsHitTesting(!deckState.isAnimating && !isReserving)
                 }
                 
                 if let nextCard = deckState.nextCard {
                     FeedCard(
                         item: nextCard,
                         deckState: deckState,
-                        isActiveCard: false
+                        isActiveCard: false,
+                        isReserving: false,
+                        onPass: {},
+                        onReserve: {}
                     )
                     .zIndex(1)
                     .allowsHitTesting(false)
@@ -661,8 +854,8 @@ extension SwipeDeckView {
     // MARK: - FeedMapScreen
     
     struct FeedMapScreen: View {
-        @EnvironmentObject var svc: SupabaseService
-        @EnvironmentObject var loc: LocationManager
+        @EnvironmentObject private var svc: SupabaseService
+        @EnvironmentObject private var loc: LocationManager
         @Environment(\.dismiss) private var dismiss
         
         @State private var api: ApiService?
