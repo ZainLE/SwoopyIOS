@@ -46,7 +46,7 @@ extension ApiService {
         body: (any Encodable)? = nil,
         queryParams: [URLQueryItem]? = nil
     ) async throws -> R {
-        var components = URLComponents(string: SupabaseConfig.apiBaseURL + path)!
+        var components = URLComponents(string: baseURL + path)!
         if let queryParams, !queryParams.isEmpty { components.queryItems = queryParams }
         guard let url = components.url else { throw ApiServiceError.invalidURL }
 
@@ -300,6 +300,27 @@ struct Profile: Codable {
     }
 }
 
+// Profile update request/response models
+struct ProfilePatch: Codable {
+    var firstName: String?
+    var lastName: String?
+    var phone: String?
+    var city: String?
+    var avatarUrl: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case firstName = "first_name"
+        case lastName = "last_name"
+        case phone
+        case city
+        case avatarUrl = "avatar_url"
+    }
+}
+
+struct ProfileResponse: Codable {
+    let profile: Profile
+}
+
 extension Profile {
     var fullName: String {
         let fn = (firstName ?? "").trimmingCharacters(in: .whitespaces)
@@ -310,32 +331,32 @@ extension Profile {
 }
 
 // Full reservation with post included
-struct Reservation: Codable, Identifiable {
-    let id: String
-    let itemId: String
-    let reserver: String
-    let status: String
-    let requestedAt: String
-    let approvedAt: String?
-    let startAt: String?
-    let endAt: String?
-    let pickedAt: String?
-    let canceledAt: String?
-    let post: Post  // This is safe because Post doesn't contain a full Reservation
-    
-    enum CodingKeys: String, CodingKey {
-        case id
-        case itemId = "item_id"
-        case reserver, status
-        case requestedAt = "requested_at"
-        case approvedAt = "approved_at"
-        case startAt = "start_at"
-        case endAt = "end_at"
-        case pickedAt = "picked_up_at"
-        case canceledAt = "canceled_at"
-        case post = "posts"
+    struct Reservation: Codable, Identifiable {
+        let id: String
+        let itemId: String
+        let reserver: String
+        let status: String
+        let requestedAt: String
+        let approvedAt: String?
+        let startAt: String?
+        let endAt: String?
+        let pickedAt: String?
+        let canceledAt: String?
+        let post: Post  // This is safe because Post doesn't contain a full Reservation
+        
+        enum CodingKeys: String, CodingKey {
+            case id
+            case itemId = "item_id"
+            case reserver, status
+            case requestedAt = "requested_at"
+            case approvedAt = "approved_at"
+            case startAt = "start_at"
+            case endAt = "end_at"
+            case pickedAt = "picked_up_at"
+            case canceledAt = "canceled_at"
+            case post = "post"
+        }
     }
-}
 
 struct ApiResponse<T: Codable>: Codable {
     let data: T?
@@ -430,7 +451,7 @@ private struct ReserveResponse: Decodable {
 // MARK: - API Service
 
 class ApiService: ObservableObject {
-    private let baseURL: String = "https://swoopy.eu/custom-api" // Decoupled from SupabaseConfig to avoid cross-target dependency
+    private let baseURL: String = SupabaseConfig.apiBaseURL
     private let session: URLSession
     private let supabaseService: SupabaseService
     
@@ -440,9 +461,14 @@ class ApiService: ObservableObject {
         self.supabaseService = supabaseService
         
         let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 60
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = 10 // seconds
+        configuration.timeoutIntervalForResource = 20 // seconds
         self.session = URLSession(configuration: configuration)
+        
+        #if DEBUG
+        print("[API] base=\(SupabaseConfig.apiBaseURL)")
+        #endif
         
         // Read main-actor state on the main actor
         Task { @MainActor in
@@ -757,7 +783,14 @@ class ApiService: ObservableObject {
         
         let headers = try await authHeaders()
         let req = try buildRequest(path: "/feed", method: .GET, query: queryItems, headers: headers)
-        let (data, _) = try await send(req)
+        let (data, resp) = try await send(req)
+        if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            if let msg = try? JSONDecoder().decode(APIErrorMessage.self, from: data).error {
+                throw ApiServiceError.serverError(msg)
+            } else {
+                throw ApiServiceError.serverError("HTTP \(http.statusCode)")
+            }
+        }
         let response = try JSONDecoder().decode(FeedResponse.self, from: data)
         
         // Log response post IDs as sorted array
@@ -826,7 +859,14 @@ class ApiService: ObservableObject {
         }
         let headers = try await authHeaders()
         let req = try buildRequest(path: "/feed/\(postId)", method: .GET, headers: headers)
-        let (data, _) = try await send(req)
+        let (data, resp) = try await send(req)
+        if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            if let msg = try? JSONDecoder().decode(APIErrorMessage.self, from: data).error {
+                throw ApiServiceError.serverError(msg)
+            } else {
+                throw ApiServiceError.serverError("HTTP \(http.statusCode)")
+            }
+        }
         let response = try JSONDecoder().decode(PostResponse.self, from: data)
         return response.post
     }
@@ -930,6 +970,39 @@ class ApiService: ObservableObject {
         
         let _: CompleteResponse = try await makeRequest("/reservations/\(reservationId)/complete", method: "POST")
     }
+    
+    // MARK: - Profile
+    
+    /// Update user profile via backend API
+    /// Returns updated profile on success
+    func updateProfile(_ patch: ProfilePatch) async throws -> Profile {
+        let headers = try await authHeaders()
+        let body = try JSONEncoder().encode(patch)
+        let req = try buildRequest(path: "/profile", method: .PATCH, body: body, headers: headers)
+        let (data, resp) = try await send(req)
+        
+        guard let http = resp as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+        
+        // Check for 404 - endpoint doesn't exist, caller should fall back to SDK
+        if http.statusCode == 404 {
+            throw ApiServiceError.notFound
+        }
+        
+        // Check for other errors
+        guard (200...299).contains(http.statusCode) else {
+            if let msg = try? JSONDecoder().decode(APIErrorMessage.self, from: data).error {
+                throw ApiServiceError.serverError(msg)
+            } else {
+                throw ApiServiceError.serverError("HTTP \(http.statusCode)")
+            }
+        }
+        
+        // Decode response
+        let response = try JSONDecoder().decode(ProfileResponse.self, from: data)
+        return response.profile
+    }
 }
 
 // MARK: - Convenience Extensions
@@ -986,6 +1059,5 @@ extension Reservation {
     }
 }
 
-//
 
 

@@ -5,11 +5,13 @@ import UIKit
 struct TrashPickerApp: App {
     init() {
         UINavigationBar.appearance().titleTextAttributes = [.foregroundColor: UIColor.label]
+        
+        // Enforce Light Mode globally across all windows
+        AppearanceEnforcer.forceLight()
     }
 
     @StateObject private var svc = SupabaseService.shared
     @StateObject private var api = ApiService(supabaseService: SupabaseService.shared)
-    @StateObject private var loc = LocationManager()
     @StateObject private var ck  = CKTrashService()
     @StateObject private var draftStore = UploadDraftStore()
 
@@ -18,7 +20,6 @@ struct TrashPickerApp: App {
             RootGateView()
                 .environmentObject(svc)
                 .environmentObject(api)
-                .environmentObject(loc)
                 .environmentObject(ck)
                 .environmentObject(draftStore)
                 .onOpenURL { url in
@@ -28,6 +29,7 @@ struct TrashPickerApp: App {
                     }
                 }
                 .tint(AppTheme.ColorToken.primary)
+                .preferredColorScheme(.light) // SwiftUI-level Light Mode enforcement
         }
     }
 }
@@ -45,7 +47,7 @@ private struct RootGateView: View {
                         .resizable().scaledToFit()
                         .frame(width: 140, height: 140)
                 }
-                .task { await svc.ensureSession() } // just in case
+                // Auth bootstrap already kicked off in SupabaseService.init()
             } else if svc.isAuthenticated && ((svc.currentAccessTokenOrNil() ?? "").isEmpty == false) {
                 RootView()  // main app
             } else {

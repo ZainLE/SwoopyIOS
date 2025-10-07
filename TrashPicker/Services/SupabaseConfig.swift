@@ -8,7 +8,7 @@ enum SupabaseConfig {
     static let postsTable   = "items"
     
     // API base URL for backend calls
-    static let apiBaseURL = "https://swoopy.eu/custom-api"
+    static let apiBaseURL = "https://api.swoopy.eu/custom-api"
     
     // Read from Info.plist (DO NOT hardcode here in source)
     static let url: URL = {

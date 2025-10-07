@@ -75,7 +75,6 @@ struct SwipeDeckView: View {
     @Environment(AppRouter.self) var router
     @EnvironmentObject private var ck: CKTrashService
     @EnvironmentObject private var svc: SupabaseService
-    @EnvironmentObject private var loc: LocationManager
     @EnvironmentObject private var draftStore: UploadDraftStore
 
     // API Service for feed data
@@ -148,10 +147,6 @@ struct SwipeDeckView: View {
             // INIT: create ApiService and gate the first fetch
             .task {
                 if api == nil { api = ApiService(supabaseService: svc) }
-                if svc.hasAuthToken {
-                    // TEMP: Xcode Console Extraction
-                    print("DEBUG TOKEN: \(svc.session?.accessToken ?? "No token")")
-                }
                 await maybeLoadFeed()
             }
             // When auth flips ready, fire once
@@ -373,7 +368,6 @@ struct SwipeDeckView: View {
         NavigationStack {
             UploadFindView()
                 .environmentObject(svc)
-                .environmentObject(loc)
                 .environmentObject(draftStore)
         }
     }
@@ -381,7 +375,6 @@ struct SwipeDeckView: View {
     private var feedMapView: some View {
         FeedMapScreen()
             .environmentObject(svc)
-            .environmentObject(loc)
             .ignoresSafeArea()
     }
 
@@ -557,29 +550,17 @@ struct SwipeDeckView: View {
     // MARK: - Feed Management
 
     @MainActor
-    private func fetchFeedBridge() async {
-        guard let userLocation = loc.userLocation?.coordinate else {
-            errorMessage = "Location required to show nearby items"
-            showError = true
-            loc.request()
-            return
-        }
+    private func fetchFeed(using location: CLLocation) async {
         guard let api else { return }
-        
-        // Load and reap expired hidden posts
+
+        // This function now contains the core logic of the old `fetchFeedBridge`
         dismissedIds = HiddenPostsStore.shared.loadDismissed()
         reservedIds = HiddenPostsStore.shared.loadReserved()
-        
-        let totalHidden = dismissedIds.count + reservedIds.count
-        dbg("FEED", "dismissed count=\(dismissedIds.count) reserved count=\(reservedIds.count) after reap=\(totalHidden)")
-        
-        isLoading = true
-        showError = false
-        showAuthError = false
-        
+
+        let userLocation = location.coordinate
+        dbg("FEED", "request lat=\(userLocation.latitude) lng=\(userLocation.longitude) radius=10 limit=30")
+
         do {
-            dbg("FEED", "request lat=\(userLocation.latitude) lng=\(userLocation.longitude) radius=10 limit=30")
-            
             let q = FeedQuery(
                 lng: userLocation.longitude,
                 lat: userLocation.latitude,
@@ -591,46 +572,29 @@ struct SwipeDeckView: View {
             let fetchedPosts = try await fetchWithRetry(svc: svc) {
                 try await api.getFeed(query: q)
             }
-            
+
             dbg("FEED", "response count=\(fetchedPosts.count)")
-            
-            // Filter out own posts (case-insensitive)
+
             let myId = (svc.userId?.uuidString ?? "").lowercased()
-            dbg("FEED", "self-id=\(myId.prefix(8))...") // No PII
-            
             let filtered = fetchedPosts.filter { post in
                 let ownerIdMatch = post.ownerId.lowercased() != myId
                 let ownerMatch = post.owner?.id.lowercased() != myId
                 return ownerIdMatch && ownerMatch
             }
-            
+
             dbg("FEED", "self-filter removed=\(fetchedPosts.count - filtered.count)")
-            
-            // Track server payload for stray detection
+
             lastServerPayload = Set(filtered.map { $0.id })
-            
-            // Keep order as returned from API
             posts = filtered
             deckState.updateItems(visible)
-            
-            // Stray item detection: check if any visible post wasn't in server payload
-            for post in visible {
-                if !lastServerPayload.contains(post.id) {
-                    dbg("FEED", "WARNING stray item \(post.id.prefix(8))")
-                }
-            }
-            
-            // After first successful feed, upgrade location accuracy for better follow-up interactions
-            loc.upgradeToBestAccuracy()
+
             isLoading = false
         } catch {
             dbg("FEED", "error=\(error.localizedDescription)")
-            
             posts = []
             deckState.updateItems([])
             isLoading = false
-            
-            // Check for auth-specific errors
+
             if error is AuthError || error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
                 errorMessage = "Session expired. Please sign in again."
                 showAuthError = true
@@ -640,15 +604,51 @@ struct SwipeDeckView: View {
             }
         }
     }
+
+    @MainActor
+    private func loadFeedWithOneShotLocation() async {
+        guard !isLoading else { return } // Don't re-fetch if already loading
+        isLoading = true
+        showError = false
+        showAuthError = false
+
+        // Use async firstFix with timeout instead of polling
+        do {
+            let loc = try await LocationService.shared.firstFix(timeout: 2.5)
+            await fetchFeed(using: loc)
+            return
+        } catch {
+            // Fallback: prefer system last known (Core Location cache), otherwise neutral center (0,0)
+            if let cached = LocationService.shared.lastKnownFromSystem() {
+                let age = max(0, Date().timeIntervalSince(cached.timestamp))
+                #if DEBUG
+                print("[FEED] using fallback location (reason=no-fix, lat=\(cached.coordinate.latitude), lon=\(cached.coordinate.longitude), age=\(String(format: "%.1f", age))s)")
+                #endif
+                await fetchFeed(using: cached)
+            } else {
+                let neutral = CLLocation(latitude: 0, longitude: 0)
+                #if DEBUG
+                print("[FEED] using fallback location (reason=no-fix, lat=\(neutral.coordinate.latitude), lon=\(neutral.coordinate.longitude), age=n/a)")
+                #endif
+                await fetchFeed(using: neutral)
+            }
+        }
+    }
     
     // MARK: - Helper Functions
+
+    @MainActor
+    private func fetchFeedBridge() async {
+        await loadFeedWithOneShotLocation()
+    }
 
     @MainActor
     private func maybeLoadFeed() async {
         if api == nil { api = ApiService(supabaseService: svc) }
         guard svc.hasAuthToken, didKickOff == false else { return }
+        guard !didKickOff else { return }
         didKickOff = true
-        await fetchFeedBridge()
+        await loadFeedWithOneShotLocation()
     }
 }
 
@@ -755,7 +755,7 @@ extension SwipeDeckView {
             .animation(.spring(response: 0.32, dampingFraction: 0.88), value: deckState.activeIndex)
         }
     }
-
+    
     
     
     private struct GlassSegmented: View {
@@ -847,220 +847,98 @@ extension SwipeDeckView {
         
         private func reservedUntilString() -> String {
             let u = Calendar.current.date(byAdding: .hour, value: 6, to: Date())!
-            return u.formatted(date: Date.FormatStyle.DateStyle.omitted, time: Date.FormatStyle.TimeStyle.shortened)
+            let df = DateFormatter()
+            df.timeStyle = .short
+            df.dateStyle = .none
+            return df.string(from: u)
         }
     }
     
     // MARK: - FeedMapScreen
-    
-    struct FeedMapScreen: View {
+    private struct FeedMapScreen: View {
         @EnvironmentObject private var svc: SupabaseService
-        @EnvironmentObject private var loc: LocationManager
         @Environment(\.dismiss) private var dismiss
+        @StateObject private var loc = LocationService.shared
         
         @State private var api: ApiService?
+        @State private var posts: [Post] = []
         
-        @State private var streetPosts: [Post] = []
-        
-        @State private var cameraPosition: MapCameraPosition = .region(
-            MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
-                span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)
-            )
+        @State private var region: MKCoordinateRegion = MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
+            span: .init(latitudeDelta: 0.05, longitudeDelta: 0.05)
         )
-        
-        private var streetPins: [Post] {
-            return streetPosts.filter { post in
-                // Only show posts with valid exact location coordinates (street mode posts)
-                return post.exactLocation?.coordinate != nil
-            }
-        }
+        @State private var didCenterFromDefault = false
         
         var body: some View {
-            NavigationStack {
-                Map(position: $cameraPosition) {
-                    ForEach(streetPins, id: \.id) { post in
-                        if let exactLoc = post.exactLocation,
-                           let coord = exactLoc.coordinate {
-                            MapKit.Annotation("", coordinate: coord) {
-                                Button(action: {
-                                    openInMaps(post: post, coord: coord)
-                                }) {
-                                    Image(systemName: "mappin.circle.fill")
-                                        .font(.title2)
-                                        .foregroundStyle(.red)
-                                        .shadow(radius: 1)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                    
-                    // Add user location annotation with green circle
-                    UserAnnotation()
+            CheapMapView(region: $region)
+                .overlay(alignment: .top) {
+                    // Custom overlays if needed
                 }
-                .ignoresSafeArea(.all)
-                .refreshable {
-                    await fetchStreetPosts()
-                }
-                .onDisappear {
-                    // Reset pill when map disappears
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
-                        // This will be handled by the parent view
-                    }
-                }
+                .ignoresSafeArea()
+                .onAppear(perform: setupAndFetch)
+                .onDisappear(perform: loc.stopContinuous)
+                .onChange(of: loc.lastFix, handleLocationChange)
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
-                        Button(action: { 
-                            dismiss() 
-                        }) {
+                        Button(action: { dismiss() }) {
                             Image(systemName: "chevron.backward")
                                 .font(.title3.weight(.semibold))
                         }
                         .buttonStyle(.plain)
                     }
-                    
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button(action: recenter) {
-                            Image(systemName: "location.fill")
-                                .font(.title3.weight(.semibold))
-                                .foregroundColor(AppTheme.ColorToken.primary)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Center on my location")
-                    }
                 }
-                .task {
-                    if api == nil { api = ApiService(supabaseService: svc) }
-                    // Request location permission if needed
-                    if loc.authorization == .notDetermined { 
-                        loc.request() 
-                    }
-                    
-                    // Set initial camera position
-                    if let c = loc.userLocation?.coordinate {
-                        cameraPosition = .region(
-                            MKCoordinateRegion(
-                                center: c,
-                                span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
-                            )
-                        )
-                    } else {
-                        // Fallback to Barcelona if no location available
-                        cameraPosition = .region(
-                            MKCoordinateRegion(
-                                center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
-                                span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
-                            )
-                        )
-                    }
-                    
-                    // Fetch street-only posts from API
-                    await fetchStreetPosts()
-                }
-                .onChange(of: loc.userLocation) { _, newLocation in
-                    // Update camera position and refresh posts when location changes
-                    if let coordinate = newLocation?.coordinate {
-                        Task { @MainActor in
-                            // Only update if we don't already have a good position
-                            if case .automatic = cameraPosition {
-                                cameraPosition = .region(
-                                    MKCoordinateRegion(
-                                        center: coordinate,
-                                        span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
-                                    )
-                                )
-                            }
-                        }
-                        
-                        // Refresh street posts for new location
-                        Task {
-                            await fetchStreetPosts()
-                        }
-                    }
-                }
+        }
+        
+        private func setupAndFetch() {
+            if api == nil { api = ApiService(supabaseService: svc) }
+            loc.startContinuous()
+            
+            if let initialLocation = loc.lastFix {
+                region = MKCoordinateRegion(
+                    center: initialLocation.coordinate,
+                    span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                )
+                didCenterFromDefault = true
             }
+            
+            Task { await fetchPosts() }
+        }
+        
+        private func handleLocationChange(_: CLLocation?, newLocation: CLLocation?) {
+            guard let newLocation else { return }
+            if !didCenterFromDefault {
+                region = MKCoordinateRegion(
+                    center: newLocation.coordinate,
+                    span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                )
+                didCenterFromDefault = true
+            }
+            Task { await fetchPosts() }
         }
         
         @MainActor
-        private func fetchStreetPosts() async {
-            guard let userLocation = loc.userLocation?.coordinate else {
-                loc.request()
-                return
-            }
-            guard let api else { return }
-            
+        private func fetchPosts() async {
+            guard let api, let location = loc.lastFix else { return }
             do {
-                let feedQuery = FeedQuery(
-                    lng: userLocation.longitude,
-                    lat: userLocation.latitude,
-                    radiusKm: 10,
+                let q = FeedQuery(
+                    lng: location.coordinate.longitude,
+                    lat: location.coordinate.latitude,
+                    radiusKm: 10.0,
                     category: nil,
-                    mode: "street", // Only fetch street posts
-                    limit: 50
+                    mode: "street",
+                    limit: 100
                 )
-                
-                let fetchedPosts = try await fetchWithRetry(svc: svc) {
-                    try await api.getFeed(query: feedQuery)
-                }
-                streetPosts = fetchedPosts
+                posts = try await api.getFeed(query: q)
             } catch {
-                streetPosts = []
+                dbg("API", "Failed to fetch map posts: \(error.localizedDescription)")
+                posts = []
             }
         }
-        
         
         private func openInMaps(post: Post, coord: CLLocationCoordinate2D) {
             let item = MKMapItem(placemark: MKPlacemark(coordinate: coord))
             item.name = post.title
             item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking])
         }
-        
-        private func recenter() {
-            // First request location permission if needed
-            if loc.authorization == .notDetermined {
-                loc.request()
-                return
-            }
-            
-            // Check if we have permission
-            guard loc.authorization == .authorizedWhenInUse || loc.authorization == .authorizedAlways else {
-                return
-            }
-            
-            // If we already have a location, use it immediately
-            if let currentLocation = loc.userLocation?.coordinate {
-                withAnimation(.easeInOut(duration: 0.8)) {
-                    cameraPosition = .region(
-                        MKCoordinateRegion(
-                            center: currentLocation,
-                            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                        )
-                    )
-                }
-                return
-            }
-            
-            // Otherwise request a fresh location
-            loc.requestOnce { coordinate in
-                guard let coordinate = coordinate else {
-                    return
-                }
-                
-                Task { @MainActor in
-                    withAnimation(.easeInOut(duration: 0.8)) {
-                        self.cameraPosition = .region(
-                            MKCoordinateRegion(
-                                center: coordinate,
-                                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                            )
-                        )
-                    }
-                }
-            }
-        }
     }
-    
-    
 }
-

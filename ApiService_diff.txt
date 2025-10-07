@@ -1,0 +1,463 @@
+diff --git a/TrashPicker/Services/ApiService.swift b/TrashPicker/Services/ApiService.swift
+index 7602a53..6103b00 100644
+--- a/TrashPicker/Services/ApiService.swift
++++ b/TrashPicker/Services/ApiService.swift
+@@ -2,15 +2,32 @@ import Foundation
+ import CoreLocation
+ import SwiftUI
+ 
+-// MARK: - Data Models
++// MARK: - Debug Logging
++
++/// Centralized debug logger with component tags
++/// Set VERBOSE_LOGS to false to disable all debug logging
++private let VERBOSE_LOGS = true
++
++@inline(__always)
++private func dbg(_ tag: String, _ items: Any...) {
++#if DEBUG
++    guard VERBOSE_LOGS else { return }
++    let message = items.map { "\($0)" }.joined(separator: " ")
++    print("[\(tag)] \(message)")
++#endif
++}
+ 
+ // MARK: - HTTP Method
+-enum HTTPMethod: String { case get = "GET", post = "POST", put = "PUT", patch = "PATCH", delete = "DELETE" }
++enum HTTPMethod: String { case GET, POST, PUT, PATCH, DELETE }
+ 
+ // Helper wrappers to align with unified request helper expectations
+ private extension ApiService {
+     var urlSession: URLSession { session }
+-    func currentAccessTokenOrNil() -> String? { supabaseService.currentAccessTokenOrNil() }
++
++    // async bridge to call a MainActor-isolated API from any thread
++    func currentAccessTokenOrNil() async -> String? {
++        await MainActor.run { supabaseService.currentAccessTokenOrNil() }
++    }
+ }
+ 
+ // Helper to encode an `any Encodable` existential
+@@ -25,7 +42,7 @@ extension ApiService {
+     @discardableResult
+     func makeRequest<R: Decodable>(
+         _ path: String,
+-        method: HTTPMethod = .get,
++        method: HTTPMethod = .GET,
+         body: (any Encodable)? = nil,
+         queryParams: [URLQueryItem]? = nil
+     ) async throws -> R {
+@@ -36,11 +53,9 @@ extension ApiService {
+         var req = URLRequest(url: url)
+         req.httpMethod = method.rawValue
+ 
+-        // Auth header
+-        guard let token = currentAccessTokenOrNil(), !token.isEmpty else {
+-            throw ApiServiceError.noAuthToken
+-        }
+-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
++        // Auth headers (async)
++        let headers = try await getAuthHeaders()
++        headers.forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
+ 
+         // Optional JSON body
+         if let body {
+@@ -383,9 +398,37 @@ enum ApiServiceError: Error, LocalizedError {
+     }
+ }
+ 
++enum ReserveError: LocalizedError {
++    case ownPost
++    case alreadyReserved
++    case expired
++    case unauthorized
++    case notFound
++    case backend(String)
++    case network(Error)
++    
++    var errorDescription: String? {
++        switch self {
++        case .ownPost: return "You can't reserve your own post."
++        case .alreadyReserved: return "Someone else reserved it."
++        case .expired: return "This post has expired."
++        case .unauthorized: return "Please sign in again."
++        case .notFound: return "Post not found."
++        case .backend(let msg): return msg
++        case .network: return "Network error. Please try again."
++        }
++    }
++}
++
++// Response models for reserve/cancel
++private struct APIErrorMessage: Decodable { let error: String }
++private struct ReserveResponse: Decodable {
++    let reservation_id: String
++    let message: String?
++}
++
+ // MARK: - API Service
+ 
+-@MainActor
+ class ApiService: ObservableObject {
+     private let baseURL: String = "https://swoopy.eu/custom-api" // Decoupled from SupabaseConfig to avoid cross-target dependency
+     private let session: URLSession
+@@ -395,39 +438,100 @@ class ApiService: ObservableObject {
+     
+     init(supabaseService: SupabaseService = .shared) {
+         self.supabaseService = supabaseService
+-        self.isAuthenticated = supabaseService.isAuthenticated
+         
+         let configuration = URLSessionConfiguration.default
+         configuration.timeoutIntervalForRequest = 30
+         configuration.timeoutIntervalForResource = 60
+         self.session = URLSession(configuration: configuration)
+         
+-        // Observe authentication changes
++        // Read main-actor state on the main actor
++        Task { @MainActor in
++            self.isAuthenticated = supabaseService.isAuthenticated
++        }
++        
++        // Start observing auth changes
+         Task {
+             await observeAuthChanges()
+         }
+     }
+     
+-    // MARK: - Authentication Integration
++    // MARK: - Central HTTP helpers
+     
+-    private func observeAuthChanges() {
+-        Task { @MainActor in
+-            for await _ in supabaseService.$isAuthenticated.values {
+-                self.isAuthenticated = supabaseService.isAuthenticated
++    private func authHeaders() async throws -> [String:String] {
++        let token = await currentAccessTokenOrNil() ?? ""
++        guard !token.isEmpty else { throw ApiServiceError.noAuthToken }
++        return [
++            "Authorization": "Bearer \(token)",
++            "Accept": "application/json"
++        ]
++    }
++
++    private func buildRequest(
++        path: String,
++        method: HTTPMethod,
++        query: [URLQueryItem]? = nil,
++        body: Data? = nil,
++        headers: [String:String] = [:]
++    ) throws -> URLRequest {
++        guard var comps = URLComponents(string: baseURL + path) else { throw ApiServiceError.invalidURL }
++        comps.queryItems = query
++        guard let url = comps.url else { throw ApiServiceError.invalidURL }
++        var req = URLRequest(url: url)
++        req.httpMethod = method.rawValue
++        req.httpBody = body
++        req.setValue("application/json", forHTTPHeaderField: "Accept")
++        if body != nil { req.setValue("application/json", forHTTPHeaderField: "Content-Type") }
++        headers.forEach { req.setValue($0.value, forHTTPHeaderField: $0.key) }
++        return req
++    }
++
++    private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
++        let (data, resp) = try await session.data(for: request)
++        if let http = resp as? HTTPURLResponse, http.statusCode == 401 {
++            do {
++                try await supabaseService.refreshSession()
++                var retry = request
++                if let newToken = await currentAccessTokenOrNil(), !newToken.isEmpty {
++                    retry.setValue("Bearer \(newToken)", forHTTPHeaderField: "Authorization")
++                }
++                return try await session.data(for: retry)
++            } catch {
++                throw ApiServiceError.unauthorized
+             }
+         }
++        return (data, resp)
+     }
+     
+-    private func getAuthHeaders() throws -> [String: String] {
+-        guard supabaseService.isAuthenticated else {
+-            throw ApiServiceError.noAuthToken
+-        }
+-        // Retrieve current access token from SupabaseService
+-        guard let token = supabaseService.currentAccessTokenOrNil(), !token.isEmpty else {
+-            throw ApiServiceError.noAuthToken
++    // MARK: - Authentication Integration
++    
++    @MainActor
++    private func observeAuthChanges() async {
++        // Both the publisher and @Published write are MainActor-isolated
++        for await value in supabaseService.$isAuthenticated.values {
++            self.isAuthenticated = value
+         }
++    }
++    
++    // Actor-hop helpers to read MainActor-isolated SupabaseService safely
++    private func main_isAuthenticated() async -> Bool {
++        await MainActor.run { supabaseService.isAuthenticated }
++    }
++
++    private func main_currentAccessTokenOrNil() async -> String? {
++        await MainActor.run { supabaseService.currentAccessTokenOrNil() }
++    }
++    
++    private func main_userIdString() async -> String? {
++        await MainActor.run { supabaseService.userId?.uuidString }
++    }
++
++    private func getAuthHeaders() async throws -> [String: String] {
++        // Rely on token presence; no need to separately check isAuthenticated
++        let token = await main_currentAccessTokenOrNil() ?? ""
++        guard !token.isEmpty else { throw ApiServiceError.noAuthToken }
+         return [
+             "Authorization": "Bearer \(token)",
++            "Accept": "application/json",
+             "Content-Type": "application/json"
+         ]
+     }
+@@ -456,7 +560,7 @@ class ApiService: ObservableObject {
+         request.httpMethod = method
+         
+         // Add auth headers
+-        let authHeaders = try getAuthHeaders()
++        let authHeaders = try await getAuthHeaders()
+         authHeaders.forEach { key, value in
+             request.setValue(value, forHTTPHeaderField: key)
+         }
+@@ -579,80 +683,26 @@ class ApiService: ObservableObject {
+     // MARK: - Posts
+     
+     func createPost(_ post: PostCreate) async throws -> String {
+-        // Tolerant response structure - all fields optional
+         struct CreatePostResponse: Decodable {
+             let message: String?
+             let postId: String?
+             let post_id: String?
+-            
+-            enum CodingKeys: String, CodingKey {
+-                case message
+-                case postId = "postId"
+-                case post_id = "post_id"
+-            }
+         }
+-        
+-        let encoder = JSONEncoder()
+-        let body = try encoder.encode(post)
+-        
+-        // Get auth token
+-        guard let token = supabaseService.currentAccessTokenOrNil(), !token.isEmpty else {
+-            throw ApiServiceError.noAuthToken
+-        }
+-        
+-        // Build request manually for 2xx tolerance
+-        guard let url = URL(string: "\(baseURL)/post") else {
+-            throw ApiServiceError.invalidURL
+-        }
+-        
+-        var request = URLRequest(url: url)
+-        request.httpMethod = "POST"
+-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+-        request.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+-        request.httpBody = body
+-        
+-        #if DEBUG
+-        print("[POST /post] URL:", url.absoluteString)
+-        if let bodyString = String(data: body, encoding: .utf8) {
+-            print("[POST /post] body:", bodyString)
+-        }
+-        #endif
+-        
+-        let (data, resp) = try await session.data(for: request)
+-        guard let http = resp as? HTTPURLResponse else {
+-            throw ApiServiceError.networkError(NSError(domain: "ApiService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Bad response"]))
+-        }
+-        
+-        #if DEBUG
+-        print("[POST /post] status:", http.statusCode)
+-        if let bodyString = String(data: data, encoding: .utf8) {
+-            print("[POST /post] raw body:", bodyString)
++        let body = try JSONEncoder().encode(post)
++        let headers = try await authHeaders()
++        let req = try buildRequest(path: "/post", method: .POST, body: body, headers: headers)
++        let (data, resp) = try await send(req)
++        guard let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
++            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
++            throw ApiServiceError.serverError("Server returned status \(status)")
+         }
+-        #endif
+-        
+-        // Treat any 2xx as success
+-        guard (200...299).contains(http.statusCode) else {
+-            #if DEBUG
+-            print("[POST /post] non-2xx status:", http.statusCode)
+-            #endif
+-            throw ApiServiceError.serverError("Server returned status \(http.statusCode)")
+-        }
+-        
+-        // Try to decode response, but don't fail if it's missing/different
+         if let decoded = try? JSONDecoder().decode(CreatePostResponse.self, from: data) {
+-            let postId = decoded.postId ?? decoded.post_id ?? "unknown"
+-            #if DEBUG
+-            print("[POST /post] success, decoded postId:", postId)
+-            #endif
+-            return postId
+-        } else {
+-            #if DEBUG
+-            print("[POST /post] success (2xx), but couldn't decode response - treating as success anyway")
+-            #endif
+-            return "success"
++            return decoded.postId ?? decoded.post_id ?? "success"
+         }
++        return "success"
+     }
+     
++    // Single source for feed – tolerant decode + DTO→Model mapping
+     func getFeed(query: FeedQuery) async throws -> [Post] {
+         var queryItems = [
+             URLQueryItem(name: "lng", value: "\(query.lng)"),
+@@ -661,7 +711,7 @@ class ApiService: ObservableObject {
+             URLQueryItem(name: "limit", value: "\(query.limit)")
+         ]
+         // Server-side exclusion hint: pass current user id if available
+-        if let me = supabaseService.userId?.uuidString {
++        if let me = await main_userIdString() {
+             queryItems.append(URLQueryItem(name: "user_id", value: me))
+         }
+         
+@@ -673,6 +723,10 @@ class ApiService: ObservableObject {
+             queryItems.append(URLQueryItem(name: "mode", value: mode))
+         }
+         
++        // Log full request line
++        let queryString = queryItems.map { "\($0.name)=\($0.value ?? "")" }.joined(separator: "&")
++        dbg("FEED", "GET /feed?\(queryString)")
++        
+         // Tolerant server response structure
+         struct ServerImage: Decodable {
+             let url: URL
+@@ -701,16 +755,25 @@ class ApiService: ObservableObject {
+             let posts: [ServerPost]
+         }
+         
+-        let response: FeedResponse = try await makeRequest("/feed", queryParams: queryItems)
++        let headers = try await authHeaders()
++        let req = try buildRequest(path: "/feed", method: .GET, query: queryItems, headers: headers)
++        let (data, _) = try await send(req)
++        let response = try JSONDecoder().decode(FeedResponse.self, from: data)
++        
++        // Log response post IDs as sorted array
++        let serverIds = response.posts.map { $0.id }.sorted()
++        dbg("FEED", "ids=\(serverIds)")
++        
++        // Log sample owners for first 3 items (no PII)
++        let sampleOwners = response.posts.prefix(3).map { $0.owner_id.prefix(8) }
++        dbg("FEED", "sample owners=\(sampleOwners)")
+         
+         // Map ServerPost to Post
+         let posts = response.posts.compactMap { serverPost -> Post? in
+             // Convert string condition/mode to enums
+             guard let condition = ItemCondition(rawValue: serverPost.condition),
+                   let mode = ItemMode(rawValue: serverPost.mode) else {
+-                #if DEBUG
+-                print("[getFeed] Skipping post \(serverPost.id) - invalid condition or mode")
+-                #endif
++                dbg("FEED", "Skipping post \(serverPost.id.prefix(8)) - invalid condition or mode")
+                 return nil
+             }
+             
+@@ -753,16 +816,6 @@ class ApiService: ObservableObject {
+             )
+         }
+         
+-        // Client fallback: filter out my own posts in case server didn't exclude
+-        if let me = supabaseService.userId?.uuidString {
+-            let filtered = posts.filter { post in
+-                // Prefer explicit ownerId, fall back to owner?.id if present
+-                if post.ownerId == me { return false }
+-                if let ownerProfileId = post.owner?.id, ownerProfileId == me { return false }
+-                return true
+-            }
+-            return filtered
+-        }
+         return posts
+     }
+ 
+@@ -771,21 +824,69 @@ class ApiService: ObservableObject {
+         struct PostResponse: Codable {
+             let post: Post
+         }
+-        
+-        let response: PostResponse = try await makeRequest("/feed/\(postId)")
++        let headers = try await authHeaders()
++        let req = try buildRequest(path: "/feed/\(postId)", method: .GET, headers: headers)
++        let (data, _) = try await send(req)
++        let response = try JSONDecoder().decode(PostResponse.self, from: data)
+         return response.post
+     }
+     
+     // MARK: - Reservations
+     
++    /// Reserve a post. Returns reservation_id on success.
++    @discardableResult
+     func reservePost(_ postId: String) async throws -> String {
+-        struct ReserveResponse: Codable {
+-            let reservationId: String
+-            let message: String
++        do {
++            // Build request using centralized helper
++            let headers = try await authHeaders()
++            let req = try buildRequest(
++                path: "/feed/\(postId)/reserve",
++                method: .POST,
++                body: Data("{}".utf8),  // Backend doesn't require body but send empty JSON
++                headers: headers
++            )
++            
++            // Send with auto-refresh
++            let (data, resp) = try await send(req)
++            let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
++            
++            dbg("RESERVE", "status=\(code)")
++            if let s = String(data: data, encoding: .utf8) {
++                dbg("RESERVE", "body=\(s.prefix(200))")
++            }
++            
++            switch code {
++            case 200, 201:
++                let ok = try JSONDecoder().decode(ReserveResponse.self, from: data)
++                return ok.reservation_id
++                
++            case 401:
++                throw ReserveError.unauthorized
++            case 404:
++                throw ReserveError.notFound
++                
++            case 400:
++                // Decode backend message → map to friendly errors
++                if let msg = try? JSONDecoder().decode(APIErrorMessage.self, from: data).error {
++                    switch msg {
++                    case "Cannot reserve your own post": throw ReserveError.ownPost
++                    case "Post is already reserved":     throw ReserveError.alreadyReserved
++                    case "Post has expired":             throw ReserveError.expired
++                    default:                              throw ReserveError.backend(msg)
++                    }
++                } else {
++                    throw ReserveError.backend("Bad request.")
++                }
++                
++            default:
++                let msg = String(data: data, encoding: .utf8) ?? ""
++                throw ReserveError.backend("Failed (\(code)). \(msg)")
++            }
++        } catch let error as ReserveError {
++            throw error
++        } catch {
++            throw ReserveError.network(error)
+         }
+-        
+-        let response: ReserveResponse = try await makeRequest("/feed/\(postId)/reserve", method: "POST")
+-        return response.reservationId
+     }
+     
+     func cancelReservation(_ postId: String) async throws {

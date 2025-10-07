@@ -32,6 +32,8 @@ final class SupabaseService: NSObject, ObservableObject {
     @Published private(set) var session: Session?
     @Published private(set) var isAuthenticated: Bool = false
     @Published var didCheckSession = false
+    // Single refresh guard to avoid concurrent refresh storms
+    private let refreshGate = RefreshGate()
     
     // User profile computed properties
     var displayName: String {
@@ -65,13 +67,19 @@ final class SupabaseService: NSObject, ObservableObject {
     private static let callbackURL = URL(string: "swoopy://auth/callback")!
     
     let client: SupabaseClient = {
-        SupabaseClient(
+        let configuration = URLSessionConfiguration.default
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = 10 // seconds
+        configuration.timeoutIntervalForResource = 20 // seconds
+
+        return SupabaseClient(
             supabaseURL: SupabaseConfig.url,
             supabaseKey: SupabaseConfig.anonKey,
             options: .init(
                 auth: .init(
                     redirectToURL: SupabaseService.callbackURL, flowType: .pkce
-                )
+                ),
+                global: .init(session: URLSession(configuration: configuration))
             )
         )
     }()
@@ -85,13 +93,33 @@ final class SupabaseService: NSObject, ObservableObject {
     
     /// Refresh the current session if needed
     func refreshSessionIfNeeded() async throws {
+        // Try to acquire the refresh gate
+        let acquired = await refreshGate.begin()
+        if !acquired {
+            #if DEBUG
+            print("[AUTH] refresh skip (guarded=true)")
+            #endif
+            return
+        }
+        #if DEBUG
+        print("[AUTH] refresh start (guarded=true)")
+        #endif
+        defer { Task { await refreshGate.end()
+            #if DEBUG
+            print("[AUTH] refresh end (guarded=true)")
+            #endif
+        } }
+
         let refreshedSession = try await client.auth.refreshSession()
-        applyAuthSession(refreshedSession)
+        await MainActor.run { [refreshedSession] in
+            applyAuthSession(refreshedSession)
+        }
     }
 
     private override init() {
         super.init()
-        Task { [weak self] in
+        // Kick off auth restore in a detached task to avoid blocking main thread
+        Task.detached { [weak self] in
             await self?.bootstrapAuth()
         }
     }
@@ -104,21 +132,42 @@ final class SupabaseService: NSObject, ObservableObject {
     }
 
     /// Runs once at launch to restore a cached session (if any).
+    /// This method performs network work off the main actor, then publishes results on main actor.
     func bootstrapAuth() async {
-        defer { didCheckSession = true }
-        do {
-            let s = try await client.auth.session
-            applyAuthSession(s)
-        } catch {
-            self.session = nil
-            self.isAuthenticated = false
-            self.phase = .signedOut
+        // Perform the actual network request OFF the main actor
+        let result: Result<Session, Error> = await Task.detached {
+            do {
+                let s = try await withTimeout(seconds: 4.0) {
+                    try await self.client.auth.session
+                }
+                return .success(s)
+            } catch {
+                #if DEBUG
+                print("Session bootstrap failed or timed out: \(error.localizedDescription)")
+                #endif
+                return .failure(error)
+            }
+        }.value
+
+        // Now update @Published properties on the main actor
+        await MainActor.run {
+            defer { self.didCheckSession = true }
+            switch result {
+            case .success(let session):
+                self.applyAuthSession(session)
+            case .failure:
+                self.session = nil
+                self.isAuthenticated = false
+                self.phase = .signedOut
+            }
         }
     }
 
     func refreshAuthState() async {
         let s = try? await client.auth.session
-        applyAuthSession(s)
+        await MainActor.run { [s] in
+            applyAuthSession(s)
+        }
     }
 
     /// Handle oauth deep link (call from App.onOpenURL).
@@ -187,10 +236,12 @@ final class SupabaseService: NSObject, ObservableObject {
     }
 
     /// Call this on successful login flows to store the session and mark authenticated.
+    @MainActor
     func setSession(_ s: Session) {
         applyAuthSession(s)
     }
 
+    @MainActor
     func signOut() async {
         do { try await client.auth.signOut(scope: .local) } catch { }
         KeychainStore.clearSession()
@@ -202,31 +253,107 @@ final class SupabaseService: NSObject, ObservableObject {
     // MARK: - Profile Management
     
     /// Update user profile information
+    /// Tries API endpoint first, falls back to direct SDK update
     @MainActor
     func updateProfile(firstName: String?, lastName: String?, phone: String?) async throws {
         guard session != nil else {
             throw SimpleError(message: "No active session")
         }
         
-        var updates: [String: Any] = [:]
+        // Build patch object
+        let patch = ProfilePatch(
+            firstName: firstName?.trimmingCharacters(in: .whitespacesAndNewlines),
+            lastName: lastName?.trimmingCharacters(in: .whitespacesAndNewlines),
+            phone: phone?.trimmingCharacters(in: .whitespacesAndNewlines),
+            city: nil,
+            avatarUrl: nil
+        )
         
+        // Try API endpoint first
+        let api = ApiService(supabaseService: self)
+        do {
+            let updatedProfile = try await api.updateProfile(patch)
+            
+            #if DEBUG
+            print("[PROFILE] Updated via API: \(updatedProfile.firstName ?? "") \(updatedProfile.lastName ?? "")")
+            #endif
+            
+            // Update session metadata to reflect changes
+            try await updateSessionMetadata(firstName: firstName, lastName: lastName, phone: phone)
+            
+        } catch ApiServiceError.notFound {
+            // API endpoint doesn't exist, fall back to SDK
+            #if DEBUG
+            print("[PROFILE] API endpoint not found, using SDK fallback")
+            #endif
+            try await updateProfileDirect(patch)
+        } catch {
+            // Other errors bubble up
+            throw error
+        }
+    }
+    
+    /// Direct SDK update to profiles table (fallback)
+    private func updateProfileDirect(_ patch: ProfilePatch) async throws {
+        guard let uid = session?.user.id.uuidString else {
+            throw SimpleError(message: "No user ID")
+        }
+        
+        struct ProfileUpdate: Encodable {
+            let first_name: String?
+            let last_name: String?
+            let phone: String?
+            let city: String?
+            let avatar_url: String?
+        }
+
+        let payload = ProfileUpdate(
+            first_name: patch.firstName,
+            last_name: patch.lastName,
+            phone: patch.phone,
+            city: patch.city,
+            avatar_url: patch.avatarUrl
+        )
+
+        // Update profiles table
+        _ = try await client.database
+            .from("profiles")
+            .update(payload)
+            .eq("id", value: uid)
+            .execute()
+        
+        #if DEBUG
+        print("[PROFILE] Updated via SDK: \(patch.firstName ?? "") \(patch.lastName ?? "")")
+        #endif
+        
+        // Update session metadata
+        try await updateSessionMetadata(
+            firstName: patch.firstName,
+            lastName: patch.lastName,
+            phone: patch.phone
+        )
+    }
+    
+    /// Update session metadata after profile changes
+    private func updateSessionMetadata(firstName: String?, lastName: String?, phone: String?) async throws {
         // Construct full name from first and last name
-        let fullName = [firstName, lastName].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let fullName = [firstName, lastName]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
         
+        var updates: [String: Any] = [:]
         if !fullName.isEmpty {
             updates["full_name"] = fullName
             updates["name"] = fullName // Some providers use 'name' instead
         }
-        
         if let phone = phone?.trimmingCharacters(in: .whitespacesAndNewlines), !phone.isEmpty {
             updates["phone"] = phone
         }
         
-        // Update user metadata
+        // Refresh session to get updated metadata
         let refreshedSession = try await client.auth.refreshSession()
-        applyAuthSession(refreshedSession)  // ✅ Session
+        applyAuthSession(refreshedSession)
     }
     
     /// Delete user account and all associated data
@@ -393,13 +520,42 @@ final class SupabaseService: NSObject, ObservableObject {
     }
 }
 
+// MARK: - Single refresh guard actor
+actor RefreshGate {
+    private var refreshing = false
+    func begin() -> Bool {
+        if refreshing { return false }
+        refreshing = true
+        return true
+    }
+    func end() { refreshing = false }
+}
+
 // MARK: - Public refresh wrapper for ApiService 401 retry
 extension SupabaseService {
     /// Refresh the GoTrue session so a new access token is issued.
-    /// No-op if refresh is not needed.
+    /// Guarded to avoid concurrent refresh storms.
     func refreshSession() async throws {
+        let acquired = await refreshGate.begin()
+        if !acquired {
+            #if DEBUG
+            print("[AUTH] refresh skip (guarded=true)")
+            #endif
+            return
+        }
+        #if DEBUG
+        print("[AUTH] refresh start (guarded=true)")
+        #endif
+        defer { Task { await refreshGate.end()
+            #if DEBUG
+            print("[AUTH] refresh end (guarded=true)")
+            #endif
+        } }
+
         let s = try await client.auth.refreshSession()
-        applyAuthSession(s)
+        await MainActor.run { [s] in
+            applyAuthSession(s)
+        }
     }
 }
 // MARK: - Apple sign-in bridge (single source of truth)
@@ -474,7 +630,11 @@ private extension SupabaseService {
 // MARK: - Internal auth plumbing
 
 private extension SupabaseService {
+    @MainActor
     func applyAuthSession(_ session: Session?) {
+        #if DEBUG
+        print("[AUTH] applyAuthSession on main actor")
+        #endif
         self.session = session
         if let s = session {
             self.userId = s.user.id
@@ -595,7 +755,6 @@ private enum KeychainStore {
         SecItemDelete(q as CFDictionary)
     }
 }
-
 // MARK: - Time helper & error
 
 private enum ISOTime {

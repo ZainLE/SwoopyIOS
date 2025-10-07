@@ -33,7 +33,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		8E7AB91B2E68ACE8002CC686 /* TrashPicker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TrashPicker.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		8E7AB91B2E68ACE8002CC686 /* Swoopy.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Swoopy.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8E7AB9282E68ACEB002CC686 /* TrashPickerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TrashPickerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		8E7AB9322E68ACEB002CC686 /* TrashPickerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TrashPickerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -43,7 +43,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				Views/AppleSignInbutton.swift,
 				Views/Untitled.swift,
 			);
 			target = 8E7AB91A2E68ACE8002CC686 /* TrashPicker */;
@@ -126,7 +125,7 @@
 		8E7AB91C2E68ACE8002CC686 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				8E7AB91B2E68ACE8002CC686 /* TrashPicker.app */,
+				8E7AB91B2E68ACE8002CC686 /* Swoopy.app */,
 				8E7AB9282E68ACEB002CC686 /* TrashPickerTests.xctest */,
 				8E7AB9322E68ACEB002CC686 /* TrashPickerUITests.xctest */,
 			);
@@ -161,7 +160,7 @@
 				8E6579AD2E7066D800CECD47 /* Supabase */,
 			);
 			productName = TrashPicker;
-			productReference = 8E7AB91B2E68ACE8002CC686 /* TrashPicker.app */;
+			productReference = 8E7AB91B2E68ACE8002CC686 /* Swoopy.app */;
 			productType = "com.apple.product-type.application";
 		};
 		8E7AB9272E68ACEB002CC686 /* TrashPickerTests */ = {
@@ -471,7 +470,7 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.zainlatif.Swoopy;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Swoopy;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -507,7 +506,7 @@
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.zainlatif.Swoopy;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Swoopy;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";

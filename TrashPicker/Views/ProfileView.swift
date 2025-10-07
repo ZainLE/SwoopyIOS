@@ -75,6 +75,7 @@ struct ProfileView: View {
     @State private var showingDeleteError = false
     @State private var errorMessage = ""
     @State private var showingAccountDetails = false
+    @State private var notificationsCount = 0
     
     init() {
         // We'll need to inject the service in the view's initializer or use a different approach
@@ -184,6 +185,40 @@ struct ProfileView: View {
                     }
                 }
                 
+                // MARK: - Notifications Section
+                Section {
+                    NavigationLink(destination: NotificationsView()) {
+                        HStack(spacing: 12) {
+                            Image(systemName: "bell")
+                                .font(.system(size: 20))
+                                .foregroundColor(AppColor.brandGreen)
+                                .frame(width: 24)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Notifications")
+                                    .font(AppFont.body)
+                                    .foregroundColor(AppColor.text)
+                                
+                                Text("Pickup requests")
+                                    .font(AppFont.sub)
+                                    .foregroundColor(AppColor.muted)
+                            }
+                            
+                            Spacer()
+                            
+                            // Badge (always visible; starts at 0)
+                            Text("\(notificationsCount)")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(AppColor.brandGreen)
+                                .clipShape(Capsule())
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                
                 // MARK: - Danger Zone Section
                 Section {
                     // Sign Out Button
@@ -284,6 +319,9 @@ struct ProfileView: View {
                 Task {
                     await viewModel.load()
                 }
+                #if DEBUG
+                print("[PROFILE] notificationsCount=\(notificationsCount)")
+                #endif
             }
         }
     }

@@ -22,6 +22,12 @@ struct AccountDetailsView: View {
     @State private var showingError = false
     @State private var errorMessage = ""
     @State private var showingSuccess = false
+    @State private var successToast = false
+    
+    // Track initial values to detect changes
+    @State private var initialFirstName = ""
+    @State private var initialLastName = ""
+    @State private var initialPhone = ""
     
     // Track if user has uploads from home (requires phone)
     @State private var hasHomeUploads = false
@@ -168,8 +174,8 @@ struct AccountDetailsView: View {
                         Task { await saveProfile() }
                     }
                     .font(AppFont.body.weight(.semibold))
-                    .foregroundColor(AppColor.brandGreen)
-                    .disabled(isLoading || !isFormValid)
+                    .foregroundColor(hasChanges ? AppColor.brandGreen : AppColor.muted)
+                    .disabled(isLoading || !isFormValid || !hasChanges)
                 }
             }
             .overlay {
@@ -184,6 +190,19 @@ struct AccountDetailsView: View {
                         .shadow(radius: 8)
                 }
             }
+            .overlay(alignment: .bottom) {
+                if successToast {
+                    Text("Profile updated!")
+                        .font(AppFont.body.weight(.semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                        .background(AppColor.brandGreen)
+                        .clipShape(Capsule())
+                        .padding(.bottom, 20)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
         }
         .task {
             await loadCurrentProfile()
@@ -192,13 +211,6 @@ struct AccountDetailsView: View {
             Button("OK") { }
         } message: {
             Text(errorMessage)
-        }
-        .alert("Success", isPresented: $showingSuccess) {
-            Button("OK") {
-                dismiss()
-            }
-        } message: {
-            Text("Profile updated successfully!")
         }
         .onChange(of: selectedPhoto) { _, newPhoto in
             guard let newPhoto else { return }
@@ -215,6 +227,12 @@ struct AccountDetailsView: View {
         !firstName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
         // Phone is required if user has home uploads
         (!hasHomeUploads || !phone.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+    
+    private var hasChanges: Bool {
+        firstName != initialFirstName ||
+        lastName != initialLastName ||
+        phone != initialPhone
     }
     
     // MARK: - Methods
@@ -242,6 +260,11 @@ struct AccountDetailsView: View {
         // Load phone
         phone = session.user.userMetadata["phone"]?.description ?? ""
         
+        // Store initial values
+        initialFirstName = firstName
+        initialLastName = lastName
+        initialPhone = phone
+        
         // Check if user has home uploads (would require phone)
         // For now, we'll assume false since we don't have the data structure
         hasHomeUploads = false
@@ -252,15 +275,50 @@ struct AccountDetailsView: View {
         isLoading = true
         
         do {
+            let trimmedFirstName = firstName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedLastName = lastName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedPhone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
+            
             try await svc.updateProfile(
-                firstName: firstName.trimmingCharacters(in: .whitespacesAndNewlines),
-                lastName: lastName.trimmingCharacters(in: .whitespacesAndNewlines),
-                phone: phone.trimmingCharacters(in: .whitespacesAndNewlines)
+                firstName: trimmedFirstName,
+                lastName: trimmedLastName,
+                phone: trimmedPhone
             )
             
-            showingSuccess = true
+            // Update initial values after successful save
+            initialFirstName = firstName
+            initialLastName = lastName
+            initialPhone = phone
+            
+            // Show success toast
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                successToast = true
+            }
+            
+            // Hide toast after 2 seconds and dismiss
+            Task {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    successToast = false
+                }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                dismiss()
+            }
+            
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = "Couldn't save changes. Please try again."
+            
+            #if DEBUG
+            print("[PROFILE] Save error: \(error.localizedDescription)")
+            #endif
+            
+            // Show more specific error if available
+            if let simpleError = error as? SimpleError {
+                errorMessage = simpleError.message
+            } else if error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
+                errorMessage = "Session expired. Please sign in again."
+            }
+            
             showingError = true
         }
         
