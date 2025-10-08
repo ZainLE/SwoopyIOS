@@ -229,9 +229,9 @@ struct UploadFindView: View {
                     print("[CATCH] error type:", type(of: error))
                     #endif
                     showValidation = true
-                    validationText = "Upload failed. Please try again."
+                    validationText = "Couldn't upload your item. Please try again."
                     submitState = .error
-                    toastText = "Upload failed. Please try again."
+                    toastText = "Couldn't upload your item. Please try again."
                     showToast = true
                     try? await Task.sleep(nanoseconds: 1_200_000_000)
                     showToast = false
@@ -296,11 +296,20 @@ struct UploadFindView: View {
 
     private var cameraView: some View {
         CameraCaptureView { image in
-            if let img = image {
-                if let index = showActionForTile, draftStore.photos.indices.contains(index) {
-                    draftStore.replacePhoto(at: index, with: img)
-                } else if draftStore.canAddPhoto {
-                    draftStore.insertPrimary(img)
+            Task { @MainActor in
+                if let img = image {
+                    if let index = showActionForTile, draftStore.photos.indices.contains(index) {
+                        draftStore.replacePhoto(at: index, with: img)
+                    } else if draftStore.canAddPhoto {
+                        draftStore.insertPrimary(img)
+                    }
+                } else {
+                    // Image was nil - either cancelled or failed validation
+                    // Show toast only if it wasn't a cancel (we can't distinguish easily)
+                    // The camera component already logs the issue
+                    #if DEBUG
+                    print("[UploadFindView] Camera returned nil image")
+                    #endif
                 }
             }
         }

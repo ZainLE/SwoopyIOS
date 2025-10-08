@@ -1112,9 +1112,9 @@ struct ReservationsView: View {
             reservations = []
             isLoading = false
             if error is AuthError || error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
-                errorMessage = "Session expired. Please sign in again."
+                errorMessage = "Please sign in again to continue."
             } else {
-                errorMessage = "Failed to load reservations. Please try again."
+                errorMessage = "Can't load reservations right now. Please try again."
             }
             showError = true
         }
@@ -1450,9 +1450,9 @@ struct ReservationsView: View {
         } catch {
             // Handle backend conflict or error
             if error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
-                showToastMessage("Session expired. Please sign in again.")
+                showToastMessage("Please sign in again to continue.")
             } else {
-                showToastMessage("Failed to update reservation. Please try again.")
+                showToastMessage("Couldn't update reservation. Please try again.")
                 await loadReservations() // Refresh list
             }
         }
@@ -1485,9 +1485,9 @@ struct ReservationsView: View {
         } catch {
             // Handle backend conflict or error
             if error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
-                showToastMessage("Session expired. Please sign in again.")
+                showToastMessage("Please sign in again to continue.")
             } else {
-                showToastMessage("Failed to cancel reservation. Please try again.")
+                showToastMessage("Couldn't cancel reservation. Please try again.")
                 await loadReservations() // Refresh list
             }
         }

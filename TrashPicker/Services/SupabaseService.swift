@@ -22,9 +22,12 @@ final class SupabaseService: NSObject, ObservableObject {
 
     // Published state
     @Published var feed: [TrashDTO] = []
+    @Published var feedIsOffline = false
     @Published var myUploads: [TrashDTO] = []
     @Published var myReservations: [TrashDTO] = []
     @Published var pending: [TrashDTO] = []
+    
+    private var cachedFeed: [TrashDTO] = []
 
     // Auth state
     @Published private(set) var phase: AuthPhase = .checking
@@ -375,55 +378,178 @@ final class SupabaseService: NSObject, ObservableObject {
         category: String? = nil,
         condition: String? = nil
     ) async {
-        do {
-            let rows = try await ItemsService.shared.getFeed(
-                lat: near.latitude,
-                lon: near.longitude,
-                radiusKm: radiusKM,
-                category: category,
-                condition: condition
-            )
-            self.feed = rows.map { r in
-                TrashDTO(
-                    id: r.id,
-                    title: r.title,
-                    description: r.description,
-                    category: r.category,
-                    condition: r.condition,
-                    mode: r.mode,
-                    city: (String?).none,
-                    lat: r.lat,
-                    lon: r.lon,
-                    approxLat: r.approx_lat,
-                    approxLon: r.approx_lon,
-                    photoURLs: r.photo_urls.compactMap(URL.init(string:)),
-                    createdAt: r.created_at,
-                    expiresAt: r.expires_at,
-                    status: r.status,
-                    reservedUntil: r.reserved_until,
-                    reservedBy: r.reserved_by,
-                    uploader: r.uploader,
-                    pickedUpAt: r.picked_up_at
-                )
+        let maxAttempts = 2
+        var lastError: Error?
+        
+        for attempt in 1...maxAttempts {
+            let attemptStart = Date()
+            do {
+                let rows = try await withTimeout(seconds: 6.0) {
+                    try await ItemsService.shared.getFeed(
+                        lat: near.latitude,
+                        lon: near.longitude,
+                        radiusKm: radiusKM,
+                        category: category,
+                        condition: condition
+                    )
+                }
+                let mapped = rows.map { r in
+                    TrashDTO(
+                        id: r.id,
+                        title: r.title,
+                        description: r.description,
+                        category: r.category,
+                        condition: r.condition,
+                        mode: r.mode,
+                        city: (String?).none,
+                        lat: r.lat,
+                        lon: r.lon,
+                        approxLat: r.approx_lat,
+                        approxLon: r.approx_lon,
+                        photoURLs: r.photo_urls.compactMap(URL.init(string:)),
+                        createdAt: r.created_at,
+                        expiresAt: r.expires_at,
+                        status: r.status,
+                        reservedUntil: r.reserved_until,
+                        reservedBy: r.reserved_by,
+                        uploader: r.uploader,
+                        pickedUpAt: r.picked_up_at
+                    )
+                }
+                feed = mapped
+                cachedFeed = mapped
+                feedIsOffline = false
+                return
+            } catch {
+                lastError = error
+                let elapsed = Date().timeIntervalSince(attemptStart)
+                #if DEBUG
+                let formatted = String(format: "%.2f", elapsed)
+                print("[FEED retry] attempt=\(attempt) elapsed=\(formatted)s error=\(error.localizedDescription)")
+                #endif
             }
-        } catch {
+        }
+        
+        feedIsOffline = true
+        if !cachedFeed.isEmpty {
+            feed = cachedFeed
+            #if DEBUG
+            print("[FEED fallback] using cached feed count=\(cachedFeed.count)")
+            if let lastError {
+                print("[FEED fallback] lastError=\(lastError.localizedDescription)")
+            }
+            #endif
+        } else if let lastError {
+            #if DEBUG
+            print("[FEED fallback] no cache available error=\(lastError.localizedDescription)")
+            #endif
         }
     }
 
     // MARK: - My stuff
 
     func fetchMyStuff() async {
-        // TODO: Re-enable real implementation once DBItem/TrashDTO models and ItemsService are available.
-        // Temporary stub to avoid build errors and warnings about missing types and unnecessary try/await.
-        guard userId != nil else {
-            self.myUploads = []
-            self.myReservations = []
-            self.pending = []
+        guard hasAuthToken else {
+            resetLists()
             return
         }
-        self.myUploads = []
-        self.myReservations = []
-        self.pending = []
+        
+        let api = ApiService(supabaseService: self)
+        do {
+            async let postsTask = api.getMyPosts()
+            async let reservationsTask = api.getMyReservations()
+            
+            let posts = try await postsTask
+            let reservations = try await reservationsTask
+            
+            let uploads = posts.map { mapPostToDTO($0, reservation: nil) }
+            let reservationItems = reservations.map { mapPostToDTO($0.post, reservation: $0) }
+            
+            myUploads = uploads
+            myReservations = reservationItems
+            pending = reservationItems.filter { $0.status.lowercased() == "pending" }
+            #if DEBUG
+            print("[PROFILE] fetchMyStuff success uploads=\(uploads.count) reservations=\(reservationItems.count) pending=\(pending.count)")
+            #endif
+        } catch {
+            #if DEBUG
+            print("[PROFILE] fetchMyStuff error=\(error.localizedDescription)")
+            #endif
+            resetLists()
+        }
+    }
+    
+    private func resetLists() {
+        myUploads = []
+        myReservations = []
+        pending = []
+    }
+    
+    private func mapPostToDTO(_ post: Post, reservation: Reservation?) -> TrashDTO {
+        let exactCoord = post.exactLocation?.coordinate
+        let approxCoord = post.approxLocation?.coordinate
+        let createdAt = post.createdAt ?? Date()
+        let expiresAt = post.expiresAt ?? createdAt
+        let status = reservation?.status ?? post.userReservation?.status ?? "available"
+        let reservedUntil = reservation?.endAt.flatMap(parseISODate)
+        let reservedBy = (reservation?.reserver).flatMap { UUID(uuidString: $0) }
+        let pickedUpAt = reservation?.pickedAt.flatMap(parseISODate)
+        
+        let uploaderUUID = UUID(uuidString: post.ownerId)
+        if uploaderUUID == nil {
+            #if DEBUG
+            print("[PROFILE] ⚠️ ownerId not UUID: \(post.ownerId)")
+            #endif
+        }
+        let postUUID = UUID(uuidString: post.id)
+        if postUUID == nil {
+            #if DEBUG
+            print("[PROFILE] ⚠️ post id not UUID: \(post.id)")
+            #endif
+        }
+        
+        let sortedImages = post.images.sorted { $0.orderIndex < $1.orderIndex }
+        return TrashDTO(
+            id: postUUID ?? UUID(),
+            title: post.title,
+            description: post.description,
+            category: post.category,
+            condition: post.condition.rawValue,
+            mode: post.mode.rawValue,
+            city: post.owner?.city,
+            lat: exactCoord?.latitude,
+            lon: exactCoord?.longitude,
+            approxLat: approxCoord?.latitude,
+            approxLon: approxCoord?.longitude,
+            photoURLs: sortedImages.map(\.url),
+            createdAt: createdAt,
+            expiresAt: expiresAt,
+            status: status,
+            reservedUntil: reservedUntil,
+            reservedBy: reservedBy,
+            uploader: uploaderUUID ?? UUID(),
+            pickedUpAt: pickedUpAt
+        )
+    }
+    
+    private static let iso8601WithFraction: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    
+    private static let iso8601NoFraction: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+    
+    private func parseISODate(_ raw: String?) -> Date? {
+        guard let raw else { return nil }
+        if let value = SupabaseService.iso8601WithFraction.date(from: raw) {
+            return value
+        }
+        return SupabaseService.iso8601NoFraction.date(from: raw)
     }
 
     // MARK: - Create post

@@ -457,14 +457,20 @@ class ApiService: ObservableObject {
     
     @Published var isAuthenticated = false
     
-    init(supabaseService: SupabaseService = .shared) {
+    init(supabaseService: SupabaseService = .shared, session: URLSession? = nil) {
         self.supabaseService = supabaseService
         
-        let configuration = URLSessionConfiguration.default
-        configuration.waitsForConnectivity = false
-        configuration.timeoutIntervalForRequest = 10 // seconds
-        configuration.timeoutIntervalForResource = 20 // seconds
-        self.session = URLSession(configuration: configuration)
+        if let session = session {
+            // Use provided session (for testing)
+            self.session = session
+        } else {
+            // Create default session
+            let configuration = URLSessionConfiguration.default
+            configuration.waitsForConnectivity = false
+            configuration.timeoutIntervalForRequest = 10 // seconds
+            configuration.timeoutIntervalForResource = 20 // seconds
+            self.session = URLSession(configuration: configuration)
+        }
         
         #if DEBUG
         print("[API] base=\(SupabaseConfig.apiBaseURL)")

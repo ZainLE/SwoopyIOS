@@ -29,13 +29,54 @@ struct CameraCaptureView: UIViewControllerRepresentable {
         init(onPhoto: @escaping (UIImage?) -> Void) { self.onPhoto = onPhoto }
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            picker.dismiss(animated: true) { self.onPhoto(nil) }
+            picker.dismiss(animated: true) {
+                // Hop to main thread before calling SwiftUI callback
+                Task { @MainActor in
+                    self.onPhoto(nil)
+                }
+            }
         }
 
         func imagePickerController(_ picker: UIImagePickerController,
                                    didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
-            let img = (info[.originalImage] as? UIImage)
-            picker.dismiss(animated: true) { self.onPhoto(img) }
+            // Safely extract image (no force unwrap)
+            guard let img = info[.originalImage] as? UIImage else {
+                #if DEBUG
+                print("[Camera] ⚠️ No image in picker result")
+                #endif
+                picker.dismiss(animated: true) {
+                    Task { @MainActor in
+                        self.onPhoto(nil)
+                    }
+                }
+                return
+            }
+            
+            // Validate image can be converted to JPEG
+            guard let jpegData = img.jpegData(compressionQuality: 0.8),
+                  jpegData.count > 0 else {
+                #if DEBUG
+                print("[Camera] ⚠️ Image produced zero-byte JPEG")
+                #endif
+                picker.dismiss(animated: true) {
+                    Task { @MainActor in
+                        self.onPhoto(nil)
+                    }
+                }
+                return
+            }
+            
+            #if DEBUG
+            let sizeKB = Double(jpegData.count) / 1024.0
+            print("[Camera] ✅ Captured image: \(String(format: "%.1f", sizeKB)) KB")
+            #endif
+            
+            // Dismiss and deliver on main thread
+            picker.dismiss(animated: true) {
+                Task { @MainActor in
+                    self.onPhoto(img)
+                }
+            }
         }
     }
 }

@@ -14,6 +14,7 @@ struct TrashPickerApp: App {
     @StateObject private var api = ApiService(supabaseService: SupabaseService.shared)
     @StateObject private var ck  = CKTrashService()
     @StateObject private var draftStore = UploadDraftStore()
+    @StateObject private var loc = LocationManager()
 
     var body: some Scene {
         WindowGroup {
@@ -22,6 +23,7 @@ struct TrashPickerApp: App {
                 .environmentObject(api)
                 .environmentObject(ck)
                 .environmentObject(draftStore)
+                .environmentObject(loc)
                 .onOpenURL { url in
                     Task {
                         // Handle OAuth callback (Google, magic links, etc.)

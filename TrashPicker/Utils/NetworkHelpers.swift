@@ -34,7 +34,7 @@ enum AuthError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .sessionExpired:
-            return "Session expired. Please sign in again."
+            return "Please sign in again to continue."
         }
     }
 }

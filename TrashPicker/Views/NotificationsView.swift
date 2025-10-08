@@ -61,9 +61,9 @@ extension NotificationsView {
             showToast("Already processed.")
             NotificationCenter.default.post(name: .notificationsBadgeDecrement, object: nil)
         case .unauthorized:
-            showToast("Session expired")
+            showToast("Please sign in again to continue.")
         case .network:
-            showToast("Couldn't reach the server")
+            showToast("Can't reach the server right now. Please try again.")
         case .failure(let msg):
             showToast(msg)
         }
@@ -426,9 +426,9 @@ struct NotificationsView: View {
                                             showToast("Skipped")
                                             NotificationCenter.default.post(name: .notificationsBadgeDecrement, object: nil)
                                         case .unauthorized:
-                                            showToast("Session expired")
+                                            showToast("Please sign in again to continue.")
                                         case .network:
-                                            showToast("Couldn't reach the server")
+                                            showToast("Can't reach the server right now. Please try again.")
                                         case .failure(let msg):
                                             showToast(msg)
                                         }
@@ -453,9 +453,15 @@ struct NotificationsView: View {
             if api == nil { api = ApiService(supabaseService: svc) }
             if let api { vm.attach(api: api) }
             await vm.fetch()
+            if svc.hasAuthToken {
+                await svc.fetchMyStuff()
+            }
         }
         .refreshable {
             await vm.fetch()
+            if svc.hasAuthToken {
+                await svc.fetchMyStuff()
+            }
         }
         .onAppear {
             #if DEBUG

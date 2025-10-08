@@ -306,7 +306,7 @@ struct AccountDetailsView: View {
             }
             
         } catch {
-            errorMessage = "Couldn't save changes. Please try again."
+            errorMessage = "Couldn't save your changes. Please try again."
             
             #if DEBUG
             print("[PROFILE] Save error: \(error.localizedDescription)")
@@ -316,7 +316,7 @@ struct AccountDetailsView: View {
             if let simpleError = error as? SimpleError {
                 errorMessage = simpleError.message
             } else if error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
-                errorMessage = "Session expired. Please sign in again."
+                errorMessage = "Please sign in again to continue."
             }
             
             showingError = true
@@ -333,7 +333,7 @@ struct AccountDetailsView: View {
                 profileImage = Image(uiImage: uiImage)
             }
         } catch {
-            errorMessage = "Failed to load selected photo"
+            errorMessage = "Couldn't load that photo. Please try another."
             showingError = true
         }
     }

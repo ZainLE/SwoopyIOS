@@ -50,20 +50,61 @@ final class CameraService: NSObject, ObservableObject {
     
     /// Present camera with proper coordinator retention
     func presentCamera(from viewController: UIViewController) {
-        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
-            return
-        }
-        
-        // Create and retain picker and coordinator
         let picker = UIImagePickerController()
         let coordinator = CameraCoordinator(draftStore: draftStore) { [weak self] in
             self?.dismissCamera()
         }
         
-        picker.sourceType = .camera
+        var source: UIImagePickerController.SourceType
+        if UIImagePickerController.isSourceTypeAvailable(.camera) {
+            source = .camera
+        } else if UIImagePickerController.isSourceTypeAvailable(.photoLibrary) {
+            source = .photoLibrary
+        } else if UIImagePickerController.isSourceTypeAvailable(.savedPhotosAlbum) {
+            source = .savedPhotosAlbum
+        } else {
+            #if DEBUG
+            print("[CAMERA] no available capture sources, aborting presentation")
+            #endif
+            return
+        }
+
+        picker.sourceType = source
         picker.delegate = coordinator
         picker.allowsEditing = false
-        picker.cameraDevice = .rear
+
+        var cameraDeviceDescription = "none"
+        if source == .camera {
+            if UIImagePickerController.isCameraDeviceAvailable(.rear) {
+                picker.cameraDevice = .rear
+                cameraDeviceDescription = "rear"
+            } else if UIImagePickerController.isCameraDeviceAvailable(.front) {
+                picker.cameraDevice = .front
+                cameraDeviceDescription = "front"
+            } else {
+                cameraDeviceDescription = "unavailable"
+                if UIImagePickerController.isSourceTypeAvailable(.photoLibrary) {
+                    source = .photoLibrary
+                    picker.sourceType = .photoLibrary
+                    cameraDeviceDescription = "none"
+                } else if UIImagePickerController.isSourceTypeAvailable(.savedPhotosAlbum) {
+                    source = .savedPhotosAlbum
+                    picker.sourceType = .savedPhotosAlbum
+                    cameraDeviceDescription = "none"
+                }
+            }
+        }
+
+        #if DEBUG
+        let sourceDescription: String
+        switch source {
+        case .camera: sourceDescription = "camera"
+        case .photoLibrary: sourceDescription = "photoLibrary"
+        case .savedPhotosAlbum: sourceDescription = "savedPhotosAlbum"
+        @unknown default: sourceDescription = "unknown"
+        }
+        print("[CAMERA] presenting source=\(sourceDescription) device=\(cameraDeviceDescription)")
+        #endif
         
         // Store strong references
         self.picker = picker

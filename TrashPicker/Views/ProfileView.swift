@@ -1,5 +1,6 @@
 import SwiftUI
 import MapKit
+import Combine
 
 // MARK: - ProfileVM
 
@@ -271,6 +272,10 @@ struct ProfileView: View {
             .task {
                 await svc.fetchMyStuff()
                 await viewModel.load()
+                notificationsCount = svc.pending.count
+                #if DEBUG
+                print("[PROFILE] notificationsCount=\(notificationsCount)")
+                #endif
             }
             .refreshable {
                 await svc.fetchMyStuff()
@@ -314,11 +319,25 @@ struct ProfileView: View {
                 AccountDetailsView()
                     .environmentObject(svc)
             }
+            .onReceive(svc.$myReservations) { reservations in
+                viewModel.reservationsCount = reservations.count
+            }
+            .onReceive(svc.$myUploads) { uploads in
+                viewModel.uploadsCount = uploads.count
+            }
+            .onReceive(svc.$pending) { items in
+                notificationsCount = items.count
+                #if DEBUG
+                print("[PROFILE] notificationsCount=\(notificationsCount)")
+                #endif
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .notificationsBadgeDecrement)) { _ in
+                notificationsCount = max(notificationsCount - 1, 0)
+                #if DEBUG
+                print("[PROFILE] notificationsCount=\(notificationsCount)")
+                #endif
+            }
             .onAppear {
-                // Refresh profile data when returning from account details
-                Task {
-                    await viewModel.load()
-                }
                 #if DEBUG
                 print("[PROFILE] notificationsCount=\(notificationsCount)")
                 #endif
@@ -335,7 +354,7 @@ struct ProfileView: View {
             // Clear any app state (draft stores, caches) and route to Auth flow
             await svc.signOut() // This handles the local cleanup
         } catch {
-            errorMessage = "Couldn't sign out. Try again."
+            errorMessage = "Couldn't sign out right now. Please try again."
             showingSignOutError = true
         }
     }
@@ -550,4 +569,3 @@ extension CKTrashItem {
     var cityText: String { city }
     var mapCoordinate: CLLocationCoordinate2D? { coordinate }
 }
-

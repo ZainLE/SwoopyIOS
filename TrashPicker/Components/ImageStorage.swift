@@ -4,6 +4,26 @@ import UIKit
 import Supabase
 
 enum ImageStorage {
+    
+    // MARK: - Path Generation (Testable)
+    
+    /// Generate storage path for a post image
+    /// - Parameters:
+    ///   - userId: User ID
+    ///   - postId: Post ID
+    ///   - index: Image index (0-based)
+    /// - Returns: Storage path string
+    static func buildPostImagePath(userId: UUID, postId: UUID, index: Int) -> String {
+        return "posts/\(userId.uuidString)/\(postId.uuidString)/\(index).jpg"
+    }
+    
+    /// Generate FileOptions for JPEG uploads
+    /// - Returns: FileOptions with JPEG content type and upsert enabled
+    static func buildJPEGFileOptions() -> FileOptions {
+        return FileOptions(cacheControl: "3600", contentType: "image/jpeg", upsert: true)
+    }
+
+    // MARK: - Upload Methods
 
     /// Upload one JPEG and return (storage path, signed URL string).
     /// NOTE: Prefer `uploadJPEGs` for post flows to adhere to
@@ -42,14 +62,13 @@ enum ImageStorage {
     ) async throws -> [URL] {
 
         var urls: [URL] = []
-        let folder = "posts/\(uploader.uuidString)/\(postId.uuidString)"
-        let options = FileOptions(cacheControl: "3600", contentType: "image/jpeg", upsert: true)
+        let options = buildJPEGFileOptions()
 
         for (i, img) in images.prefix(3).enumerated() {
             guard let data = img.jpegData(compressionQuality: 0.8), data.count > 0 else {
                 throw UploadError.imageProcessingFailed
             }
-            let path = "\(folder)/\(i).jpg"
+            let path = buildPostImagePath(userId: uploader, postId: postId, index: i)
 
             _ = try await client
                 .storage

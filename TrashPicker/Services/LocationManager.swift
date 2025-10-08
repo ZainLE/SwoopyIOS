@@ -14,6 +14,15 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         // Coarse-first strategy for faster startup
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         manager.distanceFilter = 50
+        #if DEBUG
+        let coordDescription: String
+        if let coord = manager.location?.coordinate {
+            coordDescription = "lat=\(coord.latitude), lon=\(coord.longitude)"
+        } else {
+            coordDescription = "nil"
+        }
+        print("[LOC boot] auth=\(manager.authorizationStatus.rawValue) cachedCoord=\(coordDescription)")
+        #endif
     }
 
     func request() {
@@ -59,4 +68,3 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         didUpgradeAccuracy = true
     }
 }
-

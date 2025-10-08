@@ -246,7 +246,7 @@ struct SwipeDeckView: View {
                 .font(.system(size: 48))
                 .foregroundColor(.red)
             
-            Text(errorMessage ?? "Session expired. Please sign in again.")
+            Text(errorMessage ?? "Can't reach the server right now. Please try again.")
                 .font(.system(size: 16, weight: .medium))
                 .foregroundColor(.primary)
                 .multilineTextAlignment(.center)
@@ -504,14 +504,14 @@ struct SwipeDeckView: View {
             case .expired:
                 errorMessage = "This post has expired"
             case .unauthorized:
-                errorMessage = "Session expired. Please sign in again."
+                errorMessage = "Please sign in again to continue."
                 showAuthError = true
             case .notFound:
                 errorMessage = "Post not found"
             case .backend(let msg):
                 errorMessage = msg
             case .network:
-                errorMessage = "Network error. Please try again."
+                errorMessage = "Can't reach the server right now. Please try again."
             }
             showError = true
             
@@ -521,7 +521,7 @@ struct SwipeDeckView: View {
             isReserving = false
             deckState.isActing = false
             
-            errorMessage = "Failed to reserve item. Please try again."
+            errorMessage = "Couldn't reserve this item. Please try again."
             showError = true
         }
     }
@@ -596,10 +596,10 @@ struct SwipeDeckView: View {
             isLoading = false
 
             if error is AuthError || error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
-                errorMessage = "Session expired. Please sign in again."
+                errorMessage = "Please sign in again to continue."
                 showAuthError = true
             } else {
-                errorMessage = "Unable to load feed. Please try again."
+                errorMessage = "Can't load items right now. Please try again."
                 showError = true
             }
         }
@@ -862,6 +862,10 @@ extension SwipeDeckView {
         
         @State private var api: ApiService?
         @State private var posts: [Post] = []
+        @State private var lastFetchDate: Date?
+        @State private var lastFetchLocation: CLLocationCoordinate2D?
+        @State private var isFetching = false
+        @State private var mapError: String?
         
         @State private var region: MKCoordinateRegion = MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
@@ -871,22 +875,53 @@ extension SwipeDeckView {
         
         var body: some View {
             CheapMapView(region: $region)
+                .overlay(alignment: .topLeading) {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundColor(AppTheme.ColorToken.brandDark)
+                            .padding(10)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 16)
+                    .padding(.top, 64)
+                }
+                .overlay(alignment: .topTrailing) {
+                    Button(action: recenterOnUser) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.black.opacity(0.08))
+                                .frame(width: 44, height: 44)
+                            Image(systemName: "location.fill")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(12)
+                                .background(AppTheme.ColorToken.primary)
+                                .clipShape(Circle())
+                        }
+                        .shadow(color: Color.black.opacity(0.2), radius: 4, y: 2)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 16)
+                    .padding(.top, 64)
+                }
                 .overlay(alignment: .top) {
-                    // Custom overlays if needed
+                    if let mapError {
+                        Text(mapError)
+                            .font(.footnote)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.black.opacity(0.75))
+                            .clipShape(Capsule())
+                            .padding(.top, 64)
+                    }
                 }
                 .ignoresSafeArea()
                 .onAppear(perform: setupAndFetch)
                 .onDisappear(perform: loc.stopContinuous)
                 .onChange(of: loc.lastFix, handleLocationChange)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        Button(action: { dismiss() }) {
-                            Image(systemName: "chevron.backward")
-                                .font(.title3.weight(.semibold))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
         }
         
         private func setupAndFetch() {
@@ -919,20 +954,109 @@ extension SwipeDeckView {
         @MainActor
         private func fetchPosts() async {
             guard let api, let location = loc.lastFix else { return }
+            let now = Date()
+            if isFetching { return }
+            if let lastDate = lastFetchDate,
+               now.timeIntervalSince(lastDate) < 10,
+               let lastLoc = lastFetchLocation,
+               distanceBetween(lastLoc, location.coordinate) < 125 {
+                dbg("FEED", "map fetch skipped (cooldown)")
+                return
+            }
+            isFetching = true
+            defer { isFetching = false }
+            
             do {
-                let q = FeedQuery(
+                let query = FeedQuery(
                     lng: location.coordinate.longitude,
                     lat: location.coordinate.latitude,
                     radiusKm: 10.0,
                     category: nil,
                     mode: "street",
-                    limit: 100
+                    limit: 40
                 )
-                posts = try await api.getFeed(query: q)
+                
+                var latestError: Error?
+                let maxAttempts = 2
+                
+                for attempt in 1...maxAttempts {
+                    do {
+                        let result = try await withTimeout(seconds: 6.0) {
+                            try await api.getFeed(query: query)
+                        }
+                        posts = result
+                        mapError = nil
+                        lastFetchDate = now
+                        lastFetchLocation = location.coordinate
+                        return
+                    } catch {
+                        latestError = error
+                        dbg("FEED", "map fetch attempt \(attempt) failed: \(error.localizedDescription)")
+                        if attempt < maxAttempts {
+                            try? await Task.sleep(nanoseconds: 400_000_000)
+                        }
+                    }
+                }
+                
+                if let latestError {
+                    throw latestError
+                } else {
+                    throw TimeoutError.timedOut
+                }
             } catch {
                 dbg("API", "Failed to fetch map posts: \(error.localizedDescription)")
+                let message = error.localizedDescription
+                mapError = message
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    if mapError == message {
+                        mapError = nil
+                    }
+                }
                 posts = []
             }
+        }
+        
+        private func recenterOnUser() {
+            // If we have a recent fix, center immediately
+            if let coord = loc.lastFix?.coordinate {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    region = MKCoordinateRegion(
+                        center: coord,
+                        span: .init(latitudeDelta: 0.012, longitudeDelta: 0.012)
+                    )
+                }
+                return
+            }
+
+            // Otherwise, request a one-shot fix using the async API, then center
+            Task {
+                do {
+                    let fix = try await LocationService.shared.firstFix(timeout: 3.0)
+                    await MainActor.run {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            region = MKCoordinateRegion(
+                                center: fix.coordinate,
+                                span: .init(latitudeDelta: 0.012, longitudeDelta: 0.012)
+                            )
+                        }
+                    }
+                } catch {
+                    // Surface a transient error message
+                    let message = "Couldn't get your location. Please try again."
+                    mapError = message
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        if mapError == message { mapError = nil }
+                    }
+                }
+            }
+        }
+        
+        private func distanceBetween(_ first: CLLocationCoordinate2D, _ second: CLLocationCoordinate2D) -> CLLocationDistance {
+            let a = CLLocation(latitude: first.latitude, longitude: first.longitude)
+            let b = CLLocation(latitude: second.latitude, longitude: second.longitude)
+            return a.distance(from: b)
         }
         
         private func openInMaps(post: Post, coord: CLLocationCoordinate2D) {

@@ -73,11 +73,13 @@ struct FullScreenMapView: View {
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var loc: LocationManager
     @StateObject private var vm = MapVM()
+    @Environment(\.dismiss) private var sysDismiss
     
     let dismiss: () -> Void
     
     private let fallback = CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686)
     private let appGreen = Color(red: 0/255, green: 81/255, blue: 63/255)
+    @State private var showPermissionNotice = false
     
     var body: some View {
         Map(position: $vm.camera, interactionModes: .all) {
@@ -92,27 +94,51 @@ struct FullScreenMapView: View {
             }
         }
         .ignoresSafeArea()
-        .transaction { $0.disablesAnimations = true }
+        .transaction { $0.disablesAnimations = false }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button("Back") { dismiss() }
+                Button {
+                    // Prefer system dismiss; fallback to injected closure
+                    sysDismiss()
+                    // dismiss() // keep closure available if needed
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .semibold))
+                }
             }
         }
-        .overlay(alignment: .bottomTrailing) {
+        .overlay(alignment: .topTrailing) {
             Button {
-                loc.requestOnce { c in
-                    guard let c else { return }
-                    vm.userCenter = c
-                    vm.camera = .region(.init(center: c, span: .init(latitudeDelta: 0.01, longitudeDelta: 0.01)))
-                }
+                Task { await recenterToUser() }
             } label: {
-                Image(systemName: "location.circle.fill")
-                    .font(.title2)
-                    .padding(10)
-                    .background(.ultraThinMaterial, in: Circle())
+                ZStack {
+                    Circle()
+                        .fill(Color.black.opacity(0.08))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: "location.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(12)
+                        .background(AppTheme.ColorToken.primary)
+                        .clipShape(Circle())
+                }
+                .shadow(color: Color.black.opacity(0.2), radius: 4, y: 2)
             }
             .accessibilityLabel("Center on my location")
-            .padding(12)
+            .padding(.top, 8)
+            .padding(.trailing, 12)
+        }
+        .overlay(alignment: .top) {
+            if showPermissionNotice {
+                Text("Location is off. Enable it in Settings → Privacy → Location Services → TrashPicker.")
+                    .font(.footnote)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.black.opacity(0.8))
+                    .clipShape(Capsule())
+                    .padding(.top, 8)
+            }
         }
         .task {
             if loc.authorization == .notDetermined { loc.request() }
@@ -130,6 +156,36 @@ struct FullScreenMapView: View {
         .onChange(of: loc.userLocation) { _, newLoc in
             guard let c = newLoc?.coordinate else { return }
             vm.userCenter = c
+        }
+    }
+
+    // MARK: - Actions
+    private func recenterToUser() async {
+        // Check authorization
+        let status = loc.authorization
+        if status == .denied || status == .restricted {
+            // Show lightweight notice
+            showPermissionNotice = true
+            // Auto-hide after a short delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                showPermissionNotice = false
+            }
+            return
+        }
+        
+        // If we already have a coordinate, use it; otherwise request one
+        if let c = loc.userLocation?.coordinate ?? vm.userCenter {
+            // Smoothly move camera (animations may be limited by transaction settings)
+            vm.userCenter = c
+            vm.camera = .region(.init(center: c, span: .init(latitudeDelta: 0.01, longitudeDelta: 0.01)))
+            return
+        }
+        
+        // One-shot request
+        loc.requestOnce { coord in
+            guard let c = coord else { return }
+            vm.userCenter = c
+            vm.camera = .region(.init(center: c, span: .init(latitudeDelta: 0.01, longitudeDelta: 0.01)))
         }
     }
 }
