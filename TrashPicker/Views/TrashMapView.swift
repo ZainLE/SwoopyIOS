@@ -29,8 +29,10 @@ final class MapVM: ObservableObject {
     @Published var camera: MapCameraPosition = .automatic
     @Published var userCenter: CLLocationCoordinate2D?
     @Published var pins: [MapPin] = []
+    @Published var permissionBanner: String?
     
     private let fallback = CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686)
+    let recenterHelper = MapRecenterHelper()
     
     func refresh(center: CLLocationCoordinate2D?, svc: SupabaseService) async {
         let targetCenter = center ?? fallback
@@ -79,7 +81,6 @@ struct FullScreenMapView: View {
     
     private let fallback = CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686)
     private let appGreen = Color(red: 0/255, green: 81/255, blue: 63/255)
-    @State private var showPermissionNotice = false
     
     var body: some View {
         Map(position: $vm.camera, interactionModes: .all) {
@@ -94,7 +95,6 @@ struct FullScreenMapView: View {
             }
         }
         .ignoresSafeArea()
-        .transaction { $0.disablesAnimations = false }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
@@ -109,7 +109,7 @@ struct FullScreenMapView: View {
         }
         .overlay(alignment: .topTrailing) {
             Button {
-                Task { await recenterToUser() }
+                recenterToUser()
             } label: {
                 ZStack {
                     Circle()
@@ -129,8 +129,8 @@ struct FullScreenMapView: View {
             .padding(.trailing, 12)
         }
         .overlay(alignment: .top) {
-            if showPermissionNotice {
-                Text("Location is off. Enable it in Settings → Privacy → Location Services → TrashPicker.")
+            if let banner = vm.permissionBanner {
+                Text(banner)
                     .font(.footnote)
                     .foregroundColor(.white)
                     .padding(.horizontal, 12)
@@ -138,6 +138,7 @@ struct FullScreenMapView: View {
                     .background(Color.black.opacity(0.8))
                     .clipShape(Capsule())
                     .padding(.top, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
         .task {
@@ -160,32 +161,35 @@ struct FullScreenMapView: View {
     }
 
     // MARK: - Actions
-    private func recenterToUser() async {
-        // Check authorization
-        let status = loc.authorization
-        if status == .denied || status == .restricted {
-            // Show lightweight notice
-            showPermissionNotice = true
-            // Auto-hide after a short delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                showPermissionNotice = false
-            }
-            return
-        }
-        
-        // If we already have a coordinate, use it; otherwise request one
-        if let c = loc.userLocation?.coordinate ?? vm.userCenter {
-            // Smoothly move camera (animations may be limited by transaction settings)
-            vm.userCenter = c
-            vm.camera = .region(.init(center: c, span: .init(latitudeDelta: 0.01, longitudeDelta: 0.01)))
-            return
-        }
-        
-        // One-shot request
-        loc.requestOnce { coord in
-            guard let c = coord else { return }
-            vm.userCenter = c
-            vm.camera = .region(.init(center: c, span: .init(latitudeDelta: 0.01, longitudeDelta: 0.01)))
+    private func recenterToUser() {
+        // Perform the recenter changes without animations
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+
+        withTransaction(transaction) {
+            vm.recenterHelper.recenter(
+                camera: &vm.camera,
+                locationManager: loc,
+                onPermissionDenied: { message in
+                    // Banner animation is separate and OK
+                    withAnimation {
+                        vm.permissionBanner = message
+                    }
+                    // Auto-hide banner after 3 seconds
+                    Task {
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        withAnimation {
+                            vm.permissionBanner = nil
+                        }
+                    }
+                },
+                completion: {
+                    // Update user center for feed refresh
+                    if let coord = loc.userLocation?.coordinate {
+                        vm.userCenter = coord
+                    }
+                }
+            )
         }
     }
 }

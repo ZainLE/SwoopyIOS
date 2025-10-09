@@ -13,9 +13,15 @@ final class ProfileVM: ObservableObject {
     @Published var reservationsCount: Int?
     
     private let supabaseService: SupabaseService
+    private var profileTask: Task<Void, Never>?
+    private var isActive = false
     
     init(supabaseService: SupabaseService) {
         self.supabaseService = supabaseService
+    }
+    
+    deinit {
+        profileTask?.cancel()
     }
     
     func load() async {
@@ -31,6 +37,42 @@ final class ProfileVM: ObservableObject {
         // Get counts from service
         uploadsCount = supabaseService.myUploads.count
         reservationsCount = supabaseService.myReservations.count
+    }
+    
+    // MARK: - Lifecycle Management
+    
+    func startProfileRefresh() {
+        // Single-flight: if already running, don't start another
+        guard profileTask == nil else { return }
+        
+        isActive = true
+        profileTask = Task { [weak self] in
+            guard let self else { return }
+            await self.fetchOnce()
+        }
+    }
+    
+    func stopProfileRefresh() {
+        isActive = false
+        profileTask?.cancel()
+        profileTask = nil
+    }
+    
+    private func fetchOnce() async {
+        guard isActive, !Task.isCancelled else { return }
+        
+        do {
+            try Task.checkCancellation()
+            await supabaseService.fetchMyStuff()
+            await load()
+        } catch {
+            // Silently ignore cancellations
+            if error.isCancellationLike {
+                return
+            }
+            // Log other errors with rate limiting
+            NetLog.profileOnce("fetchOnce error=\(error.localizedDescription)")
+        }
     }
     
     var memberSinceText: String {
@@ -269,17 +311,10 @@ struct ProfileView: View {
             .listStyle(.insetGrouped)
             .navigationTitle("Profile")
             .navigationBarTitleDisplayMode(.large)
-            .task {
-                await svc.fetchMyStuff()
-                await viewModel.load()
-                notificationsCount = svc.pending.count
-                #if DEBUG
-                print("[PROFILE] notificationsCount=\(notificationsCount)")
-                #endif
-            }
             .refreshable {
                 await svc.fetchMyStuff()
                 await viewModel.load()
+                notificationsCount = svc.pending.count
             }
             .confirmationDialog(
                 "Delete Account",
@@ -327,20 +362,16 @@ struct ProfileView: View {
             }
             .onReceive(svc.$pending) { items in
                 notificationsCount = items.count
-                #if DEBUG
-                print("[PROFILE] notificationsCount=\(notificationsCount)")
-                #endif
             }
             .onReceive(NotificationCenter.default.publisher(for: .notificationsBadgeDecrement)) { _ in
                 notificationsCount = max(notificationsCount - 1, 0)
-                #if DEBUG
-                print("[PROFILE] notificationsCount=\(notificationsCount)")
-                #endif
             }
             .onAppear {
-                #if DEBUG
-                print("[PROFILE] notificationsCount=\(notificationsCount)")
-                #endif
+                viewModel.startProfileRefresh()
+                notificationsCount = svc.pending.count
+            }
+            .onDisappear {
+                viewModel.stopProfileRefresh()
             }
         }
     }
@@ -483,6 +514,7 @@ private struct UploadsHistoryView: View {
     @State private var api: ApiService?
     @State private var myPosts: [Post] = []
     @State private var isLoading = false
+    @State private var loadTask: Task<Void, Never>?
     
     var body: some View {
         List {
@@ -512,9 +544,12 @@ private struct UploadsHistoryView: View {
         }
         .navigationTitle("Your Uploads")
         .navigationBarTitleDisplayMode(.large)
-        .task { 
+        .onAppear {
             if api == nil { api = ApiService(supabaseService: svc) }
-            await loadMyPosts()
+            loadTask = Task { await loadMyPosts() }
+        }
+        .onDisappear {
+            loadTask?.cancel()
         }
         .refreshable { 
             await loadMyPosts()
@@ -525,22 +560,29 @@ private struct UploadsHistoryView: View {
     private func loadMyPosts() async {
         guard let api else { return }
         isLoading = true
+        defer { isLoading = false }
+        
         do {
+            try Task.checkCancellation()
             let posts = try await fetchWithRetry(svc: svc) {
                 try await api.getMyPosts()
             }
             myPosts = posts
         } catch {
+            // Silently ignore cancellations
+            if error.isCancellationLike {
+                return
+            }
             myPosts = []
-            // Note: ProfileView doesn't show error messages, but AuthError is handled gracefully
+            NetLog.profileOnce("loadMyPosts error=\(error.localizedDescription)")
         }
-        isLoading = false
     }
     
 }
 
 private struct ReservationHistoryView: View {
     @EnvironmentObject var svc: SupabaseService
+    @State private var loadTask: Task<Void, Never>?
     
     var body: some View {
         List {
@@ -558,7 +600,12 @@ private struct ReservationHistoryView: View {
         }
         .navigationTitle("Reservation History")
         .navigationBarTitleDisplayMode(.large)
-        .task { await svc.fetchMyStuff() }
+        .onAppear {
+            loadTask = Task { await svc.fetchMyStuff() }
+        }
+        .onDisappear {
+            loadTask?.cancel()
+        }
         .refreshable { await svc.fetchMyStuff() }
     }
 }

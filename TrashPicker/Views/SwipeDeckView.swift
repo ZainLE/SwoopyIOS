@@ -862,23 +862,38 @@ extension SwipeDeckView {
         
         @State private var api: ApiService?
         @State private var posts: [Post] = []
-        @State private var lastFetchDate: Date?
-        @State private var lastFetchLocation: CLLocationCoordinate2D?
         @State private var isFetching = false
         @State private var mapError: String?
+        @State private var fetchTask: Task<Void, Never>?
+        @StateObject private var recenterHelper = MapRecenterHelper()
         
         @State private var region: MKCoordinateRegion = MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
             span: .init(latitudeDelta: 0.05, longitudeDelta: 0.05)
         )
         @State private var didCenterFromDefault = false
+        @State private var forceMapUpdate = false  // Toggle to force CheapMapView to bypass guards
+        
+        private struct RegionSignature: Equatable {
+            let lat: Double
+            let lon: Double
+            let dLat: Double
+            let dLon: Double
+
+            init(region: MKCoordinateRegion) {
+                self.lat = region.center.latitude
+                self.lon = region.center.longitude
+                self.dLat = region.span.latitudeDelta
+                self.dLon = region.span.longitudeDelta
+            }
+        }
         
         var body: some View {
-            CheapMapView(region: $region)
+            CheapMapView(region: $region, forceUpdate: forceMapUpdate)
                 .overlay(alignment: .topLeading) {
                     Button(action: { dismiss() }) {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.system(size: 20, weight: .semibold))
                             .foregroundColor(AppTheme.ColorToken.brandDark)
                             .padding(10)
                             .background(.ultraThinMaterial, in: Circle())
@@ -889,18 +904,19 @@ extension SwipeDeckView {
                 }
                 .overlay(alignment: .topTrailing) {
                     Button(action: recenterOnUser) {
-                        ZStack {
-                            Circle()
-                                .fill(Color.black.opacity(0.08))
-                                .frame(width: 44, height: 44)
-                            Image(systemName: "location.fill")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(.white)
-                                .padding(12)
-                                .background(AppTheme.ColorToken.primary)
-                                .clipShape(Circle())
-                        }
-                        .shadow(color: Color.black.opacity(0.2), radius: 4, y: 2)
+                        Image(systemName: "location.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(12)
+                            .background(
+                                Circle()
+                                    .fill(AppTheme.ColorToken.brandDark)
+                                    .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+                            )
+                            .overlay(
+                                Circle()
+                                    .strokeBorder(.white.opacity(0.25), lineWidth: 1)
+                            )
                     }
                     .buttonStyle(.plain)
                     .padding(.trailing, 16)
@@ -920,8 +936,14 @@ extension SwipeDeckView {
                 }
                 .ignoresSafeArea()
                 .onAppear(perform: setupAndFetch)
-                .onDisappear(perform: loc.stopContinuous)
+                .onDisappear {
+                    fetchTask?.cancel()
+                    loc.stopContinuous()
+                }
                 .onChange(of: loc.lastFix, handleLocationChange)
+                .onChange(of: RegionSignature(region: region)) { _, _ in
+                    debouncedFetchPosts()
+                }
         }
         
         private func setupAndFetch() {
@@ -948,28 +970,34 @@ extension SwipeDeckView {
                 )
                 didCenterFromDefault = true
             }
-            Task { await fetchPosts() }
+        }
+        
+        private func debouncedFetchPosts() {
+            // Cancel previous fetch
+            fetchTask?.cancel()
+            
+            // Wait 350ms before starting new fetch
+            fetchTask = Task {
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                guard !Task.isCancelled else { return }
+                await fetchPosts()
+            }
         }
         
         @MainActor
         private func fetchPosts() async {
-            guard let api, let location = loc.lastFix else { return }
-            let now = Date()
-            if isFetching { return }
-            if let lastDate = lastFetchDate,
-               now.timeIntervalSince(lastDate) < 10,
-               let lastLoc = lastFetchLocation,
-               distanceBetween(lastLoc, location.coordinate) < 125 {
-                dbg("FEED", "map fetch skipped (cooldown)")
-                return
-            }
+            guard let api else { return }
+            guard !isFetching else { return }
+            
+            let center = region.center
+            
             isFetching = true
             defer { isFetching = false }
             
             do {
                 let query = FeedQuery(
-                    lng: location.coordinate.longitude,
-                    lat: location.coordinate.latitude,
+                    lng: center.longitude,
+                    lat: center.latitude,
                     radiusKm: 10.0,
                     category: nil,
                     mode: "street",
@@ -981,13 +1009,11 @@ extension SwipeDeckView {
                 
                 for attempt in 1...maxAttempts {
                     do {
-                        let result = try await withTimeout(seconds: 6.0) {
+                        let result = try await withTimeout(seconds: 18.0) {
                             try await api.getFeed(query: query)
                         }
                         posts = result
                         mapError = nil
-                        lastFetchDate = now
-                        lastFetchLocation = location.coordinate
                         return
                     } catch {
                         latestError = error
@@ -1005,52 +1031,44 @@ extension SwipeDeckView {
                 }
             } catch {
                 dbg("API", "Failed to fetch map posts: \(error.localizedDescription)")
-                let message = error.localizedDescription
+                // Soft error: show banner, keep existing pins
+                let message = "Couldn't load items. Showing last results."
                 mapError = message
                 Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
                     if mapError == message {
                         mapError = nil
                     }
                 }
-                posts = []
+                // Don't clear posts - keep last pins visible
             }
         }
         
         private func recenterOnUser() {
-            // If we have a recent fix, center immediately
-            if let coord = loc.lastFix?.coordinate {
-                withAnimation(.easeInOut(duration: 0.25)) {
-                    region = MKCoordinateRegion(
-                        center: coord,
-                        span: .init(latitudeDelta: 0.012, longitudeDelta: 0.012)
-                    )
-                }
-                return
-            }
-
-            // Otherwise, request a one-shot fix using the async API, then center
-            Task {
-                do {
-                    let fix = try await LocationService.shared.firstFix(timeout: 3.0)
-                    await MainActor.run {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            region = MKCoordinateRegion(
-                                center: fix.coordinate,
-                                span: .init(latitudeDelta: 0.012, longitudeDelta: 0.012)
-                            )
+            // Toggle forceUpdate to bypass CheapMapView guards for user-initiated recenter
+            forceMapUpdate = true
+            
+            recenterHelper.recenter(
+                region: &region,
+                locationService: loc,
+                onPermissionDenied: { message in
+                    mapError = message
+                    // Auto-hide banner after 3 seconds
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        if mapError == message {
+                            mapError = nil
                         }
                     }
-                } catch {
-                    // Surface a transient error message
-                    let message = "Couldn't get your location. Please try again."
-                    mapError = message
+                },
+                completion: {
+                    // Reset forceUpdate after the map has been updated
                     Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 2_000_000_000)
-                        if mapError == message { mapError = nil }
+                        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms delay
+                        forceMapUpdate = false
                     }
                 }
-            }
+            )
         }
         
         private func distanceBetween(_ first: CLLocationCoordinate2D, _ second: CLLocationCoordinate2D) -> CLLocationDistance {
@@ -1066,3 +1084,4 @@ extension SwipeDeckView {
         }
     }
 }
+

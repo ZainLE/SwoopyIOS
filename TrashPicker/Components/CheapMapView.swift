@@ -7,10 +7,12 @@ import MapKit
 /// - Logs map lifecycle and updates
 struct CheapMapView: UIViewRepresentable {
     @Binding var region: MKCoordinateRegion
+    var forceUpdate: Bool = false  // Set to true for user-initiated recenter to bypass guards
 
     // Internal state cache (per-instance) to avoid redundant region sets
     private final class StateBox {
         var lastAppliedRegion: MKCoordinateRegion?
+        var lastForceUpdate: Bool = false
     }
     private let box = StateBox()
 
@@ -32,10 +34,17 @@ struct CheapMapView: UIViewRepresentable {
     func updateUIView(_ uiView: MKMapView, context: Context) {
         // Apply region from binding efficiently
         let fitted = uiView.regionThatFits(region)
-        if shouldApplyRegion(fitted, current: uiView.region, last: box.lastAppliedRegion) {
+        
+        // CRITICAL: If forceUpdate is true (user-initiated recenter), bypass the guard
+        // This ensures large jumps (continent → city) always apply
+        let shouldApply = forceUpdate || shouldApplyRegion(fitted, current: uiView.region, last: box.lastAppliedRegion)
+        
+        if shouldApply {
             uiView.setRegion(fitted, animated: false)
             box.lastAppliedRegion = fitted
-            print("[MAP] updateUIView: applied region center=(\(fitted.center.latitude),\(fitted.center.longitude)) span=(\(fitted.span.latitudeDelta),\(fitted.span.longitudeDelta))")
+            box.lastForceUpdate = forceUpdate
+            let reason = forceUpdate ? " (forced)" : ""
+            print("[MAP] updateUIView: applied region center=(\(fitted.center.latitude),\(fitted.center.longitude)) span=(\(fitted.span.latitudeDelta),\(fitted.span.longitudeDelta))\(reason)")
         } else {
             print("[MAP] updateUIView: skipped region (no meaningful change)")
         }

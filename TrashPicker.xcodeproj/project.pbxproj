@@ -43,7 +43,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				Views/Untitled.swift,
 			);
 			target = 8E7AB91A2E68ACE8002CC686 /* TrashPicker */;
 		};

@@ -45,6 +45,8 @@ struct TrashMapPage: View {
         span: .init(latitudeDelta: 0.05, longitudeDelta: 0.05)
     )
     @State private var pins: [TrashMapItem] = []
+    @State private var permissionBanner: String?
+    @StateObject private var recenterHelper = MapRecenterHelper()
     private let brandDark = Color(red: 0/255, green: 81/255, blue: 63/255)
 
     var body: some View {
@@ -107,6 +109,22 @@ struct TrashMapPage: View {
                 .padding(.top, 12)
                 Spacer()
             }
+            
+            // Permission banner overlay
+            if let banner = permissionBanner {
+                VStack {
+                    Text(banner)
+                        .font(.footnote)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.8))
+                        .clipShape(Capsule())
+                        .padding(.top, 60)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    Spacer()
+                }
+            }
         }
         .navigationTitle("Map")
         .navigationBarTitleDisplayMode(.inline)
@@ -141,13 +159,35 @@ struct TrashMapPage: View {
     }
 
     private func recenterOnUser() {
-        if let c = loc.userLocation?.coordinate {
-            let newRegion = MKCoordinateRegion(center: c, span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02))
-            position = .region(newRegion)
-            lastRegion = newRegion
-        } else {
-            position = .region(regionFallback)
-            lastRegion = regionFallback
+        var tx = Transaction(animation: nil)
+        tx.disablesAnimations = true
+        withTransaction(tx) {
+            recenterHelper.recenter(
+                camera: &position,
+                locationManager: loc,
+                onPermissionDenied: { message in
+                    // Banner animation is separate and OK
+                    withAnimation {
+                        permissionBanner = message
+                    }
+                    // Auto-hide banner after 3 seconds
+                    Task {
+                        try? await Task.sleep(nanoseconds: 3_000_000_000)
+                        withAnimation {
+                            permissionBanner = nil
+                        }
+                    }
+                },
+                completion: {
+                    // Update last region for refresh logic
+                    if let coord = loc.userLocation?.coordinate {
+                        lastRegion = MKCoordinateRegion(
+                            center: coord,
+                            span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                        )
+                    }
+                }
+            )
         }
     }
 

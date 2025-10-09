@@ -452,11 +452,11 @@ struct UploadFindView: View {
             // Path: posts/<userId>/<draftId>/<index>.jpg
             let path = "posts/\(userId)/\(draftId)/\(index).jpg"
 
-            // 3) Upload to your Supabase Storage bucket (post-content)
+            // 3) Upload to your Supabase Storage bucket "item-photos"
             //    upsert:true so re-tries don't fail if same path is used
             do {
                 try await svc.client.storage
-                    .from("post-content")
+                    .from("item-photos")
                     .upload(path: path,
                             file: data,
                             options: .init(cacheControl: "3600", contentType: "image/jpeg", upsert: true))
@@ -472,7 +472,7 @@ struct UploadFindView: View {
 
             // 4) Public bucket: derive URL via SDK and skip verification
             let publicURL = try svc.client.storage
-                .from("post-content")
+                .from("item-photos")
                 .getPublicURL(path: path)
             #if DEBUG
             print("[UPLOAD URL]", publicURL.absoluteString)
@@ -831,7 +831,7 @@ struct SupabaseUploader: FindUploader {
         
         // 4) Upload to Supabase Storage bucket "post-content"
         _ = try await supabaseService.client.storage
-            .from("post-content")
+            .from("item-photos")
             .upload(path: filename, file: data, options: .init(cacheControl: "3600", contentType: "image/jpeg", upsert: true))
         #if DEBUG
         print("[UPLOAD OK]", filename)
@@ -839,7 +839,7 @@ struct SupabaseUploader: FindUploader {
         
         // 5) Public bucket: get public URL and skip verification
         let publicURL = try supabaseService.client.storage
-            .from("post-content")
+            .from("item-photos")
             .getPublicURL(path: filename)
         
         return publicURL.absoluteString

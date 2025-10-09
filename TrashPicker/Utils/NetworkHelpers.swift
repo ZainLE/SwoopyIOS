@@ -13,6 +13,11 @@ func fetchWithRetry<T>(
     do {
         return try await operation()
     } catch {
+        // Don't retry cancellations
+        if error.isCancellationLike {
+            throw error
+        }
+        
         let msg = error.localizedDescription.lowercased()
         if msg.contains("401") || msg.contains("unauthorized") {
             do {
@@ -36,6 +41,55 @@ enum AuthError: Error, LocalizedError {
         case .sessionExpired:
             return "Please sign in again to continue."
         }
+    }
+}
+
+// MARK: - Cancellation Detection
+
+extension Error {
+    /// Returns true if this error represents a task cancellation or network cancellation
+    var isCancellationLike: Bool {
+        // Swift Concurrency cancellation
+        if self is CancellationError {
+            return true
+        }
+        
+        // URLSession cancellation (NSURLErrorCancelled = -999)
+        let nsError = self as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            return true
+        }
+        
+        return false
+    }
+}
+
+// MARK: - Rate-Limited Logging
+
+struct RateLimiter {
+    private static var lastPrintTimes: [String: Date] = [:]
+    private static let lock = NSLock()
+    
+    static func permit(key: String, interval: TimeInterval = 2.0) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        let now = Date()
+        if let last = lastPrintTimes[key], now.timeIntervalSince(last) < interval {
+            return false
+        }
+        lastPrintTimes[key] = now
+        return true
+    }
+}
+
+enum NetLog {
+    static func profileOnce(_ message: String) {
+        #if DEBUG
+        if RateLimiter.permit(key: "profile", interval: 2.0) {
+            print("[PROFILE] \(message)")
+        }
+        #endif
     }
 }
 

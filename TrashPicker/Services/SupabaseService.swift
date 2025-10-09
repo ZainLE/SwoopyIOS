@@ -456,6 +456,8 @@ final class SupabaseService: NSObject, ObservableObject {
         
         let api = ApiService(supabaseService: self)
         do {
+            try Task.checkCancellation()
+            
             async let postsTask = api.getMyPosts()
             async let reservationsTask = api.getMyReservations()
             
@@ -472,8 +474,13 @@ final class SupabaseService: NSObject, ObservableObject {
             print("[PROFILE] fetchMyStuff success uploads=\(uploads.count) reservations=\(reservationItems.count) pending=\(pending.count)")
             #endif
         } catch {
+            // Silently ignore cancellations - they're expected when view disappears
+            if error.isCancellationLike {
+                return
+            }
+            
             #if DEBUG
-            print("[PROFILE] fetchMyStuff error=\(error.localizedDescription)")
+            NetLog.profileOnce("fetchMyStuff error=\(error.localizedDescription)")
             #endif
             resetLists()
         }
