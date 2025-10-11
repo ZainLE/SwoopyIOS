@@ -1,0 +1,3 @@
+"NSCameraUsageDescription" = "Allow camera to take photos of items you're giving away.";
+"NSPhotoLibraryAddUsageDescription" = "Allow saving photos of your items.";
+"NSLocationWhenInUseUsageDescription" = "Allow location access to show nearby items.";

@@ -266,19 +266,19 @@ final class ApiServiceTests: XCTestCase {
         apiService = ApiService(supabaseService: mockSupabaseService, session: mockSession)
         
         // Create a sample post
-        let post = PostCreate(
+        let post = PostCreatePayload(
             title: "Vintage Chair",
             description: "A nice wooden chair",
             category: "furniture",
-            condition: .good,
-            mode: .street,
-            images: [PostImage(url: URL(string: "https://example.com/image.jpg")!, orderIndex: 0)],
-            exactLocation: [2.1686, 41.3874],
-            approxLocation: nil
+            condition: "good",
+            mode: "street",
+            images: [PostImagePayload(url: "https://example.com/image.jpg", order_index: 0)],
+            exact_location: GeoPoint(lng: 2.1686, lat: 41.3874),
+            approx_location: nil
         )
         
         // Act: Call createPost
-        let postId = try await apiService.createPost(post)
+        let postId = try await apiService.createPost(token: "mock-token", payload: post)
         
         // Assert: Verify returned ID matches fixture
         XCTAssertEqual(postId, "P123")
@@ -311,20 +311,20 @@ final class ApiServiceTests: XCTestCase {
         apiService = ApiService(supabaseService: mockSupabaseService, session: mockSession)
         
         // Create a post with invalid data (street mode without exact location)
-        let post = PostCreate(
+        let post = PostCreatePayload(
             title: "Test Item",
             description: nil,
             category: "furniture",
-            condition: .good,
-            mode: .street,
+            condition: "good",
+            mode: "street",
             images: [],
-            exactLocation: nil,  // Missing exact location for street mode
-            approxLocation: [2.1686, 41.3874]
+            exact_location: nil,  // Missing exact location for street mode
+            approx_location: GeoPoint(lng: 2.1686, lat: 41.3874)
         )
         
         // Act & Assert: Should throw error with backend message
         do {
-            _ = try await apiService.createPost(post)
+            _ = try await apiService.createPost(token: "mock-token", payload: post)
             XCTFail("Should have thrown error for 400 response")
         } catch let error as ApiServiceError {
             // Verify error contains backend message

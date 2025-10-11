@@ -130,7 +130,7 @@ class MockApiService: ApiService {
         return mockPosts
     }
     
-    override func createPost(_ post: PostCreate) async throws -> String {
+    override func createPost(token: String, payload: PostCreatePayload) async throws -> String {
         // Simulate network delay
         try? await Task.sleep(nanoseconds: 300_000_000) // 0.3 seconds
         return "mock-post-\(UUID().uuidString)"

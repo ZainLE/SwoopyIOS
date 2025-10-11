@@ -25,7 +25,7 @@ final class ImageStorageTests: XCTestCase {
         let path2 = ImageStorage.buildPostImagePath(userId: userId, postId: postId, index: 2)
         
         // Assert: Verify path format
-        let expectedPrefix = "posts/\(userId.uuidString)/\(postId.uuidString)"
+        let expectedPrefix = "posts/\(userId.uuidString.lowercased())/\(postId.uuidString)"
         
         XCTAssertEqual(path0, "\(expectedPrefix)/0.jpg", "First image path should end with /0.jpg")
         XCTAssertEqual(path1, "\(expectedPrefix)/1.jpg", "Second image path should end with /1.jpg")
@@ -33,7 +33,7 @@ final class ImageStorageTests: XCTestCase {
         
         // Verify path structure
         XCTAssertTrue(path0.hasPrefix("posts/"), "Path should start with 'posts/'")
-        XCTAssertTrue(path0.contains(userId.uuidString), "Path should contain user ID")
+        XCTAssertTrue(path0.contains(userId.uuidString.lowercased()), "Path should contain lowercased user ID")
         XCTAssertTrue(path0.contains(postId.uuidString), "Path should contain post ID")
         XCTAssertTrue(path0.hasSuffix(".jpg"), "Path should end with .jpg")
         
@@ -50,7 +50,7 @@ final class ImageStorageTests: XCTestCase {
         
         // Assert: Verify options
         XCTAssertEqual(options.contentType, "image/jpeg", "Content type should be image/jpeg")
-        XCTAssertEqual(options.upsert, true, "Upsert should be enabled")
+        XCTAssertEqual(options.upsert, false, "Upsert should be disabled to avoid overwriting uploads")
         XCTAssertEqual(options.cacheControl, "3600", "Cache control should be 3600")
         
         print("✅ FileOptions test passed")
@@ -75,9 +75,9 @@ final class ImageStorageTests: XCTestCase {
         XCTAssertNotEqual(path1, path2, "Different user/post IDs should produce different paths")
         
         // Verify structure
-        XCTAssertTrue(path1.contains(user1.uuidString))
+        XCTAssertTrue(path1.contains(user1.uuidString.lowercased()))
         XCTAssertTrue(path1.contains(post1.uuidString))
-        XCTAssertTrue(path2.contains(user2.uuidString))
+        XCTAssertTrue(path2.contains(user2.uuidString.lowercased()))
         XCTAssertTrue(path2.contains(post2.uuidString))
         
         print("✅ Different IDs test passed")

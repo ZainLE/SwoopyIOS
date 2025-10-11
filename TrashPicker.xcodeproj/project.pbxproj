@@ -237,6 +237,7 @@
 			knownRegions = (
 				en,
 				Base,
+				es,
 			);
 			mainGroup = 8E7AB9122E68ACE8002CC686;
 			minimizedProjectReferenceProxies = 1;
@@ -453,15 +454,16 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TrashPicker/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Swoopy;
-				INFOPLIST_KEY_NSCameraUsageDescription = "We use the camera to take photos of trash reports.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We use your location to pin reports on the map";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = " We save captured photos to your library";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "We need access to pick photos from your library.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Allow camera to take photos of items you're giving away.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Allow location to show nearby items and approximate pickup spots.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Allow saving the photos you upload to your library.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Allow selecting photos of items to give away.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UIUserInterfaceStyle = Light;
 				IPHONEOS_DEPLOYMENT_TARGET = 18;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -489,15 +491,16 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TrashPicker/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Swoopy;
-				INFOPLIST_KEY_NSCameraUsageDescription = "We use the camera to take photos of trash reports.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We use your location to pin reports on the map";
-				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = " We save captured photos to your library";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "We need access to pick photos from your library.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Allow camera to take photos of items you're giving away.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Allow location to show nearby items and approximate pickup spots.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Allow saving the photos you upload to your library.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Allow selecting photos of items to give away.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UIUserInterfaceStyle = Light;
 				IPHONEOS_DEPLOYMENT_TARGET = 18;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

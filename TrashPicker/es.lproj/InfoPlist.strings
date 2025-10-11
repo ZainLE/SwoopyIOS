@@ -1,0 +1,3 @@
+"NSCameraUsageDescription" = "Permite a Swoopy usar la cámara para tomar fotos de los objetos que estás regalando.";
+"NSPhotoLibraryAddUsageDescription" = "Permite guardar fotos de tus objetos.";
+"NSLocationWhenInUseUsageDescription" = "Permite acceder a tu ubicación para mostrar objetos cercanos.";

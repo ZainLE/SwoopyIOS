@@ -35,8 +35,32 @@ final class MapVM: ObservableObject {
     let recenterHelper = MapRecenterHelper()
     
     func refresh(center: CLLocationCoordinate2D?, svc: SupabaseService) async {
-        let targetCenter = center ?? fallback
-        await svc.fetchFeed(near: targetCenter)
+        let start = Date()
+        
+        // Gate: use cached location if center is invalid
+        var targetCenter = center
+        if !LocationReadiness.isUsable(targetCenter) {
+            targetCenter = LocationService.shared.lastKnownCoordinate
+            #if DEBUG
+            if let cached = targetCenter {
+                print("[FEED gate] map using cached coord=(\(cached.latitude),\(cached.longitude))")
+            } else {
+                print("[FEED gate] map using fallback coord=(\(fallback.latitude),\(fallback.longitude))")
+            }
+            #endif
+        }
+        
+        let finalCenter = targetCenter ?? fallback
+        
+        // Skip request if still invalid (e.g., fallback is 0,0)
+        guard LocationReadiness.isUsable(finalCenter) else {
+            #if DEBUG
+            print("[FEED gate] map skip (reason=no-usable-location)")
+            #endif
+            return
+        }
+        
+        await svc.fetchFeed(near: finalCenter, mode: "street")
         
         let now = Date()
         let candidates = svc.feed.filter { isLive($0, now: now, userId: svc.userId) && isStreetPost($0) }
@@ -54,6 +78,8 @@ final class MapVM: ObservableObject {
                 photoURL: t.firstPhotoURL
             )
         }
+        let ms = Int(Date().timeIntervalSince(start) * 1000)
+        Metrics.mapFetchMs(ms, count: self.pins.count)
     }
     
     private func isLive(_ i: TrashDTO, now: Date = .now, userId: UUID?) -> Bool {

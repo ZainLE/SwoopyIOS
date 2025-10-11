@@ -14,29 +14,30 @@ enum ImageStorage {
     ///   - index: Image index (0-based)
     /// - Returns: Storage path string
     static func buildPostImagePath(userId: UUID, postId: UUID, index: Int) -> String {
-        return "posts/\(userId.uuidString)/\(postId.uuidString)/\(index).jpg"
+        let userIdLower = userId.uuidString.lowercased()
+        return "posts/\(userIdLower)/\(postId.uuidString)/\(index).jpg"
     }
     
     /// Generate FileOptions for JPEG uploads
     /// - Returns: FileOptions with JPEG content type and upsert enabled
     static func buildJPEGFileOptions() -> FileOptions {
-        return FileOptions(cacheControl: "3600", contentType: "image/jpeg", upsert: true)
+        return FileOptions(cacheControl: "3600", contentType: "image/jpeg", upsert: false)
     }
 
     // MARK: - Upload Methods
 
     /// Upload one JPEG and return (storage path, signed URL string).
     /// NOTE: Prefer `uploadJPEGs` for post flows to adhere to
-    /// posts/<userId>/<postId>/<index>.jpg naming.
+    /// users/<userId>/<postId>/<index>.jpg naming.
     static func uploadJPEG(
         client: SupabaseClient,
         data: Data,
         uploader: UUID
     ) async throws -> (path: String, publicURL: String) {
 
-        // Deprecated path for ad-hoc uploads; post flow should use uploadJPEGs
-        let path = "items/\(uploader.uuidString)/\(UUID().uuidString).jpg"
-        let options = FileOptions(cacheControl: "3600", contentType: "image/jpeg", upsert: true)
+            // Deprecated path for ad-hoc uploads; post flow should use uploadJPEGs
+            let path = "items/\(uploader.uuidString)/\(UUID().uuidString).jpg"
+            let options = FileOptions(cacheControl: "3600", contentType: "image/jpeg", upsert: true)
 
         _ = try await client
             .storage
@@ -53,7 +54,7 @@ enum ImageStorage {
     }
 
     /// Upload up to 3 JPEGs and return their signed URLs (ordered).
-    /// Path: posts/<userId>/<postId>/<index>.jpg
+    /// Path: users/<userId>/<postId>/<index>.jpg
     static func uploadJPEGs(
         client: SupabaseClient,
         images: [UIImage],
@@ -86,7 +87,7 @@ enum ImageStorage {
     }
 
     /// Upload a file from disk and return a signed URL (7 days). Uses JPEG content type, upsert enabled.
-    /// NOTE: Prefer `uploadJPEGs` for post flows to adhere to posts/<userId>/<postId>/<index>.jpg.
+    /// NOTE: Prefer `uploadJPEGs` for post flows to adhere to users/<userId>/<postId>/<index>.jpg.
     static func uploadFileURL(
         client: SupabaseClient,
         fileURL: URL,

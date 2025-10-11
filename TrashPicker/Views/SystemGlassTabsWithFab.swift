@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreHaptics
 import UIKit
 
 struct SystemGlassTabsWithFab: View {
@@ -7,6 +8,7 @@ struct SystemGlassTabsWithFab: View {
     @EnvironmentObject var draftStore: UploadDraftStore
 
     @State private var tab = 0
+    @State private var previousTab = 0  // Track previous tab for reselect detection
     @State private var showUploadForm = false
     @State private var cameraService: CameraService?
     
@@ -55,6 +57,20 @@ struct SystemGlassTabsWithFab: View {
             if cameraService == nil {
                 cameraService = CameraService(draftStore: draftStore)
             }
+            // Prewarm haptics engine on first appearance
+            Haptics.prewarm()
+            CHaptic.shared.prepare()
+        }
+        .onChange(of: tab) { oldValue, newValue in
+            // Haptic feedback for tab selection
+            if oldValue == newValue {
+                // Re-tapping the same tab (e.g., scroll to top)
+                Haptics.play(.tabReselect)
+            } else {
+                // Switching to a different tab
+                Haptics.play(.tabSelect)
+                previousTab = oldValue
+            }
         }
         .alert("Camera Permission Required", isPresented: .constant(cameraService?.showPermissionDeniedAlert == true)) {
             Button("Open Settings") {
@@ -75,7 +91,11 @@ struct SystemGlassTabsWithFab: View {
             }
             .onDisappear {
                 // Refresh feed after upload
-                if let c = loc.userLocation?.coordinate {
+                var coord = loc.userLocation?.coordinate
+                if !LocationReadiness.isUsable(coord) {
+                    coord = LocationService.shared.lastKnownCoordinate
+                }
+                if let c = coord, LocationReadiness.isUsable(c) {
                     Task { await svc.fetchFeed(near: c) }
                 }
             }
@@ -92,6 +112,13 @@ struct SystemGlassTabsWithFab: View {
     
     private func handleFabTap() {
         guard let cameraService = cameraService else { return }
+        
+        // Premium haptic feedback for primary action (camera +)
+        if CHHapticEngine.capabilitiesForHardware().supportsHaptics {
+            CHaptic.shared.primaryAction()
+        } else {
+            Haptics.play(.primaryAction)
+        }
         
         cameraService.ensureCameraPermission { granted in
             if granted {
@@ -174,3 +201,4 @@ private extension UIApplication {
 private extension CGFloat {
     func max(_ v: CGFloat) -> CGFloat { Swift.max(self, v) }
 }
+

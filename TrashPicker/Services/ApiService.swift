@@ -165,24 +165,6 @@ struct PostImage: Codable, Identifiable {
     }
 }
 
-struct PostCreate: Codable {
-    let title: String
-    let description: String?
-    let category: String
-    let condition: ItemCondition
-    let mode: ItemMode
-    let images: [PostImage]
-    // Location is sent as [lng, lat] per backend contract
-    let exactLocation: [Double]?
-    let approxLocation: [Double]?
-    
-    enum CodingKeys: String, CodingKey {
-        case title, description, category, condition, mode, images
-        case exactLocation = "exact_location"
-        case approxLocation = "approx_location"
-    }
-}
-
 struct FeedQuery: Codable {
     let lng: Double
     let lat: Double
@@ -233,6 +215,29 @@ struct TolerantLocation: Decodable {
     enum CodingKeys: String, CodingKey {
         case lat, lng
     }
+}
+
+// MARK: - Post Creation Payloads (snake_case contract)
+
+struct GeoPoint: Codable {
+    let lng: Double
+    let lat: Double
+}
+
+struct PostImagePayload: Codable {
+    let url: String
+    let order_index: Int
+}
+
+struct PostCreatePayload: Encodable {
+    let title: String
+    let description: String?
+    let category: String
+    let condition: String
+    let mode: String
+    let images: [PostImagePayload]
+    let exact_location: String?   // WKT: "POINT(lng lat)"
+    let approx_location: String?  // WKT: "POINT(lng lat)"
 }
 
 // MARK: - Core Models without circular references
@@ -518,20 +523,31 @@ class ApiService: ObservableObject {
     }
 
     private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
-        let (data, resp) = try await session.data(for: request)
-        if let http = resp as? HTTPURLResponse, http.statusCode == 401 {
-            do {
-                try await supabaseService.refreshSession()
-                var retry = request
-                if let newToken = await currentAccessTokenOrNil(), !newToken.isEmpty {
-                    retry.setValue("Bearer \(newToken)", forHTTPHeaderField: "Authorization")
+        // Use withTaskCancellationHandler to ensure URLSession respects cancellation
+        return try await withTaskCancellationHandler {
+            let (data, resp) = try await session.data(for: request)
+            if let http = resp as? HTTPURLResponse, http.statusCode == 401 {
+                do {
+                    try await supabaseService.refreshSession()
+                    var retry = request
+                    if let newToken = await currentAccessTokenOrNil(), !newToken.isEmpty {
+                        retry.setValue("Bearer \(newToken)", forHTTPHeaderField: "Authorization")
+                    }
+                    return try await session.data(for: retry)
+                } catch {
+                    throw ApiServiceError.unauthorized
                 }
-                return try await session.data(for: retry)
-            } catch {
-                throw ApiServiceError.unauthorized
             }
+            return (data, resp)
+        } onCancel: {
+            // URLSession.data(for:) automatically cancels when the task is cancelled
+            // This handler is for logging purposes
+            #if DEBUG
+            if let url = request.url?.path {
+                print("[NET] cancel underlying request path=\(url)")
+            }
+            #endif
         }
-        return (data, resp)
     }
     
     // MARK: - Authentication Integration
@@ -714,28 +730,59 @@ class ApiService: ObservableObject {
     
     // MARK: - Posts
     
-    func createPost(_ post: PostCreate) async throws -> String {
-        struct CreatePostResponse: Decodable {
-            let message: String?
-            let postId: String?
-            let post_id: String?
+    func createPost(token: String, payload: PostCreatePayload) async throws -> String {
+        var req = URLRequest(url: URL(string: "https://api.swoopy.eu/custom-api/post")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let encoder = JSONEncoder()
+        req.httpBody = try encoder.encode(payload)
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else {
+            let nsError = NSError(
+                domain: "ApiService",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "POST /post missing HTTPURLResponse"]
+            )
+            throw ApiServiceError.networkError(nsError)
         }
-        let body = try JSONEncoder().encode(post)
-        let headers = try await authHeaders()
-        let req = try buildRequest(path: "/post", method: .POST, body: body, headers: headers)
-        let (data, resp) = try await send(req)
-        guard let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? -1
-            throw ApiServiceError.serverError("Server returned status \(status)")
+
+        if (200..<300).contains(http.statusCode) {
+            if let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               let postId = obj["post_id"] as? String {
+                #if DEBUG
+                print("[POST OK] id=\(postId)")
+                #endif
+                return postId
+            }
+            #if DEBUG
+            let body = String(data: data, encoding: .utf8) ?? ""
+            print("[POST OK] (no id body) \(body)")
+            #endif
+            return ""
+        } else {
+            let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            #if DEBUG
+            print("[POST ERR] status=\(http.statusCode) body=\(body)")
+            #endif
+            throw ApiServiceError.serverError("POST /post failed (\(http.statusCode)): \(body)")
         }
-        if let decoded = try? JSONDecoder().decode(CreatePostResponse.self, from: data) {
-            return decoded.postId ?? decoded.post_id ?? "success"
-        }
-        return "success"
     }
     
     // Single source for feed – tolerant decode + DTO→Model mapping
     func getFeed(query: FeedQuery) async throws -> [Post] {
+        // Safety net: block zero/invalid coordinates
+        let coord = CLLocationCoordinate2D(latitude: query.lat, longitude: query.lng)
+        if !LocationReadiness.isUsable(coord) {
+            #if DEBUG
+            print("[FEED] skip (reason=invalid-coord lat=\(query.lat) lng=\(query.lng))")
+            #endif
+            return []
+        }
+        
         var queryItems = [
             URLQueryItem(name: "lng", value: "\(query.lng)"),
             URLQueryItem(name: "lat", value: "\(query.lat)"),
@@ -1064,6 +1111,3 @@ extension Reservation {
         }
     }
 }
-
-
-

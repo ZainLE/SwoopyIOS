@@ -28,15 +28,19 @@ final class SupabaseService: NSObject, ObservableObject {
     @Published var pending: [TrashDTO] = []
     
     private var cachedFeed: [TrashDTO] = []
+    private let feedCacheStore = FeedCacheStore()
 
     // Auth state
     @Published private(set) var phase: AuthPhase = .checking
     @Published private(set) var userId: UUID?
     @Published private(set) var session: Session?
     @Published private(set) var isAuthenticated: Bool = false
-    @Published var didCheckSession = false
+    @Published private(set) var didCheckSession = false
     // Single refresh guard to avoid concurrent refresh storms
     private let refreshGate = RefreshGate()
+    // Shared single-flight gate for feed/map fetches
+    private let feedGate = FeedSingleFlight()
+    private var feedReqCounter: Int = 0
     
     // User profile computed properties
     var displayName: String {
@@ -121,9 +125,30 @@ final class SupabaseService: NSObject, ObservableObject {
 
     private override init() {
         super.init()
-        // Kick off auth restore in a detached task to avoid blocking main thread
+        
+        // Prefer Keychain restore to avoid auth screen flash
+        // Run off-main to ensure no disk/Keychain I/O on the main actor
+        Task.detached { [weak self] in
+            await self?.restoreSessionIfPossible()
+        }
+        
+        // Also kick a background verification/refresh (non-blocking)
         Task.detached { [weak self] in
             await self?.bootstrapAuth()
+        }
+
+        // Load last-known feed cache (local-only Stage 0)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let cache = feedCacheStore.load() {
+                self.feed = cache.items
+                self.cachedFeed = cache.items
+                self.feedIsOffline = false
+                #if DEBUG
+                let ageMs = Int(Date().timeIntervalSince(cache.savedAt) * 1000)
+                print("[FEED cache] loaded count=\(cache.items.count) dataAgeMs=\(ageMs)")
+                #endif
+            }
         }
     }
 
@@ -137,11 +162,27 @@ final class SupabaseService: NSObject, ObservableObject {
     /// Runs once at launch to restore a cached session (if any).
     /// This method performs network work off the main actor, then publishes results on main actor.
     func bootstrapAuth() async {
-        // Perform the actual network request OFF the main actor
+        // Perform the actual network request OFF the main actor with aggressive timeout
+        let bootStart = Date()
         let result: Result<Session, Error> = await Task.detached {
             do {
-                let s = try await withTimeout(seconds: 4.0) {
-                    try await self.client.auth.session
+                // Race the session fetch against a hard 3-second timeout
+                let s = try await withThrowingTaskGroup(of: Session.self) { group in
+                    // Session fetch task
+                    group.addTask {
+                        try await self.client.auth.session
+                    }
+                    
+                    // Timeout task
+                    group.addTask {
+                        try await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+                        throw TimeoutError.timedOut
+                    }
+                    
+                    // First to complete wins, cancel the other
+                    let result = try await group.next()!
+                    group.cancelAll()
+                    return result
                 }
                 return .success(s)
             } catch {
@@ -154,7 +195,6 @@ final class SupabaseService: NSObject, ObservableObject {
 
         // Now update @Published properties on the main actor
         await MainActor.run {
-            defer { self.didCheckSession = true }
             switch result {
             case .success(let session):
                 self.applyAuthSession(session)
@@ -164,6 +204,8 @@ final class SupabaseService: NSObject, ObservableObject {
                 self.phase = .signedOut
             }
         }
+        let ms = Int(Date().timeIntervalSince(bootStart) * 1000)
+        Metrics.sessionRestoreMs(ms)
     }
 
     func refreshAuthState() async {
@@ -376,14 +418,53 @@ final class SupabaseService: NSObject, ObservableObject {
         near: CLLocationCoordinate2D,
         radiusKM: Double = 50,
         category: String? = nil,
-        condition: String? = nil
+        condition: String? = nil,
+        mode: String? = nil
     ) async {
+        // Build key and debounce window
+        let key = FeedFetchKey(lat: near.latitude, lon: near.longitude, radiusKM: radiusKM, mode: mode ?? "all")
+        let debounceMs = Int.random(in: 300...500)
+        feedReqCounter &+= 1
+        let reqId = feedReqCounter
+
+        await feedGate.schedule(key: key, debounceMs: debounceMs) { [weak self] in
+            guard let self else { return }
+            let start = Date()
+            #if DEBUG
+            print("[FEED req] id=\(reqId) key=(lat=\(String(format: "%.5f", key.lat)), lon=\(String(format: "%.5f", key.lon)), mode=\(key.mode), r=\(key.radiusKM)) start")
+            #endif
+            do {
+                let count = try await self._performFetchFeed(near: near, radiusKM: radiusKM, category: category, condition: condition)
+                #if DEBUG
+                let ms = Int(Date().timeIntervalSince(start) * 1000)
+                print("[FEED req] id=\(reqId) done ms=\(ms) count=\(count)")
+                #endif
+            } catch {
+                // Silent on cancellations; otherwise fallback remains handled inside
+                if error.isCancellationLike {
+                    return
+                }
+                #if DEBUG
+                let ms = Int(Date().timeIntervalSince(start) * 1000)
+                print("[FEED req] id=\(reqId) fail ms=\(ms) error=\(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
+
+    @MainActor
+    private func _performFetchFeed(
+        near: CLLocationCoordinate2D,
+        radiusKM: Double,
+        category: String?,
+        condition: String?
+    ) async throws -> Int {
         let maxAttempts = 2
         var lastError: Error?
-        
         for attempt in 1...maxAttempts {
             let attemptStart = Date()
             do {
+                try Task.checkCancellation()
                 let rows = try await withTimeout(seconds: 6.0) {
                     try await ItemsService.shared.getFeed(
                         lat: near.latitude,
@@ -419,8 +500,13 @@ final class SupabaseService: NSObject, ObservableObject {
                 feed = mapped
                 cachedFeed = mapped
                 feedIsOffline = false
-                return
+                // Persist cache after successful fetch
+                feedCacheStore.save(items: mapped)
+                let ms = Int(Date().timeIntervalSince(attemptStart) * 1000)
+                Metrics.feedFetchMs(ms, count: mapped.count)
+                return mapped.count
             } catch {
+                if error.isCancellationLike { throw error }
                 lastError = error
                 let elapsed = Date().timeIntervalSince(attemptStart)
                 #if DEBUG
@@ -429,21 +515,23 @@ final class SupabaseService: NSObject, ObservableObject {
                 #endif
             }
         }
-        
         feedIsOffline = true
         if !cachedFeed.isEmpty {
             feed = cachedFeed
             #if DEBUG
-            print("[FEED fallback] using cached feed count=\(cachedFeed.count)")
+            let ageMs = feedCacheStore.currentAgeMs() ?? -1
+            print("[FEED fallback] using cached feed count=\(cachedFeed.count) dataAgeMs=\(ageMs)")
             if let lastError {
                 print("[FEED fallback] lastError=\(lastError.localizedDescription)")
             }
             #endif
+            return cachedFeed.count
         } else if let lastError {
             #if DEBUG
             print("[FEED fallback] no cache available error=\(lastError.localizedDescription)")
             #endif
         }
+        return 0
     }
 
     // MARK: - My stuff
@@ -664,6 +752,55 @@ actor RefreshGate {
     func end() { refreshing = false }
 }
 
+// MARK: - Feed single-flight with debounce
+struct FeedFetchKey: Hashable {
+    let lat: Double
+    let lon: Double
+    let radiusKM: Double
+    let mode: String
+}
+
+actor FeedSingleFlight {
+    private struct TrackedTask {
+        let id: UUID
+        let task: Task<Void, Error>
+    }
+
+    private var tasks: [FeedFetchKey: TrackedTask] = [:]
+
+    /// Schedule a debounced single-flight task for a key. Any in-flight task for the key is cancelled.
+    /// Cancellations are silent. The latest scheduled task wins.
+    func schedule(key: FeedFetchKey, debounceMs: Int, operation: @escaping @Sendable () async throws -> Void) async {
+        // Cancel prior task if any
+        if let existing = tasks[key] {
+            existing.task.cancel()
+        }
+        // Create new debounced task
+        let token = UUID()
+        let task = Task<Void, Error> {
+            // Debounce window 300–500ms
+            try? await Task.sleep(nanoseconds: UInt64(debounceMs) * 1_000_000)
+            // If cancelled during debounce, throw to exit silently
+            try Task.checkCancellation()
+            try await operation()
+        }
+        tasks[key] = TrackedTask(id: token, task: task)
+
+        do {
+            try await task.value
+        } catch {
+            // Silent on cancellations or if the task was superseded
+            if error.isCancellationLike {
+                // no-op
+            }
+        }
+        // Clean up if still the same scheduled task (compare by token)
+        if let current = tasks[key], current.id == token {
+            tasks[key] = nil
+        }
+    }
+}
+
 // MARK: - Public refresh wrapper for ApiService 401 retry
 extension SupabaseService {
     /// Refresh the GoTrue session so a new access token is issued.
@@ -689,6 +826,25 @@ extension SupabaseService {
         await MainActor.run { [s] in
             applyAuthSession(s)
         }
+    }
+
+    @MainActor
+    func setDidCheckSession(_ value: Bool) {
+#if DEBUG
+        assert(Thread.isMainThread, "setDidCheckSession must be on main thread")
+#endif
+        didCheckSession = value
+    }
+}
+
+// MARK: - Public Auth Mutations (single entry points for views)
+
+extension SupabaseService {
+    /// Views should call this instead of mutating auth/session state directly.
+    @MainActor
+    func signOut() {
+        applyAuthSession(nil)
+        didCheckSession = true
     }
 }
 // MARK: - Apple sign-in bridge (single source of truth)
@@ -790,26 +946,37 @@ private extension SupabaseService {
     }
 
     func restoreSessionIfPossible() async {
-        guard let creds = KeychainStore.loadSession() else {
-            // If no tokens: applyAuthSession(nil) and phase = .signedOut; return immediately
-            applyAuthSession(nil)
-            didCheckSession = true
+        // Load Keychain off-main
+        let creds = await Task.detached { KeychainStore.loadSession() }.value
+        guard let creds else {
+            // No tokens: update UI state on main actor
+            await MainActor.run {
+                applyAuthSession(nil)
+                didCheckSession = true
+            }
             return
         }
-        // If tokens exist: try client.auth.setSession(...)
+        // Try setSession (network) off-main, then publish on main
         do {
             let s = try await client.auth.setSession(
                 accessToken: creds.accessToken,
                 refreshToken: creds.refreshToken
             )
-            // On success: applyAuthSession(s) and phase = .signedIn
-            applyAuthSession(s)
-            didCheckSession = true
+            await MainActor.run {
+                applyAuthSession(s)
+                didCheckSession = true
+            }
         } catch {
-            // On failure: clear Keychain → applyAuthSession(nil) and phase = .signedOut
-            KeychainStore.clearSession()
-            applyAuthSession(nil)
-            didCheckSession = true
+            // On failure with cached tokens: avoid brief auth flash; keep splash briefly
+            await Task.detached { KeychainStore.clearSession() }.value
+            // Allow background bootstrapAuth up to 600ms to succeed, then fall back to auth
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                if self.phase != .signedIn {
+                    applyAuthSession(nil)
+                    didCheckSession = true
+                }
+            }
         }
     }
 

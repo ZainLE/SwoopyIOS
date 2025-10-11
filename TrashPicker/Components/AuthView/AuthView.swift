@@ -28,12 +28,45 @@ struct AuthView: View {
     private var trimmedEmail: String { email.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedPass:  String { password.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedConf:  String { confirm.trimmingCharacters(in: .whitespacesAndNewlines) }
-    
     private var formValid: Bool {
         switch mode {
         case .signIn: return trimmedEmail.contains("@") && trimmedPass.count >= 6
         case .signUp: return trimmedEmail.contains("@") && trimmedPass.count >= 6 && trimmedPass == trimmedConf
         }
+    }
+    
+    // MARK: - Legal Links Footer
+    @ViewBuilder private var legalLinksFooter: some View {
+        Text(attributedLegalText())
+            .font(.footnote)
+            .multilineTextAlignment(.center)
+            .tint(AppTheme.ColorToken.cta) // light green token
+            .textSelection(.enabled)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 24)
+    }
+
+
+    private func attributedLegalText() -> AttributedString {
+        var composed = AttributedString("Read the ")
+        if let privacyURL = URL(string: "https://privacy.swoopy.eu/") {
+            var privacy = AttributedString("privacy policy")
+            privacy.link = privacyURL
+            composed += privacy
+        } else {
+            composed += AttributedString("privacy policy")
+        }
+        var cta = AttributedString(", ")
+        cta.foregroundColor = Color(AppTheme.ColorToken.cta)
+        composed += cta
+        if let termsURL = URL(string: "https://terms.swoopy.eu/") {
+            var terms = AttributedString("terms and conditions")
+            terms.link = termsURL
+            composed += terms
+        } else {
+            composed += AttributedString("terms and conditions")
+        }
+        return composed
     }
     
     private func isValidEmail(_ s: String) -> Bool {
@@ -84,6 +117,7 @@ struct AuthView: View {
         .onAppear { recalcSubmit() }
         .onTapGesture { focus = nil }
         .background(Color(AppColor.surface))
+        .safeAreaInset(edge: .bottom) { legalLinksFooter }
     }
     
     // MARK: - Sections (split for compiler sanity)
@@ -424,3 +458,4 @@ struct AuthView: View {
         }
     }
 }
+

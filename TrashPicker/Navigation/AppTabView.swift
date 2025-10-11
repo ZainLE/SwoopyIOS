@@ -38,6 +38,12 @@ struct AppTabView: View {
                 if newTab == .camera {
                     handleCameraTab()
                     router.selectedTab = oldTab // Stay on previous tab
+                } else if oldTab == newTab {
+                    // Re-tapping the same tab
+                    Haptics.play(.tabReselect)
+                } else {
+                    // Switching to a different tab
+                    Haptics.play(.tabSelect)
                 }
             }
         } else {
@@ -52,10 +58,16 @@ struct AppTabView: View {
                 }
             }
             .tint(appGreen)
-            .onChange(of: router.selectedTab) { _, newTab in
+            .onChange(of: router.selectedTab) { oldTab, newTab in
                 if newTab == .camera {
                     handleCameraTab()
                     router.selectedTab = .feed // Return to feed
+                } else if oldTab == newTab {
+                    // Re-tapping the same tab
+                    Haptics.play(.tabReselect)
+                } else {
+                    // Switching to a different tab
+                    Haptics.play(.tabSelect)
                 }
             }
         }
@@ -87,7 +99,11 @@ struct AppTabView: View {
             .onDisappear {
                 // Clean up after upload form dismisses
                 router.selectedTab = .feed
-                if let c = loc.userLocation?.coordinate {
+                var coord = loc.userLocation?.coordinate
+                if !LocationReadiness.isUsable(coord) {
+                    coord = LocationService.shared.lastKnownCoordinate
+                }
+                if let c = coord, LocationReadiness.isUsable(c) {
                     Task { await svc.fetchFeed(near: c) }
                 }
             }

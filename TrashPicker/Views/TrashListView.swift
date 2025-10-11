@@ -40,12 +40,22 @@ struct TrashListView: View {
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query)
             .task {
-                let c = loc.userLocation?.coordinate ?? fallback
-                await svc.fetchFeed(near: c)
+                var coord = loc.userLocation?.coordinate
+                if !LocationReadiness.isUsable(coord) {
+                    coord = LocationService.shared.lastKnownCoordinate ?? fallback
+                }
+                if let c = coord, LocationReadiness.isUsable(c) {
+                    await svc.fetchFeed(near: c)
+                }
             }
             .refreshable {
-                let c = loc.userLocation?.coordinate ?? fallback
-                await svc.fetchFeed(near: c)
+                var coord = loc.userLocation?.coordinate
+                if !LocationReadiness.isUsable(coord) {
+                    coord = LocationService.shared.lastKnownCoordinate ?? fallback
+                }
+                if let c = coord, LocationReadiness.isUsable(c) {
+                    await svc.fetchFeed(near: c)
+                }
             }
         }
     }

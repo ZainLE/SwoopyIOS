@@ -216,6 +216,88 @@ final class LocationGatingTests: XCTestCase {
         
         print("✅ Multiple queries with same builder test passed")
     }
+    
+    // MARK: - LocationReadiness Tests
+    
+    /// Test isUsable rejects nil coordinates
+    func test_isUsable_rejectsNil() {
+        XCTAssertFalse(LocationReadiness.isUsable(nil), "Should reject nil coordinate")
+        print("✅ isUsable rejects nil test passed")
+    }
+    
+    /// Test isUsable rejects (0,0)
+    func test_isUsable_rejectsZeroZero() {
+        let zero = CLLocationCoordinate2D(latitude: 0.0, longitude: 0.0)
+        XCTAssertFalse(LocationReadiness.isUsable(zero), "Should reject (0,0) coordinate")
+        print("✅ isUsable rejects (0,0) test passed")
+    }
+    
+    /// Test isUsable rejects invalid coordinates
+    func test_isUsable_rejectsInvalid() {
+        let invalid1 = CLLocationCoordinate2D(latitude: 91.0, longitude: 0.0)
+        let invalid2 = CLLocationCoordinate2D(latitude: 0.0, longitude: 181.0)
+        let invalid3 = CLLocationCoordinate2D(latitude: -91.0, longitude: 0.0)
+        let invalid4 = CLLocationCoordinate2D(latitude: 0.0, longitude: -181.0)
+        
+        XCTAssertFalse(LocationReadiness.isUsable(invalid1), "Should reject lat > 90")
+        XCTAssertFalse(LocationReadiness.isUsable(invalid2), "Should reject lng > 180")
+        XCTAssertFalse(LocationReadiness.isUsable(invalid3), "Should reject lat < -90")
+        XCTAssertFalse(LocationReadiness.isUsable(invalid4), "Should reject lng < -180")
+        
+        print("✅ isUsable rejects invalid coordinates test passed")
+    }
+    
+    /// Test isUsable accepts valid coordinates
+    func test_isUsable_acceptsValid() {
+        let barcelona = CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686)
+        let newYork = CLLocationCoordinate2D(latitude: 40.7128, longitude: -74.0060)
+        let tokyo = CLLocationCoordinate2D(latitude: 35.6762, longitude: 139.6503)
+        
+        XCTAssertTrue(LocationReadiness.isUsable(barcelona), "Should accept Barcelona")
+        XCTAssertTrue(LocationReadiness.isUsable(newYork), "Should accept New York")
+        XCTAssertTrue(LocationReadiness.isUsable(tokyo), "Should accept Tokyo")
+        
+        print("✅ isUsable accepts valid coordinates test passed")
+    }
+    
+    /// Test roundForKeying rounds to 5 decimals
+    func test_roundForKeying_rounds() {
+        let precise = CLLocationCoordinate2D(latitude: 41.38743829, longitude: 2.16864729)
+        let rounded = LocationReadiness.roundForKeying(precise)
+        
+        XCTAssertEqual(rounded.latitude, 41.38744, accuracy: 0.000001)
+        XCTAssertEqual(rounded.longitude, 2.16865, accuracy: 0.000001)
+        
+        print("✅ roundForKeying rounds correctly test passed")
+    }
+    
+    /// Test cacheKey generates consistent keys
+    func test_cacheKey_consistent() {
+        let coord1 = CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686)
+        let coord2 = CLLocationCoordinate2D(latitude: 41.38740001, longitude: 2.16860001)
+        
+        let key1 = LocationReadiness.cacheKey(coord1)
+        let key2 = LocationReadiness.cacheKey(coord2)
+        
+        XCTAssertEqual(key1, key2, "Should generate same key for nearby coordinates")
+        XCTAssertTrue(key1.contains("41.3874"), "Key should contain latitude")
+        XCTAssertTrue(key1.contains("2.1686"), "Key should contain longitude")
+        
+        print("✅ cacheKey generates consistent keys test passed")
+    }
+    
+    /// Test cacheKey differentiates distant coordinates
+    func test_cacheKey_differentiates() {
+        let barcelona = CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686)
+        let newYork = CLLocationCoordinate2D(latitude: 40.7128, longitude: -74.0060)
+        
+        let key1 = LocationReadiness.cacheKey(barcelona)
+        let key2 = LocationReadiness.cacheKey(newYork)
+        
+        XCTAssertNotEqual(key1, key2, "Should generate different keys for distant coordinates")
+        
+        print("✅ cacheKey differentiates coordinates test passed")
+    }
 }
 
 // MARK: - Feed Query Builder

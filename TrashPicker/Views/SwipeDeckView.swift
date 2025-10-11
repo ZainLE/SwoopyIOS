@@ -98,6 +98,10 @@ struct SwipeDeckView: View {
     @State private var showAuthError = false
     @State private var successMessage: String?
     @State private var showSuccess = false
+    
+    // Single-flight tracking
+    @State private var inFlightCoordKey: String?
+    @State private var authStatusAtLastFetch: Int?
 
     // Glass segmented control and map presentation
     fileprivate enum SegTab { case feed, map }
@@ -132,50 +136,76 @@ struct SwipeDeckView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                GlassSegmented(selection: $seg)
-                    .padding(.top, 16)
-                    .padding(.horizontal, 16)
-                
-                GeometryReader { geo in
-                    mainContentArea
-                }
+            contentView
+                .toolbar { toolbarContent }
+                .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+    
+    private var contentView: some View {
+        VStack(spacing: 0) {
+            GlassSegmented(selection: $seg)
+                .padding(.top, 16)
+                .padding(.horizontal, 16)
+            
+            GeometryReader { geo in
+                mainContentArea
             }
-            .toolbar { toolbarContent }
-            .navigationBarTitleDisplayMode(.inline)
-            .onAppear { handleViewAppear() }
-            // INIT: create ApiService and gate the first fetch
-            .task {
-                if api == nil { api = ApiService(supabaseService: svc) }
-                await maybeLoadFeed()
+        }
+        .onAppear { handleViewAppear() }
+        .task {
+            if api == nil { api = ApiService(supabaseService: svc) }
+            await maybeLoadFeed()
+        }
+        .onChange(of: svc.isAuthenticated) { _, _ in
+            Task { await maybeLoadFeed() }
+        }
+        .onChange(of: svc.session) { _, _ in
+            Task { await maybeLoadFeed() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("LocationAuthorizationChanged"))) { _ in
+            handleLocationAuthChange()
+        }
+        .onChange(of: seg) { oldValue, newValue in
+            handleSegmentChange(newValue)
+        }
+        .onChange(of: showFeedMap) { oldValue, newValue in
+            handleMapVisibilityChange(newValue)
+        }
+        .overlay { errorOverlay }
+        .overlay { successOverlay }
+        .fullScreenCover(isPresented: $showUploadForm, onDismiss: { handleUploadFormDismiss() }) {
+            uploadFormView
+        }
+        .fullScreenCover(isPresented: $showFeedMap) {
+            feedMapView
+        }
+    }
+    
+    private func handleLocationAuthChange() {
+        Task {
+            let currentAuth = LocationService.shared.mgr.authorizationStatus.rawValue
+            let lastAuth = authStatusAtLastFetch ?? -1
+            if lastAuth != currentAuth && (currentAuth == 3 || currentAuth == 4) {
+                authStatusAtLastFetch = Int(currentAuth)
+                #if DEBUG
+                print("[FEED gate] auth changed to authorized → refetch")
+                #endif
+                await loadFeedWithOneShotLocation()
             }
-            // When auth flips ready, fire once
-            .onChange(of: svc.isAuthenticated) { _, _ in
-                Task { await maybeLoadFeed() }
-            }
-            // Observe session/token as well to avoid races
-            .onChange(of: svc.session) { _, _ in
-                Task { await maybeLoadFeed() }
-            }
-            .onChange(of: seg) { oldValue, newValue in
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
-                    showFeedMap = (newValue == .map)
-                }
-            }
-            .onChange(of: showFeedMap) { oldValue, newValue in
-                if !newValue {
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
-                        seg = .feed
-                    }
-                }
-            }
-            .overlay { errorOverlay }
-            .overlay { successOverlay }
-            .fullScreenCover(isPresented: $showUploadForm, onDismiss: { handleUploadFormDismiss() }) {
-                uploadFormView
-            }
-            .fullScreenCover(isPresented: $showFeedMap) {
-                feedMapView
+        }
+    }
+    
+    private func handleSegmentChange(_ newValue: SegTab) {
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+            showFeedMap = (newValue == .map)
+        }
+    }
+    
+    private func handleMapVisibilityChange(_ newValue: Bool) {
+        if !newValue {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                seg = .feed
             }
         }
     }
@@ -456,6 +486,9 @@ struct SwipeDeckView: View {
         
         dbg("ACTION", "reserve start \(post.id.prefix(8))")
         
+        // Haptic feedback for primary action (reserve button tap)
+        Haptics.play(.primaryAction)
+        
         isReserving = true
         deckState.isActing = true
         
@@ -479,6 +512,9 @@ struct SwipeDeckView: View {
             // Show success toast
             successMessage = "Reserved for 2h 🎉"
             showSuccess = true
+            
+            // Haptic feedback for successful reservation
+            Haptics.play(.success)
             
             isReserving = false
             deckState.isActing = false
@@ -513,6 +549,10 @@ struct SwipeDeckView: View {
             case .network:
                 errorMessage = "Can't reach the server right now. Please try again."
             }
+            
+            // Haptic feedback for reservation errors
+            Haptics.play(.error)
+            
             showError = true
             
         } catch {
@@ -522,6 +562,10 @@ struct SwipeDeckView: View {
             deckState.isActing = false
             
             errorMessage = "Couldn't reserve this item. Please try again."
+            
+            // Haptic feedback for generic error
+            Haptics.play(.error)
+            
             showError = true
         }
     }
@@ -552,12 +596,48 @@ struct SwipeDeckView: View {
     @MainActor
     private func fetchFeed(using location: CLLocation) async {
         guard let api else { return }
+        
+        let coord = location.coordinate
+        
+        // Gate: validate coordinate is usable
+        guard LocationReadiness.isUsable(coord) else {
+            #if DEBUG
+            print("[FEED gate] skip (reason=no-usable-location lat=\(coord.latitude) lng=\(coord.longitude))")
+            #endif
+            isLoading = false
+            return
+        }
+        
+        // Single-flight: check if already fetching this coordinate
+        let coordKey = LocationReadiness.cacheKey(coord)
+        if inFlightCoordKey == coordKey {
+            #if DEBUG
+            print("[FEED gate] skip (reason=already-in-flight key=\(coordKey))")
+            #endif
+            return
+        }
+        
+        inFlightCoordKey = coordKey
+        defer { inFlightCoordKey = nil }
 
         // This function now contains the core logic of the old `fetchFeedBridge`
         dismissedIds = HiddenPostsStore.shared.loadDismissed()
         reservedIds = HiddenPostsStore.shared.loadReserved()
 
         let userLocation = location.coordinate
+        
+        // Log coordinate source
+        let age = max(0, Date().timeIntervalSince(location.timestamp))
+        if age < 5.0 {
+            #if DEBUG
+            print("[FEED gate] using fresh coord=(\(userLocation.latitude),\(userLocation.longitude)) hdop=\(location.horizontalAccuracy)")
+            #endif
+        } else {
+            #if DEBUG
+            print("[FEED gate] using cached coord=(\(userLocation.latitude),\(userLocation.longitude)) age=\(String(format: "%.1f", age))s")
+            #endif
+        }
+        
         dbg("FEED", "request lat=\(userLocation.latitude) lng=\(userLocation.longitude) radius=10 limit=30")
 
         do {
@@ -612,26 +692,55 @@ struct SwipeDeckView: View {
         showError = false
         showAuthError = false
 
-        // Use async firstFix with timeout instead of polling
-        do {
-            let loc = try await LocationService.shared.firstFix(timeout: 2.5)
-            await fetchFeed(using: loc)
-            return
-        } catch {
-            // Fallback: prefer system last known (Core Location cache), otherwise neutral center (0,0)
-            if let cached = LocationService.shared.lastKnownFromSystem() {
+        // Try cached coordinate first (instant)
+        if let cached = LocationService.shared.lastKnownFromSystem() {
+            let coord = cached.coordinate
+            if LocationReadiness.isUsable(coord) {
                 let age = max(0, Date().timeIntervalSince(cached.timestamp))
                 #if DEBUG
-                print("[FEED] using fallback location (reason=no-fix, lat=\(cached.coordinate.latitude), lon=\(cached.coordinate.longitude), age=\(String(format: "%.1f", age))s)")
+                print("[FEED gate] using cached coord=(\(coord.latitude),\(coord.longitude)) age=\(String(format: "%.1f", age))s")
                 #endif
                 await fetchFeed(using: cached)
-            } else {
-                let neutral = CLLocation(latitude: 0, longitude: 0)
-                #if DEBUG
-                print("[FEED] using fallback location (reason=no-fix, lat=\(neutral.coordinate.latitude), lon=\(neutral.coordinate.longitude), age=n/a)")
-                #endif
-                await fetchFeed(using: neutral)
+                
+                // Optionally refetch with fresh fix in background if cache is old
+                if age > 60 {
+                    Task {
+                        do {
+                            let fresh = try await LocationService.shared.firstFix(timeout: 2.5)
+                            if LocationReadiness.isUsable(fresh.coordinate) {
+                                #if DEBUG
+                                print("[FEED gate] refreshing with fresh coord=(\(fresh.coordinate.latitude),\(fresh.coordinate.longitude))")
+                                #endif
+                                await fetchFeed(using: fresh)
+                            }
+                        } catch {
+                            // Silent fail - we already have cached data
+                        }
+                    }
+                }
+                return
             }
+        }
+        
+        // No cached coordinate - wait for fresh fix
+        do {
+            let loc = try await LocationService.shared.firstFix(timeout: 2.5)
+            if LocationReadiness.isUsable(loc.coordinate) {
+                await fetchFeed(using: loc)
+            } else {
+                #if DEBUG
+                print("[FEED gate] skip (reason=invalid-fix lat=\(loc.coordinate.latitude) lng=\(loc.coordinate.longitude))")
+                #endif
+                isLoading = false
+            }
+            return
+        } catch {
+            // No fix available - skip request
+            #if DEBUG
+            print("[FEED gate] skip (reason=no-usable-location error=\(error.localizedDescription))")
+            #endif
+            isLoading = false
+            // Don't show error - just show empty state
         }
     }
     
@@ -1017,6 +1126,13 @@ extension SwipeDeckView {
                         return
                     } catch {
                         latestError = error
+                        
+                        // Don't retry on cancellation or timeout
+                        if error.isCancellationLike {
+                            dbg("FEED", "map fetch cancelled/timeout - no retry")
+                            throw error
+                        }
+                        
                         dbg("FEED", "map fetch attempt \(attempt) failed: \(error.localizedDescription)")
                         if attempt < maxAttempts {
                             try? await Task.sleep(nanoseconds: 400_000_000)
@@ -1084,4 +1200,3 @@ extension SwipeDeckView {
         }
     }
 }
-

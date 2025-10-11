@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 import MapKit
 import PhotosUI
 import CoreLocation
@@ -42,8 +43,10 @@ struct UploadFindView: View {
     // Submit state for UX
     private enum SubmitState { case idle, uploading, success, error }
     @State private var submitState: SubmitState = .idle
+    @State private var isSubmitting = false
     @State private var showToast = false
     @State private var toastText = ""
+    @State private var descHeight: CGFloat = 56
 
     // Layout constants
     private let sidePadding: CGFloat = 20
@@ -78,7 +81,6 @@ struct UploadFindView: View {
         }
         .fullScreenCover(isPresented: $showCamera) { cameraView }
         .sheet(isPresented: $showPicker) { photoPickerView }
-        .overlay(alignment: .bottom) { successToastOverlay }
     }
 
     // MARK: - Subviews
@@ -118,27 +120,69 @@ struct UploadFindView: View {
             .padding(.top, 16)
 
             if vm.wantsDescription {
-                helper("Write up to 100 characters (optional).")
+                if vm.descriptionText.count > 100 {
+                    validationHint("Description can't be more than 100 characters.")
+                } else {
+                    helper("Write up to 100 characters (optional).")
+                }
                 VStack(spacing: 8) {
-                    TextField("Add details about the product", text: $vm.descriptionText, axis: .vertical)
-                        .textInputAutocapitalization(.sentences)
-                        .lineLimit(1...4)
-                        .padding(12)
-                        .frame(maxWidth: .infinity)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 99))
-                        .overlay(RoundedRectangle(cornerRadius: 99).stroke(AppTheme.ColorToken.brandDark.opacity(0.20), lineWidth: 1))
-                    
+                    ZStack(alignment: .topLeading) {
+                        // Placeholder
+                        if vm.descriptionText.isEmpty {
+                            Text("Add details about the product")
+                                .foregroundStyle(AppTheme.ColorToken.mutedGray)
+                                .padding(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
+                                .allowsHitTesting(false)
+                        }
+
+                        // Multiline auto-growing editor
+                        TextEditor(text: $vm.descriptionText)
+                            .textInputAutocapitalization(.sentences)
+                            .frame(minHeight: 56, maxHeight: min(descHeight, 150))
+                            .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                            .scrollIndicators(.visible)
+                            .scrollDisabled(descHeight < 150)
+                    }
+                    .background(
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .fill(Color(.systemBackground))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .stroke(AppTheme.ColorToken.brandDark.opacity(0.20), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    .animation(.easeInOut(duration: 0.15), value: descHeight)
+                    .onChange(of: vm.descriptionText) { _ in /* trigger height measure */ }
+                    // Hidden measurer to compute dynamic height
+                    Text(vm.descriptionText.isEmpty ? " " : vm.descriptionText)
+                        .font(.body)
+                        .lineLimit(nil)
+                        .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear
+                                    .onAppear { descHeight = max(56, min(proxy.size.height + 24, 150)) }
+                                    .onChange(of: vm.descriptionText) { _ in
+                                        descHeight = max(56, min(proxy.size.height + 24, 150))
+                                    }
+                            }
+                        )
+                        .hidden()
+
                     HStack {
                         Spacer()
                         Button("Done") {
                             UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                         }
                         .font(.subheadline.weight(.semibold))
-                        .foregroundColor(AppTheme.ColorToken.brandDark)  // Updated to theme
+                        .foregroundColor(vm.descriptionText.count > 100 ? .gray : AppTheme.ColorToken.brandDark)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
-                        .background(AppTheme.ColorToken.brandDark.opacity(0.1))  // Updated to theme
+                        .background((vm.descriptionText.count > 100 ? Color.gray.opacity(0.2) : AppTheme.ColorToken.brandDark.opacity(0.1)))
                         .clipShape(Capsule())
+                        .disabled(vm.descriptionText.count > 100)
                     }
                 }
             }
@@ -167,49 +211,45 @@ struct UploadFindView: View {
                 validationText = "Please complete required fields."
                 return
             }
-            Task {
-                // Require auth before starting upload
+            guard !isSubmitting else { return }
+            isSubmitting = true
+            Task { @MainActor in
+                defer { isSubmitting = false }
                 guard svc.hasAuthToken else {
                     showValidation = true
                     validationText = "You’re not signed in. Please sign in and try again."
                     submitState = .error
-                    toastText = "You’re not signed in. Please sign in and try again."
-                    showToast = true
-                    try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    showToast = false
+                    Haptics.play(.error)
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
                     submitState = .idle
                     return
                 }
                 submitState = .uploading
                 do {
-                    try await uploadWithRetry()
+                    let postId = try await uploadWithRetry()
                     draftStore.clearDraft()
-                    // Success: flash green + toast, then route to Feed
                     submitState = .success
-                    toastText = "Your find was shared!"
-                    showToast = true
-                    showSuccessToast()
-                    try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    showToast = false
+                    Haptics.play(.success)
+                    #if DEBUG
+                    print("[SUBMIT OK] post_id=\(postId)")
+                    #endif
+                    try? await Task.sleep(nanoseconds: 1_300_000_000)
+                    submitState = .idle
                     router.selectedTab = .feed
                     dismiss()
                 } catch UploadError.authenticationFailed {
                     showValidation = true
                     validationText = "Authentication failed. Please sign in again."
                     submitState = .error
-                    toastText = "Authentication failed."
-                    showToast = true
-                    try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    showToast = false
+                    Haptics.play(.error)
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
                     submitState = .idle
                 } catch UploadError.notAuthenticated {
                     showValidation = true
-                    validationText = "You’re not signed in. Please sign in and try again."
+                    validationText = "You're not signed in. Please sign in and try again."
                     submitState = .error
-                    toastText = "You’re not signed in. Please sign in and try again."
-                    showToast = true
-                    try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    showToast = false
+                    Haptics.play(.error)
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
                     submitState = .idle
                 } catch UploadError.imageProcessingFailed {
                     #if DEBUG
@@ -218,10 +258,23 @@ struct UploadFindView: View {
                     showValidation = true
                     validationText = "Image upload failed. Please try different photos."
                     submitState = .error
-                    toastText = "Image upload failed."
-                    showToast = true
-                    try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    showToast = false
+                    Haptics.play(.error)
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    submitState = .idle
+                } catch let apiError as ApiServiceError {
+                    #if DEBUG
+                    print("[CATCH] ApiServiceError:", apiError.localizedDescription)
+                    #endif
+                    showValidation = true
+                    submitState = .error
+                    switch apiError {
+                    case .serverError:
+                        validationText = "Couldn't create post. Please check location and category and try again."
+                    default:
+                        validationText = "Couldn't upload your item. Please try again."
+                    }
+                    Haptics.play(.error)
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
                     submitState = .idle
                 } catch {
                     #if DEBUG
@@ -231,34 +284,51 @@ struct UploadFindView: View {
                     showValidation = true
                     validationText = "Couldn't upload your item. Please try again."
                     submitState = .error
-                    toastText = "Couldn't upload your item. Please try again."
-                    showToast = true
-                    try? await Task.sleep(nanoseconds: 1_200_000_000)
-                    showToast = false
+                    Haptics.play(.error)
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
                     submitState = .idle
                 }
             }
         } label: {
             HStack(spacing: 8) {
-                if submitState == .uploading {
-                    ProgressView().tint(AppTheme.ColorToken.primary)
-                }
-                Text("Share Your Find")
+                if submitState == .uploading { ProgressView().tint(AppTheme.ColorToken.primary) }
+                Text(labelTextForSubmitState())
             }
             .font(AppFont.label)
-            .foregroundColor(AppColor.text)
+            .foregroundColor(submitState == .success ? .white : AppColor.text)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 14)
             .background {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(submitState == .success ? AppColor.darkGreen : AppColor.cta)
+                    .fill(backgroundColorForSubmitState())
             }
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(!svc.hasAuthToken || submitState == .uploading)
+        .disabled(!svc.hasAuthToken || isSubmitting)
         .opacity(svc.hasAuthToken ? 1.0 : 0.5)
         .padding(.top, 8)
+    }
+
+    // Button state helpers
+    private func labelTextForSubmitState() -> String {
+        switch submitState {
+        case .idle: return "Share Your Find"
+        case .uploading: return "Sharing…"
+        case .success: return "Your find was shared!"
+        case .error: return "Try again"
+        }
+    }
+
+    private func backgroundColorForSubmitState() -> Color {
+        switch submitState {
+        case .success:
+            return AppTheme.ColorToken.primary
+        case .error:
+            return .orange
+        case .idle, .uploading:
+            return AppColor.cta
+        }
     }
 
     // MARK: - Helper Views and Logic
@@ -345,100 +415,87 @@ struct UploadFindView: View {
     // MARK: - Submit Logic
     
     @MainActor
-    private func submitWithDraftStore() async throws {
-        guard let cond = vm.condition, let m = vm.mode, canSubmit else { 
+    private func submitWithDraftStore() async throws -> String {
+        guard let cond = vm.condition, let m = vm.mode, canSubmit else {
             throw UploadError.invalidData
         }
-        
-        // Generate a single draftId used for storage keys
-        let draftId = UUID().uuidString
-        
-        #if DEBUG
-        print("[SUBMIT START] draftId:", draftId)
-        print("[SUBMIT START] mode:", m.backendValue)
-        print("[SUBMIT START] images count:", draftStore.photos.count)
-        print("[SUBMIT START] hasAuthToken:", svc.hasAuthToken)
-        print("[SUBMIT START] token length:", svc.session?.accessToken.count ?? 0)
-        #endif
-        
-        // First upload images to storage and get URLs
-        let imageURLs = try await uploadImagesToStorage(draftId: draftId)
-        
-        // Convert to PostImage format
-        let postImages = imageURLs.enumerated().map { index, url in
-            PostImage(url: url, orderIndex: index)
-        }
-        
-        // Build location arrays [lng, lat]
-        let exactLocationArray: [Double]?
-        let approxLocationArray: [Double]?
-        
-        if let coord = vm.currentCoordinate {
-            if m == .street {
-                exactLocationArray = [coord.longitude, coord.latitude]
-                approxLocationArray = nil
-            } else {
-                let a = approx(coord, meters: 500)
-                exactLocationArray = nil
-                approxLocationArray = [a.longitude, a.latitude]
-            }
-        } else {
-            exactLocationArray = nil
-            approxLocationArray = nil
-        }
-        
-        // Create PostCreate object
-        let postCreate = PostCreate(
-            title: "Trash item", // You might want to make this configurable
-            description: vm.descriptionText.isEmpty ? nil : vm.descriptionText,
-            category: "general", // Default category
-            condition: ItemCondition(rawValue: cond.backendValue) ?? .good,
-            mode: ItemMode(rawValue: m.backendValue) ?? .street,
-            images: postImages,
-            exactLocation: exactLocationArray,
-            approxLocation: approxLocationArray
-        )
-        
-        // Use ApiService to create the post
-        let api = ApiService(supabaseService: svc)
-        #if DEBUG
-        print("[UPLOAD COMPLETE] images:", postImages.map { $0.url })
-        print("[POST payload] title:", postCreate.title)
-        print("[POST payload] mode:", postCreate.mode.rawValue)
-        print("[POST payload] condition:", postCreate.condition.rawValue)
-        print("[POST payload] images count:", postCreate.images.count)
-        print("[POST payload] exactLocation:", postCreate.exactLocation ?? "nil")
-        print("[POST payload] approxLocation:", postCreate.approxLocation ?? "nil")
-        #endif
-        do {
-            let postId = try await fetchWithRetry(svc: svc) {
-                try await api.createPost(postCreate)
-            }
-            #if DEBUG
-            print("[API OK] /post returned postId:", postId)
-            #endif
-        } catch {
-            #if DEBUG
-            print("[API ERR] /post:", error.localizedDescription)
-            print("[API ERR] error type:", type(of: error))
-            if let apiError = error as? ApiServiceError {
-                print("[API ERR] ApiServiceError:", apiError.errorDescription ?? "unknown")
-            }
-            #endif
-            throw error
-        }
-    }
-    
-    private func uploadImagesToStorage(draftId: String) async throws -> [URL] {
-        // 0) Require an authenticated session (for user id + RLS)
+
+        let postId = UUID()
         let session = try await svc.client.auth.session
         let userId = session.user.id
         let token = session.accessToken
-        if token.isEmpty { throw UploadError.notAuthenticated }
+        guard !token.isEmpty else { throw UploadError.notAuthenticated }
 
-        // 2) Upload each photo and collect URLs
+        #if DEBUG
+        print("[SUBMIT START] postId:", postId.uuidString)
+        print("[SUBMIT START] mode:", m.backendValue)
+        print("[SUBMIT START] images count:", draftStore.photos.count)
+        print("[SUBMIT START] hasAuthToken:", svc.hasAuthToken)
+        print("[SUBMIT START] token length:", token.count)
+        print("[SUBMIT START] userId:", userId)
+        #endif
+
+        let imageURLs = try await uploadImagesToStorage(userId: userId, postId: postId)
+        let uniqueURLs = Array(NSOrderedSet(array: imageURLs)).compactMap { $0 as? URL }
+        guard !uniqueURLs.isEmpty else { throw UploadError.imageProcessingFailed }
+
+        let images = uniqueURLs.enumerated().map { index, url in
+            PostImagePayload(url: url.absoluteString, order_index: index)
+        }
+
+        let modeValue = m.backendValue
+        let conditionValue = cond.backendValue
+
+        var exactWKT: String? = nil
+        var approxWKT: String? = nil
+
+        if let coord = vm.currentCoordinate {
+            if modeValue == "street" {
+                exactWKT = wktPoint(lng: coord.longitude, lat: coord.latitude)
+            } else {
+                let blurred = approx(coord, meters: 500)
+                approxWKT = wktPoint(lng: blurred.longitude, lat: blurred.latitude)
+            }
+        }
+
+        let payload = PostCreatePayload(
+            title: "Trash item",
+            description: vm.descriptionText.nilIfBlank(),
+            category: "other",
+            condition: conditionValue,
+            mode: modeValue,
+            images: images,
+            exact_location: exactWKT,
+            approx_location: approxWKT
+        )
+
+        let api = ApiService(supabaseService: svc)
+        #if DEBUG
+        print("[UPLOAD COMPLETE] urls:", uniqueURLs.map { $0.absoluteString })
+        print("[POST payload] mode:", modeValue)
+        print("[POST payload] condition:", conditionValue)
+        print("[POST payload] images count:", images.count)
+        print("[POST payload] exact_location:", exactWKT ?? "nil")
+        print("[POST payload] approx_location:", approxWKT ?? "nil")
+        #endif
+
+        let createdPostId = try await fetchWithRetry(svc: svc) {
+            try await api.createPost(token: token, payload: payload)
+        }
+
+        if let coord = vm.currentCoordinate ?? loc.userLocation?.coordinate {
+            await svc.fetchFeed(near: coord, mode: modeValue)
+        }
+
+        return createdPostId
+    }
+    
+    private func uploadImagesToStorage(userId: UUID, postId: UUID) async throws -> [URL] {
         var urls: [URL] = []
         urls.reserveCapacity(draftStore.photos.count)
+
+        let bucket = "item-photos"
+        let options = ImageStorage.buildJPEGFileOptions()
 
         for (index, image) in draftStore.photos.enumerated() {
             // Convert UIImage -> JPEG data
@@ -449,18 +506,16 @@ struct UploadFindView: View {
                 throw UploadError.imageProcessingFailed
             }
 
-            // Path: posts/<userId>/<draftId>/<index>.jpg
-            let path = "posts/\(userId)/\(draftId)/\(index).jpg"
+            let path = ImageStorage.buildPostImagePath(userId: userId, postId: postId, index: index)
 
-            // 3) Upload to your Supabase Storage bucket "item-photos"
-            //    upsert:true so re-tries don't fail if same path is used
             do {
                 try await svc.client.storage
-                    .from("item-photos")
+                    .from(bucket)
                     .upload(path: path,
                             file: data,
-                            options: .init(cacheControl: "3600", contentType: "image/jpeg", upsert: true))
+                            options: options)
                 #if DEBUG
+                print("[UPLOAD KEY] \(path)")
                 print("[UPLOAD OK]", path)
                 #endif
             } catch {
@@ -470,9 +525,8 @@ struct UploadFindView: View {
                 throw error
             }
 
-            // 4) Public bucket: derive URL via SDK and skip verification
             let publicURL = try svc.client.storage
-                .from("item-photos")
+                .from(bucket)
                 .getPublicURL(path: path)
             #if DEBUG
             print("[UPLOAD URL]", publicURL.absoluteString)
@@ -483,7 +537,7 @@ struct UploadFindView: View {
         return urls
     }
     
-    private func uploadWithRetry() async throws {
+    private func uploadWithRetry() async throws -> String {
         try await submitWithDraftStore()
     }
     
@@ -646,7 +700,7 @@ final class UploadFindViewModel: ObservableObject {
     @Published var condition: Condition? = .needsFixing  // default to 'Needs Fixing'
     @Published var mode: PickupMode? = .street           // default selected (street)
     @Published var wantsDescription = false
-    @Published var descriptionText = "" { didSet { if descriptionText.count > 100 { descriptionText = String(descriptionText.prefix(100)) } } }
+    @Published var descriptionText = ""
 
     // Map state
     @Published var camera: MapCameraPosition = .region(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
@@ -756,7 +810,7 @@ protocol FindUploader {
 }
 
 
-// Note: Using PostCreate from ApiService.swift as single source of truth
+// Note: Using PostCreatePayload from ApiService.swift as single source of truth
 
 // Helper function for 500m coordinate rounding
 func approx(_ c: CLLocationCoordinate2D, meters: Double = 500) -> CLLocationCoordinate2D {
@@ -769,6 +823,13 @@ func approx(_ c: CLLocationCoordinate2D, meters: Double = 500) -> CLLocationCoor
     return CLLocationCoordinate2D(latitude: lat, longitude: lon)
 }
 
+// Helper to format a WKT POINT string with longitude first, then latitude
+func wktPoint(lng: Double, lat: Double) -> String {
+    let lonStr = String(format: "%.6f", lng)
+    let latStr = String(format: "%.6f", lat)
+    return "POINT(\(lonStr) \(latStr))"
+}
+
 // MARK: - Supabase uploader with proper backend integration
 
 struct SupabaseUploader: FindUploader {
@@ -778,10 +839,10 @@ struct SupabaseUploader: FindUploader {
 
     func uploadPostDraft(_ draft: PostDraft) async throws {
         // Step 1: Upload each image to Supabase Storage
-        var uploadedImages: [PostImage] = []
+        var uploadedImages: [PostImagePayload] = []
 
         // Generate a single postId used for BOTH storage keys and API payload
-        let postId = UUID().uuidString
+        let postId = UUID()
 
         for (index, imageRecord) in draft.images.enumerated() {
             guard let image = imageRecord.localImage else { continue }
@@ -791,30 +852,30 @@ struct SupabaseUploader: FindUploader {
             let publicURL = try await uploadImageToSupabaseStorage(image, postId: postId, index: index)
 
             uploadedImages.append(
-                PostImage(url: URL(string: publicURL)!, orderIndex: index)
+                PostImagePayload(url: publicURL, order_index: index)
             )
         }
 
-        // Step 2: Prepare location data as arrays
-        let (exactArray, approxArray) = prepareLocationData(draft)
+        // Step 2: Prepare location data (WKT strings)
+        let (exactPoint, approxPoint) = prepareLocationData(draft)
 
-        // Step 3: Create PostCreate payload using arrays and the same postId
-        let postCreate = PostCreate(
+        // Step 3: Create PostCreate payload using the same postId
+        let postCreate = PostCreatePayload(
             title: "Free item",
-            description: draft.description,
+            description: draft.description?.nilIfBlank(),
             category: "other",
-            condition: ItemCondition(rawValue: draft.condition.backendValue)!,
-            mode: ItemMode(rawValue: draft.mode.backendValue)!,
+            condition: draft.condition.backendValue,
+            mode: draft.mode.backendValue,
             images: uploadedImages,
-            exactLocation: exactArray,
-            approxLocation: approxArray
+            exact_location: exactPoint,
+            approx_location: approxPoint
         )
 
         // Step 4: POST to your Flask backend
         try await postToBackend(postCreate)
     }
     
-    private func uploadImageToSupabaseStorage(_ image: UIImage, postId: String, index: Int) async throws -> String {
+    private func uploadImageToSupabaseStorage(_ image: UIImage, postId: UUID, index: Int) async throws -> String {
         // 1) Resize and compress image
         let resizedImage = resizeImage(image, maxWidth: 1600)
         guard let data = resizedImage.jpegData(compressionQuality: 0.8), data.count > 0 else {
@@ -825,21 +886,22 @@ struct SupabaseUploader: FindUploader {
         let session = try await supabaseService.client.auth.session
         let userId = session.user.id
         if session.accessToken.isEmpty { throw UploadError.notAuthenticated }
-        
-        // 3) Generate storage path: posts/<userId>/<postId>/<index>.jpg
-        let filename = "posts/\(userId)/\(postId)/\(index).jpg"
-        
-        // 4) Upload to Supabase Storage bucket "post-content"
+
+        let bucket = "item-photos"
+        let options = ImageStorage.buildJPEGFileOptions()
+        let filename = ImageStorage.buildPostImagePath(userId: userId, postId: postId, index: index)
+
         _ = try await supabaseService.client.storage
-            .from("item-photos")
-            .upload(path: filename, file: data, options: .init(cacheControl: "3600", contentType: "image/jpeg", upsert: true))
+            .from(bucket)
+            .upload(path: filename, file: data, options: options)
         #if DEBUG
+        print("[UPLOAD KEY] \(filename)")
         print("[UPLOAD OK]", filename)
         #endif
         
         // 5) Public bucket: get public URL and skip verification
         let publicURL = try supabaseService.client.storage
-            .from("item-photos")
+            .from(bucket)
             .getPublicURL(path: filename)
         
         return publicURL.absoluteString
@@ -864,19 +926,18 @@ struct SupabaseUploader: FindUploader {
         return resizedImage ?? image
     }
     
-    private func prepareLocationData(_ draft: PostDraft) -> (exact: [Double]?, approx: [Double]?) {
+    private func prepareLocationData(_ draft: PostDraft) -> (exact: String?, approx: String?) {
         guard let c = draft.coordinate else { return (nil, nil) }
         switch draft.mode {
         case .street:
-            // Array format: [lng, lat]
-            return (exact: [c.longitude, c.latitude], approx: nil)
+            return (exact: wktPoint(lng: c.longitude, lat: c.latitude), approx: nil)
         case .home:
             let a = approx(c, meters: 500)
-            return (exact: nil, approx: [a.longitude, a.latitude])
+            return (exact: nil, approx: wktPoint(lng: a.longitude, lat: a.latitude))
         }
     }
     
-    private func postToBackend(_ request: PostCreate) async throws {
+    private func postToBackend(_ request: PostCreatePayload) async throws {
         guard let url = URL(string: "\(backendAPIURL)/post") else {
             throw URLError(.badURL)
         }
@@ -884,6 +945,7 @@ struct SupabaseUploader: FindUploader {
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "POST"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         urlRequest.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
         
         let jsonData = try JSONEncoder().encode(request)
@@ -1256,6 +1318,12 @@ private struct LibraryPicker: View {
     }
 }
 
+extension String {
+    func nilIfBlank() -> String? {
+        trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
+    }
+}
+
 private extension Array {
     subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
@@ -1264,5 +1332,4 @@ private extension Array {
 
 // Keep old references working
 typealias AddTrashFlow = AddTrashView
-
 

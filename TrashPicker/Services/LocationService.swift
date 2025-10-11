@@ -17,9 +17,14 @@ private func dbg(_ tag: String, _ items: Any...) {
 final class LocationService: NSObject, ObservableObject, CLLocationManagerDelegate {
     static let shared = LocationService()
 
-    private let mgr = CLLocationManager()
+    let mgr = CLLocationManager()
     @Published private(set) var lastFix: CLLocation?
     private var firstFixContinuation: CheckedContinuation<CLLocation, Error>?
+    
+    // Persistence keys
+    private let lastKnownLatKey = "LocationService.lastKnownLat"
+    private let lastKnownLngKey = "LocationService.lastKnownLng"
+    private let lastKnownTimestampKey = "LocationService.lastKnownTimestamp"
 
     override init() {
         super.init()
@@ -27,6 +32,12 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         mgr.desiredAccuracy = kCLLocationAccuracyHundredMeters // Default to cheap & fast
         mgr.distanceFilter = 100 // meters
         mgr.pausesLocationUpdatesAutomatically = true
+        
+        // Restore last known coordinate from persistence
+        if let cached = loadLastKnownCoordinate() {
+            lastFix = cached
+            dbg("LOC", "Restored cached coordinate: lat=\(cached.coordinate.latitude), lng=\(cached.coordinate.longitude)")
+        }
     }
 
     func requestWhenInUseIfNeeded() {
@@ -40,6 +51,11 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     func lastKnownFromSystem() -> CLLocation? {
         if let cached = lastFix { return cached }
         return mgr.location
+    }
+    
+    /// Get last known coordinate (synchronous, for immediate use)
+    var lastKnownCoordinate: CLLocationCoordinate2D? {
+        return lastKnownFromSystem()?.coordinate
     }
 
     /// One-shot: asks CoreLocation for the *current* fix, then stops.
@@ -99,8 +115,16 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     // MARK: - Delegate
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         if let newLocation = locations.last {
-            lastFix = newLocation
-            dbg("APP", "LocationService: updated location to \(newLocation.coordinate)")
+            // Only persist valid, non-zero coordinates
+            let coord = newLocation.coordinate
+            if CLLocationCoordinate2DIsValid(coord) && !(coord.latitude == 0.0 && coord.longitude == 0.0) {
+                lastFix = newLocation
+                saveLastKnownCoordinate(newLocation)
+                dbg("APP", "LocationService: updated location to \(coord)")
+            } else {
+                dbg("APP", "LocationService: rejected invalid/zero coordinate")
+            }
+            
             // If someone is awaiting the first fix, deliver it once
             if let cont = firstFixContinuation {
                 firstFixContinuation = nil
@@ -125,6 +149,38 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         dbg("APP", "LocationService: authorization status changed to \(manager.authorizationStatus.rawValue)")
+        
+        // Notify observers of authorization change
+        NotificationCenter.default.post(name: Notification.Name("LocationAuthorizationChanged"), object: nil)
+    }
+    
+    // MARK: - Persistence
+    
+    private func saveLastKnownCoordinate(_ location: CLLocation) {
+        let coord = location.coordinate
+        UserDefaults.standard.set(coord.latitude, forKey: lastKnownLatKey)
+        UserDefaults.standard.set(coord.longitude, forKey: lastKnownLngKey)
+        UserDefaults.standard.set(location.timestamp.timeIntervalSince1970, forKey: lastKnownTimestampKey)
+    }
+    
+    private func loadLastKnownCoordinate() -> CLLocation? {
+        guard UserDefaults.standard.object(forKey: lastKnownLatKey) != nil else {
+            return nil
+        }
+        
+        let lat = UserDefaults.standard.double(forKey: lastKnownLatKey)
+        let lng = UserDefaults.standard.double(forKey: lastKnownLngKey)
+        let timestamp = UserDefaults.standard.double(forKey: lastKnownTimestampKey)
+        
+        let coord = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+        
+        // Validate before returning
+        guard CLLocationCoordinate2DIsValid(coord) && !(lat == 0.0 && lng == 0.0) else {
+            return nil
+        }
+        
+        let date = Date(timeIntervalSince1970: timestamp)
+        return CLLocation(coordinate: coord, altitude: 0, horizontalAccuracy: 100, verticalAccuracy: -1, timestamp: date)
     }
 }
 
