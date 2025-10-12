@@ -155,7 +155,14 @@ struct FeedCard: View {
         if let ckItem = item as? CKTrashItem {
             return nil // CKTrashItem doesn't have owner info
         } else if let post = item as? Post {
-            return post.owner?.firstName
+            return post.owner?.fullName
+        }
+        return nil
+    }
+    
+    private var itemOwnerAvatarUrl: URL? {
+        if let post = item as? Post {
+            return post.owner?.avatarUrl
         }
         return nil
     }
@@ -164,7 +171,7 @@ struct FeedCard: View {
         if let ckItem = item as? CKTrashItem {
             return ckItem.interestedCount
         } else if let post = item as? Post {
-            return nil // Post doesn't have interested count
+            return post.owner?.pickedCount
         }
         return nil
     }
@@ -288,7 +295,9 @@ struct FeedCard: View {
         .gesture(mainDragGesture())
         .onReceive(timer) { _ in currentTime = Date() }
         .overlay(reservingOverlayView())
-        .overlay(detailOverlayView())
+        .fullScreenCover(isPresented: $showDetailOverlay) {
+            expandedCardView()
+        }
     }
 
     // MARK: - Sections
@@ -332,28 +341,22 @@ struct FeedCard: View {
     @ViewBuilder
     private func tapZonesView() -> some View {
         HStack(spacing: 0) {
-            // Left 40% - previous photo
+            // Left ~60% - previous photo (NO expand)
             Color.clear
-                .frame(width: cardWidth * 0.4)
+                .frame(maxWidth: .infinity)
                 .contentShape(Rectangle())
                 .onTapGesture {
                     previousPhoto()
-                    showDetailOverlay = true
+                    // Do NOT expand
                 }
 
-            // Middle 20% - expand
-            Color.clear
-                .frame(width: cardWidth * 0.2)
-                .contentShape(Rectangle())
-                .onTapGesture { showDetailOverlay = true }
-
-            // Right 40% - next photo
+            // Right 40% - next photo (NO expand)
             Color.clear
                 .frame(width: cardWidth * 0.4)
                 .contentShape(Rectangle())
                 .onTapGesture {
                     nextPhoto()
-                    showDetailOverlay = true
+                    // Do NOT expand
                 }
         }
     }
@@ -407,6 +410,11 @@ struct FeedCard: View {
                 .background(Color(hex: "#B4DD4E"))
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .accessibilityLabel("Condition: \(conditionDisplayText)")
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // Tapping the info bar expands the card
+            showDetailOverlay = true
         }
     }
 
@@ -476,48 +484,50 @@ struct FeedCard: View {
 
     @ViewBuilder
     private func detailOverlayView() -> some View {
-        Group {
-            if showDetailOverlay {
-                ZStack {
-                    // Backdrop
-                    Color.black.opacity(0.35)
-                        .ignoresSafeArea(.all)
-                        .onTapGesture { showDetailOverlay = false }
-                        .zIndex(1)
-
-                    // Big card overlay
-                    BigCardOverlay(
-                        images: itemImageURLs.map { $0.absoluteString },
-                        primaryInfo: feedPrimaryInfo,
-                        statusInfo: timeAgoString.isEmpty ? "" : "Posted \(timeAgoString)",
-                        statusColor: AppTheme.ColorToken.mutedGray,
-                        description: itemDescription,
-                        mode: itemMode?.lowercased() == "street" ? .street : .home,
-                        exactLocation: itemCoordinate,
-                        ownerName: itemOwnerName ?? "Anonymous User",
-                        memberSince: itemCreatedAt,
-                        pickupsCount: itemInterestedCount,
-                        variant: .feed,
-                        onDismiss: {
-                            showDetailOverlay = false
-                        },
-                        onPrimaryAction: {
-                            showDetailOverlay = false
-                            onReserve()
-                        },
-                        onSecondaryAction: {
-                            showDetailOverlay = false
-                            onPass()
-                        },
-                        onTertiaryAction: nil
-                    )
-                    .zIndex(2)
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showDetailOverlay)
-            }
+        // Empty - overlay is now handled at parent level
+        EmptyView()
+    }
+    
+    @ViewBuilder
+    private func expandedCardView() -> some View {
+        ZStack {
+            // Backdrop with blur effect
+            Color.black.opacity(0.25)
+                .background(.ultraThinMaterial)
+                .ignoresSafeArea()
+                .blur(radius: 10)
+                .onTapGesture { showDetailOverlay = false }
+            
+            // Big card overlay
+            BigCardOverlay(
+                images: itemImageURLs.map { $0.absoluteString },
+                primaryInfo: feedPrimaryInfo,
+                statusInfo: timeAgoString.isEmpty ? "" : "Posted \(timeAgoString)",
+                statusColor: Color(hex: "#00513F"),
+                description: itemDescription,
+                mode: itemMode?.lowercased() == "street" ? .street : .home,
+                exactLocation: itemCoordinate,
+                ownerName: itemOwnerName ?? "Anonymous User",
+                ownerAvatarUrl: itemOwnerAvatarUrl,
+                memberSince: itemCreatedAt,
+                pickupsCount: itemInterestedCount,
+                variant: .feed,
+                onDismiss: {
+                    showDetailOverlay = false
+                },
+                onPrimaryAction: {
+                    showDetailOverlay = false
+                    onReserve()
+                },
+                onSecondaryAction: {
+                    showDetailOverlay = false
+                    onPass()
+                },
+                onTertiaryAction: nil
+            )
         }
     }
+    
     // MARK: - Actions
     // Actions are now handled by parent SwipeDeckView
 

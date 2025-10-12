@@ -21,6 +21,7 @@ struct BigCardOverlay: View {
     let mode: LocationMode
     let exactLocation: CLLocationCoordinate2D?
     let ownerName: String
+    let ownerAvatarUrl: URL?
     let memberSince: Date?
     let pickupsCount: Int?
     let variant: Variant
@@ -61,40 +62,51 @@ struct BigCardOverlay: View {
     }
     
     var body: some View {
-        GeometryReader { geometry in
-            let cardWidth = min(geometry.size.width * overlayScale, 600)
-            let cardHeight = geometry.size.height * overlayScale
-            let imageHeight: CGFloat = geometry.size.height > 800 ? 400 : 360
+        GeometryReader { outerGeometry in
+            let cardWidth = min(outerGeometry.size.width * 0.92, 600)
+            let isSmall = outerGeometry.size.height < 700
+            let cardHeight = outerGeometry.size.height * (isSmall ? 0.82 : 0.85)
             
-            VStack(spacing: 0) {
-                // Image carousel - edge to edge with card radius on top
-                imageCarousel(height: imageHeight)
+            // Exact 50/50 split for image/details
+            GeometryReader { innerGeometry in
+                let imageHeight = floor(innerGeometry.size.height * 0.5)
+                let detailsHeight = innerGeometry.size.height - imageHeight
                 
-                // Content area - scrollable
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        // Meta block
-                        metaSection
-                        
-                        // Optional description
-                        if let description = description, !description.isEmpty {
-                            descriptionSection(description)
+                VStack(spacing: 0) {
+                    // Image carousel - non-cropping, rounded top corners
+                    imageCarousel(height: imageHeight)
+                        .frame(height: imageHeight)
+                    
+                    // Content area - NOT scrollable overall
+                    VStack(spacing: 0) {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 20) {
+                                // Meta block
+                                metaSection
+                                
+                                // Optional description
+                                if let description = description, !description.isEmpty {
+                                    descriptionSection(description)
+                                }
+                                
+                                // Location or Shared By
+                                locationSection
+                                sharedBySection
+                            }
+                            .padding(.horizontal, 24)
+                            .padding(.top, 16)
+                            .padding(.bottom, 8)
                         }
+                        .frame(maxHeight: .infinity)
                         
-                        // Location section
-                        locationSection
-                        
-                        // Shared by section
-                        sharedBySection
+                        // Buttons row - pinned to bottom (84pt total with padding)
+                        buttonsSection
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 16)
+                            .background(Color(.systemBackground))
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 16)
+                    .frame(height: detailsHeight)
                 }
-                
-                // Buttons row - pinned to bottom
-                buttonsSection
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 16)
             }
             .frame(width: cardWidth, height: cardHeight)
             .background(Color(.systemBackground))
@@ -119,24 +131,7 @@ struct BigCardOverlay: View {
                         }
                     }
             )
-            .overlay(
-                // Close button
-                VStack {
-                    HStack {
-                        Spacer()
-                        Button(action: onDismiss) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundColor(primaryColor)
-                                .frame(width: 36, height: 36)
-                                .background(primaryColor.opacity(0.12), in: Circle())
-                        }
-                        .padding(.top, 18)
-                        .padding(.trailing, 16)
-                    }
-                    Spacer()
-                }
-            )
+            // No close button - dismiss by tapping outside
         }
     }
 }
@@ -145,24 +140,30 @@ struct BigCardOverlay: View {
 
 extension BigCardOverlay {
     
-    // MARK: - Image Carousel
     
     @ViewBuilder
     private func imageCarousel(height: CGFloat) -> some View {
         ZStack {
             TabView(selection: $currentImageIndex) {
                 ForEach(Array(images.enumerated()), id: \.offset) { index, imageUrl in
-                    AsyncImage(url: URL(string: imageUrl)) { image in
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } placeholder: {
-                        Rectangle()
-                            .fill(Color.gray.opacity(0.2))
+                    AsyncImage(url: URL(string: imageUrl)) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(height: height)
+                                .clipped()
+                        default:
+                            Rectangle()
+                                .fill(Color.gray.opacity(0.2))
+                                .frame(height: height)
+                        }
                     }
                     .tag(index)
                 }
             }
+            .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
             .frame(height: height)
             .clipShape(
                 UnevenRoundedRectangle(
@@ -172,9 +173,8 @@ extension BigCardOverlay {
                     topTrailingRadius: 28
                 )
             )
-            .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
-            
-            // Custom dots
+
+            // Custom dots overlay
             VStack {
                 Spacer()
                 HStack(spacing: 8) {
@@ -185,54 +185,34 @@ extension BigCardOverlay {
                     }
                 }
                 .padding(.bottom, 16)
+                .allowsHitTesting(false)
             }
-            
-            // Tap zones
+
+            // Tap zones overlay (explicit 60/40 with high priority, non-looping)
             HStack(spacing: 0) {
-                // Left 40% - previous
-                Rectangle()
-                    .fill(Color.clear)
+                // Left 60% - previous (no loop)
+                Color.clear
                     .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
                     .onTapGesture {
-                        if currentImageIndex > 0 {
-                            withAnimation {
-                                currentImageIndex -= 1
-                            }
-                        } else {
-                            // Wrap to last
-                            withAnimation {
-                                currentImageIndex = images.count - 1
-                            }
-                        }
+                        guard images.count > 1, currentImageIndex > 0 else { return }
+                        withAnimation { currentImageIndex -= 1 }
                     }
-                
-                // Middle 20% - no-op
-                Rectangle()
-                    .fill(Color.clear)
-                    .frame(width: height * 0.2)
-                
-                // Right 40% - next
-                Rectangle()
-                    .fill(Color.clear)
-                    .frame(maxWidth: .infinity)
+
+                // Right 40% - next (no loop)
+                Color.clear
+                    .contentShape(Rectangle())
                     .onTapGesture {
-                        if currentImageIndex < images.count - 1 {
-                            withAnimation {
-                                currentImageIndex += 1
-                            }
-                        } else {
-                            // Wrap to first
-                            withAnimation {
-                                currentImageIndex = 0
-                            }
-                        }
+                        let last = images.count - 1
+                        guard images.count > 1, currentImageIndex < last else { return }
+                        withAnimation { currentImageIndex += 1 }
                     }
             }
+            .frame(height: height)
         }
     }
-    
-    // MARK: - Meta Section
-    
+
+    // MARK: - Description Block (conditionally scrollable)
     @ViewBuilder
     private var metaSection: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -257,46 +237,56 @@ extension BigCardOverlay {
             .foregroundColor(.primary)
             .fixedSize(horizontal: false, vertical: true)
     }
+
+    // Conditionally scrollable description block with a max height
+    @ViewBuilder
+    private func descriptionBlock(_ description: String, maxHeight: CGFloat) -> some View {
+        Group {
+            if maxHeight > 0 {
+                ScrollView {
+                    descriptionSection(description)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: maxHeight)
+            } else {
+                descriptionSection(description)
+            }
+        }
+    }
     
     // MARK: - Location Section
     
     @ViewBuilder
     private var locationSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Location")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.primary)
-            
-            switch mode {
-            case .street:
+        // Only show for STREET mode
+        if mode == .street {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Location")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.primary)
+                
                 if let coordinate = exactLocation {
                     VStack(alignment: .leading, spacing: 8) {
-                        // Map snapshot placeholder
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color.gray.opacity(0.15))
-                            .frame(height: 120)
-                            .overlay(
-                                VStack {
-                                    Image(systemName: "map")
-                                        .font(.system(size: 24))
-                                        .foregroundColor(.secondary)
-                                    Text("Map Preview")
-                                        .font(.system(size: 12))
-                                        .foregroundColor(.secondary)
-                                }
-                            )
+                        // Real map preview
+                        Map(position: .constant(.region(MKCoordinateRegion(
+                            center: coordinate,
+                            span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
+                        )))) {
+                            Annotation("", coordinate: coordinate) {
+                                Image(systemName: "mappin.circle.fill")
+                                    .font(.system(size: 24))
+                                    .foregroundColor(.red)
+                            }
+                        }
+                        .frame(height: 140)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .allowsHitTesting(false)
                         
                         Text("Lat: \(coordinate.latitude, specifier: "%.4f"), Lng: \(coordinate.longitude, specifier: "%.4f")")
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
                     }
                 }
-                
-            case .home:
-                Text("Home listings keep addresses private. You'll get a location and confirm details directly from the owner.")
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundColor(mutedColor)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -305,39 +295,76 @@ extension BigCardOverlay {
     
     @ViewBuilder
     private var sharedBySection: some View {
-        HStack(spacing: 12) {
-            // Avatar
-            RoundedRectangle(cornerRadius: 8)
-                .fill(primaryColor.opacity(0.15))
-                .frame(width: 40, height: 40)
-                .overlay(
-                    Text(String(ownerName.prefix(1)))
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(primaryColor)
-                )
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Shared By")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.primary)
             
-            VStack(alignment: .leading, spacing: 2) {
-                Text(ownerName)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(.primary)
+            HStack(spacing: 12) {
+                // Avatar
+                if let avatarUrl = ownerAvatarUrl {
+                    AsyncImage(url: avatarUrl) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 44, height: 44)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                        default:
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(primaryColor.opacity(0.15))
+                                .frame(width: 44, height: 44)
+                                .overlay(
+                                    Text(String(ownerName.prefix(1)))
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundColor(primaryColor)
+                                )
+                        }
+                    }
+                } else {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(primaryColor.opacity(0.15))
+                        .frame(width: 44, height: 44)
+                        .overlay(
+                            Text(String(ownerName.prefix(1)))
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundColor(primaryColor)
+                        )
+                }
                 
-                if let memberSince = memberSince {
-                    Text("Member since \(formatMemberSince(memberSince))")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(ownerName)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.primary)
+                    
+                    if let memberSince = memberSince {
+                        Text("Member since \(formatMemberSince(memberSince))")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
+                Spacer()
+                
+                if let pickupsCount = pickupsCount {
+                    Text("\(pickupsCount) Pickups")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(primaryColor)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(accentColor)
+                        .clipShape(Capsule())
                 }
             }
             
-            Spacer()
-            
-            if let pickupsCount = pickupsCount {
-                Text("\(pickupsCount) Pickups")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(primaryColor)
-                    .clipShape(Capsule())
+            // Privacy note for HOME mode only
+            if mode == .home {
+                Text("Home listings keep addresses private. You'll get a location and confirm details from the owner.")
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundColor(mutedColor)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4)
             }
         }
     }
@@ -453,16 +480,7 @@ extension BigCardOverlay {
     @ViewBuilder
     private var feedButtons: some View {
         HStack(spacing: 12) {
-            Button(action: onPrimaryAction) {
-                Text("Save for me")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white)
-                    .frame(height: 52)
-                    .frame(maxWidth: .infinity)
-            }
-            .background(primaryColor)
-            .clipShape(RoundedRectangle(cornerRadius: 26))
-            
+            // Pass button on LEFT
             Button(action: onSecondaryAction) {
                 Text("Pass")
                     .font(.system(size: 16, weight: .semibold))
@@ -475,6 +493,17 @@ extension BigCardOverlay {
                 RoundedRectangle(cornerRadius: 26)
                     .stroke(primaryColor, lineWidth: 2)
             )
+            
+            // Save for me button on RIGHT
+            Button(action: onPrimaryAction) {
+                Text("Save for me")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(height: 52)
+                    .frame(maxWidth: .infinity)
+            }
+            .background(primaryColor)
+            .clipShape(RoundedRectangle(cornerRadius: 26))
         }
     }
     
@@ -485,7 +514,7 @@ extension BigCardOverlay {
         formatter.dateFormat = "MMM yyyy"
         return formatter.string(from: date)
     }
-}
+} // <- Added closing brace for extension BigCardOverlay
 
 // MARK: - Color Extension
 

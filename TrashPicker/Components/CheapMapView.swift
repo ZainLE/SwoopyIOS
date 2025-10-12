@@ -17,7 +17,9 @@ struct CheapMapView: UIViewRepresentable {
     private let box = StateBox()
 
     func makeUIView(context: Context) -> MKMapView {
-        let mapView = MKMapView(frame: .zero)
+        // Start with a reasonable default frame to avoid 0-size Metal warnings
+        let initialFrame = CGRect(x: 0, y: 0, width: 375, height: 667)
+        let mapView = MKMapView(frame: initialFrame)
         mapView.delegate = context.coordinator
         mapView.showsUserLocation = true
         mapView.isRotateEnabled = false
@@ -26,12 +28,21 @@ struct CheapMapView: UIViewRepresentable {
         mapView.showsCompass = false
         mapView.showsScale = false
 
-        // Log
-        print("[MAP] makeUIView: userLocation=\(mapView.showsUserLocation) rotate=\(mapView.isRotateEnabled) pitch=\(mapView.isPitchEnabled)")
+        // Log lifecycle
+        print("[MAP] lifecycle makeUIView frame=\(initialFrame.size) userLocation=\(mapView.showsUserLocation)")
         return mapView
     }
 
     func updateUIView(_ uiView: MKMapView, context: Context) {
+        let frameSize = uiView.frame.size
+        
+        // Log frame to detect 0-size issues
+        if frameSize.width == 0 || frameSize.height == 0 {
+            print("[MAP] lifecycle updateUIView ⚠️ frame=\(frameSize) (zero-size detected)")
+        } else {
+            print("[MAP] lifecycle updateUIView frame=\(frameSize)")
+        }
+        
         // Apply region from binding efficiently
         let fitted = uiView.regionThatFits(region)
         
@@ -49,8 +60,7 @@ struct CheapMapView: UIViewRepresentable {
             print("[MAP] updateUIView: skipped region (no meaningful change)")
         }
 
-        // If in the future we pass annotations through this view, refresh here.
-        // For now, just log current annotation count.
+        // Log annotation count
         print("[MAP] updateUIView: annotations=#\(uiView.annotations.count)")
     }
 

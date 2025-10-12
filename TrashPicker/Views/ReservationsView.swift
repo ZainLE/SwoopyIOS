@@ -1061,6 +1061,7 @@ extension ReservationRow {
 // MARK: - ReservationsView
 
 struct ReservationsView: View {
+    @Environment(AppRouter.self) var router
     @EnvironmentObject var svc: SupabaseService
     @Environment(\.dismiss) private var dismiss
     // Optional callback injected by parent to switch tabs to Feed
@@ -1343,6 +1344,7 @@ struct ReservationsView: View {
             mode: reservation.mode == .street ? .street : .home,
             exactLocation: reservation.exactCoordinate,
             ownerName: reservation.ownerName,
+            ownerAvatarUrl: nil,
             memberSince: nil,
             pickupsCount: nil,
             variant: reservationVariant(for: reservation),
@@ -1577,11 +1579,8 @@ struct ReservationsView: View {
     
     // MARK: - Helper Methods
     private func goToFeed() {
-        if let onGoToFeed {
-            onGoToFeed()
-        } else {
-            dismiss()
-        }
+        // Prefer global router for tab navigation
+        router.selectedTab = .feed
     }
     
     private func presentAlert(_ alert: UIAlertController) {

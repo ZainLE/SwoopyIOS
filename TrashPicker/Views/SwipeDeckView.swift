@@ -103,11 +103,17 @@ struct SwipeDeckView: View {
     @State private var inFlightCoordKey: String?
     @State private var authStatusAtLastFetch: Int?
 
-    // Glass segmented control and map presentation
-    fileprivate enum SegTab { case feed, map }
-    @State private var seg: SegTab = .feed
-    @State private var showMap = false
-    @State private var showFeedMap = false
+    // Single source of truth for navigation state
+    fileprivate enum NavigationState: Equatable {
+        case feed
+        case map
+        
+        var isFeed: Bool { self == .feed }
+        var isMap: Bool { self == .map }
+    }
+    @State private var navState: NavigationState = .feed
+    @State private var navStateWriteCount = 0 // Debug: detect thrashing
+    // Removed direct boolean in favor of navState-derived binding
 
     // reserve sheet (two-step)
     @State private var showReserveSheet = false
@@ -135,23 +141,37 @@ struct SwipeDeckView: View {
     // Use global helper on service: svc.hasAuthToken
 
     var body: some View {
-        NavigationStack {
-            contentView
-                .toolbar { toolbarContent }
-                .navigationBarTitleDisplayMode(.inline)
-        }
+        baseView
+            .overlay { errorOverlay }
+            .overlay { successOverlay }
+            .fullScreenCover(isPresented: $showUploadForm, onDismiss: { handleUploadFormDismiss() }) {
+                uploadFormView
+            }
+            .fullScreenCover(
+                isPresented: Binding<Bool>(
+                    get: { navState == .map },
+                    set: { newValue in
+                        Task { @MainActor in
+                            if newValue {
+                                animateNavState(to: .map)
+                            } else {
+                                animateNavState(to: .feed)
+                            }
+                        }
+                    }
+                ),
+                onDismiss: handleMapDismiss
+            ) {
+                feedMapView
+            }
     }
     
-    private var contentView: some View {
-        VStack(spacing: 0) {
-            GlassSegmented(selection: $seg)
-                .padding(.top, 16)
-                .padding(.horizontal, 16)
-            
-            GeometryReader { geo in
-                mainContentArea
-            }
+    private var baseView: some View {
+        NavigationStack {
+            contentView
         }
+        .toolbar { toolbarContent }
+        .navigationBarTitleDisplayMode(.inline)
         .onAppear { handleViewAppear() }
         .task {
             if api == nil { api = ApiService(supabaseService: svc) }
@@ -166,20 +186,36 @@ struct SwipeDeckView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("LocationAuthorizationChanged"))) { _ in
             handleLocationAuthChange()
         }
-        .onChange(of: seg) { oldValue, newValue in
-            handleSegmentChange(newValue)
+        .onChange(of: navState) { oldValue, newValue in
+            handleNavigationChange(from: oldValue, to: newValue)
         }
-        .onChange(of: showFeedMap) { oldValue, newValue in
-            handleMapVisibilityChange(newValue)
+    }
+    
+    @MainActor
+    private func handleMapDismiss() {
+        print("🔵 [NAV] map_dismissed callback")
+        dbg("NAV", "map_dismissed")
+        // Animate pill immediately as map starts dismissing
+        if navState.isMap {
+            animateNavStateToFeed()
         }
-        .overlay { errorOverlay }
-        .overlay { successOverlay }
-        .fullScreenCover(isPresented: $showUploadForm, onDismiss: { handleUploadFormDismiss() }) {
-            uploadFormView
+    }
+    
+    private var contentView: some View {
+        VStack(spacing: 0) {
+            headerSegment
+            
+            GeometryReader { _ in
+                mainContentArea
+            }
         }
-        .fullScreenCover(isPresented: $showFeedMap) {
-            feedMapView
-        }
+    }
+    
+    private var headerSegment: some View {
+        GlassSegmented(selection: $navState)
+            .padding(.top, 16)
+            .padding(.horizontal, 16)
+            .zIndex(1000)
     }
     
     private func handleLocationAuthChange() {
@@ -196,18 +232,45 @@ struct SwipeDeckView: View {
         }
     }
     
-    private func handleSegmentChange(_ newValue: SegTab) {
+    private func handleNavigationChange(from oldValue: NavigationState, to newValue: NavigationState) {
+        navStateWriteCount += 1
+        let writeCount = navStateWriteCount
+        
+        print("🟡 [NAV] state_changed from=\(oldValue) to=\(newValue) writes=\(writeCount)")
+        dbg("NAV", "state_changed from=\(oldValue) to=\(newValue) writes=\(writeCount)")
+        
+        // Detect thrashing: if we get >2 writes in 200ms, log warning
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            if navStateWriteCount > writeCount + 1 {
+                print("⚠️ [NAV] state_thrash detected writes=\(navStateWriteCount) in_200ms")
+                dbg("NAV", "⚠️ state_thrash detected writes=\(navStateWriteCount) in_200ms")
+            }
+        }
+        
+        // Synchronize presentation state (navState is the single source of truth now).
+        // Keep logs, avoid secondary boolean to prevent conflicts.
+        switch newValue {
+        case .feed:
+            print("🔴 [NAV] showing_feed isPresented=false (derived)")
+            dbg("NAV", "showing_feed (derived)")
+        case .map:
+            print("🟢 [NAV] presenting_map isPresented=true (derived)")
+            dbg("NAV", "presenting_map (derived)")
+        }
+    }
+
+    @MainActor
+    private func animateNavState(to target: NavigationState) {
+        guard navState != target else { return }
         withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
-            showFeedMap = (newValue == .map)
+            navState = target
         }
     }
     
-    private func handleMapVisibilityChange(_ newValue: Bool) {
-        if !newValue {
-            withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
-                seg = .feed
-            }
-        }
+    @MainActor
+    private func animateNavStateToFeed() {
+        animateNavState(to: .feed)
     }
 
 
@@ -403,7 +466,7 @@ struct SwipeDeckView: View {
     }
 
     private var feedMapView: some View {
-        FeedMapScreen()
+        FeedMapScreen(onBack: animateNavStateToFeed)
             .environmentObject(svc)
             .ignoresSafeArea()
     }
@@ -417,8 +480,7 @@ struct SwipeDeckView: View {
     }
 
     private func handleUploadFormDismiss() {
-        seg = .feed
-        showFeedMap = false
+        navState = .feed
         Task { await fetchFeedBridge() }
     }
 
@@ -868,7 +930,7 @@ extension SwipeDeckView {
     
     
     private struct GlassSegmented: View {
-        @Binding var selection: SwipeDeckView.SegTab
+        @Binding var selection: SwipeDeckView.NavigationState
         private let green = Color(red: 0/255, green: 81/255, blue: 63/255)
         @Namespace private var ns
         
@@ -883,26 +945,33 @@ extension SwipeDeckView {
         }
         
         @ViewBuilder
-        private func seg(_ title: String, _ tab: SwipeDeckView.SegTab) -> some View {
+        private func seg(_ title: String, _ state: SwipeDeckView.NavigationState) -> some View {
             Button {
+                let reason = state == .map ? "map_button_tap" : "feed_button_tap"
+                print("🔵 [\(reason)] IMMEDIATE tap registered current=\(selection) requested=\(state)")
+                dbg("UI", "\(reason) current=\(selection) requested=\(state)")
+                
+                // Standard spring feel for pill movement
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
-                    selection = tab
+                    selection = state
                 }
+                print("🟢 [\(reason)] State updated to \(state)")
             } label: {
                 Text(title)
                     .font(.headline)
                     .padding(.vertical, 8)
-                    .padding(.horizontal, 18) // <- controls ink width; increase if you want larger pill
+                    .padding(.horizontal, 18)
                     .background(
                         Group {
-                            if selection == tab {
+                            if selection == state {
                                 RoundedRectangle(cornerRadius: 59, style: .continuous)
                                     .fill(green)
                                     .matchedGeometryEffect(id: "ink", in: ns)
                             }
                         }
                     )
-                    .foregroundStyle(selection == tab ? .white : .primary)
+                    .foregroundStyle(selection == state ? .white : .primary)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
@@ -965,8 +1034,8 @@ extension SwipeDeckView {
     
     // MARK: - FeedMapScreen
     private struct FeedMapScreen: View {
+        let onBack: @MainActor () -> Void
         @EnvironmentObject private var svc: SupabaseService
-        @Environment(\.dismiss) private var dismiss
         @StateObject private var loc = LocationService.shared
         
         @State private var api: ApiService?
@@ -1000,7 +1069,7 @@ extension SwipeDeckView {
         var body: some View {
             CheapMapView(region: $region, forceUpdate: forceMapUpdate)
                 .overlay(alignment: .topLeading) {
-                    Button(action: { dismiss() }) {
+                    Button(action: onBack) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 20, weight: .semibold))
                             .foregroundColor(AppTheme.ColorToken.brandDark)
@@ -1046,6 +1115,7 @@ extension SwipeDeckView {
                 .ignoresSafeArea()
                 .onAppear(perform: setupAndFetch)
                 .onDisappear {
+                    dbg("MAP", "lifecycle onDisappear stopping_location")
                     fetchTask?.cancel()
                     loc.stopContinuous()
                 }
@@ -1056,6 +1126,7 @@ extension SwipeDeckView {
         }
         
         private func setupAndFetch() {
+            dbg("MAP", "lifecycle onAppear starting_location")
             if api == nil { api = ApiService(supabaseService: svc) }
             loc.startContinuous()
             
@@ -1065,6 +1136,9 @@ extension SwipeDeckView {
                     span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)
                 )
                 didCenterFromDefault = true
+                dbg("MAP", "lifecycle initial_region from_cache center=(\(initialLocation.coordinate.latitude),\(initialLocation.coordinate.longitude))")
+            } else {
+                dbg("MAP", "lifecycle initial_region using_fallback")
             }
             
             Task { await fetchPosts() }
