@@ -91,8 +91,8 @@ struct FeedCard: View {
     private var itemCreatedAt: Date? {
         if let ckItem = item as? CKTrashItem {
             return ckItem.createdAt
-        } else if item is Post {
-            return nil
+        } else if let post = item as? Post {
+            return post.createdAt
         }
         return nil
     }
@@ -255,21 +255,24 @@ struct FeedCard: View {
     // MARK: - View
 
     var body: some View {
-        VStack(spacing: 0) {
-            imageAreaView()
-                .frame(height: imageHeight)
-                .clipped()
+        ZStack(alignment: .top) {
+            // Background white for info bar
+            Color.white
+            
+            VStack(spacing: 0) {
+                imageAreaView()
+                    .frame(height: imageHeight)
 
-            infoBarView()
-                .padding(.horizontal, chromeSidePadding)
-                .padding(.vertical, 16)
-                .frame(height: infoBarHeight)
-                .frame(maxWidth: .infinity)
-                .background(Color.white)
-                .onTapGesture { showDetailOverlay = true }
+                infoBarView()
+                    .padding(.horizontal, chromeSidePadding)
+                    .padding(.vertical, 16)
+                    .frame(height: infoBarHeight)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.white)
+                    .onTapGesture { showDetailOverlay = true }
+            }
         }
         .frame(width: cardWidth, height: cardHeight)
-        .background(Color.white)
         .compositingGroup()
         .clipShape(RoundedRectangle(cornerRadius: cardRadius, style: .continuous))
         .shadow(color: .black.opacity(0.12), radius: 24, x: 0, y: 8)
@@ -299,7 +302,7 @@ struct FeedCard: View {
             pagerDotsView()
         }
         .frame(width: cardWidth, height: imageHeight)
-        .clipped()
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: cardRadius, topTrailingRadius: cardRadius))
     }
 
     @ViewBuilder
@@ -389,32 +392,21 @@ struct FeedCard: View {
                 if let posted = postedAgoText {
                     Text("Posted \(posted)")
                         .font(.system(size: 12, weight: .regular))
-                        .foregroundColor(AppTheme.ColorToken.mutedGray)
-                }
-                if let expiresText = expiresInText {
-                    Text("Expires in \(expiresText)")
-                        .font(.system(size: 12, weight: .regular))
-                        .foregroundColor(AppTheme.ColorToken.mutedGray)
+                        .foregroundColor(Color(hex: "#00513F"))
                 }
             }
 
             Spacer()
 
-            // Right pill
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(AppTheme.ColorToken.accent)
-                    .frame(width: 8, height: 8)
-
-                Text(conditionDisplayText)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 32)
-            .background(AppTheme.ColorToken.primary)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .accessibilityLabel("Condition: \(conditionDisplayText)")
+            // Right pill - light green background with dark green text
+            Text(conditionDisplayText)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(Color(hex: "#00513F"))
+                .padding(.horizontal, 12)
+                .frame(height: 32)
+                .background(Color(hex: "#B4DD4E"))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .accessibilityLabel("Condition: \(conditionDisplayText)")
         }
     }
 

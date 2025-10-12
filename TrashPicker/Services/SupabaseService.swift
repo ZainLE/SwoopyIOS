@@ -218,11 +218,13 @@ final class SupabaseService: NSObject, ObservableObject {
     /// Handle oauth deep link (call from App.onOpenURL).
     @MainActor
     func handleOAuthRedirect(_ url: URL) async {
+        AuthLogger.oauthCallbackReceived(url: url)
         do {
             let s = try await client.auth.session(from: url)
             applyAuthSession(s)
+            AuthLogger.oauthCallbackSuccess(userId: s.user.id.uuidString)
         } catch {
-            // swallow
+            AuthLogger.oauthCallbackFailure(error: error)
         }
     }
 
@@ -238,23 +240,30 @@ final class SupabaseService: NSObject, ObservableObject {
 
     /// Native Apple Sign-In (no Apple client secret needed on iOS).K
     func signInWithApple(on window: UIWindow?) async throws {
+        AuthLogger.appleSignInStart()
         let nonce = Self.randomNonceString()
         let request = ASAuthorizationAppleIDProvider().createRequest()
         request.requestedScopes = [.fullName, .email]
         request.nonce = Self.sha256(nonce)
+        AuthLogger.appleSignInRequestCreated(nonce: nonce)
 
         let cred = try await Self.performAppleSignIn(request: request, on: window)
+        AuthLogger.appleSignInCredentialReceived(hasToken: cred.identityToken != nil, hasNonce: true)
 
         guard let tokenData = cred.identityToken,
               let idToken = String(data: tokenData, encoding: .utf8) else {
-            throw SimpleError(message: "No Apple identity token")
+            let error = SimpleError(message: "No Apple identity token")
+            AuthLogger.appleSignInFailure(error: error)
+            throw error
         }
 
+        AuthLogger.appleSignInSupabaseExchange()
         let s = try await client.auth.signInWithIdToken(
             credentials: OpenIDConnectCredentials(provider: .apple, idToken: idToken, nonce: nonce)
         )
         applyAuthSession(s)
         phase = .signedIn
+        AuthLogger.appleSignInSuccess(userId: s.user.id.uuidString)
     }
 
     func signInWithEmailMagicLink(_ email: String) async throws {
@@ -268,16 +277,34 @@ final class SupabaseService: NSObject, ObservableObject {
     /// If confirmations are ON, no session is returned; you can still call signInEmailPassword after confirmation.
     @MainActor
     func signUpEmailPassword(email: String, password: String) async throws {
-        _ = try await client.auth.signUp(email: email, password: password)
-        let s = try? await client.auth.session
-        applyAuthSession(s)
+        AuthLogger.emailSignInStart(email: email, mode: "sign-up")
+        do {
+            _ = try await client.auth.signUp(email: email, password: password)
+            let s = try? await client.auth.session
+            applyAuthSession(s)
+            if let s = s {
+                AuthLogger.emailSignInSuccess(email: email, mode: "sign-up", userId: s.user.id.uuidString)
+            } else {
+                AuthLogger.emailSignInSuccess(email: email, mode: "sign-up", userId: nil)
+            }
+        } catch {
+            AuthLogger.emailSignInFailure(email: email, mode: "sign-up", error: error)
+            throw error
+        }
     }
 
     /// Sign in an existing user with email/password.
     @MainActor
     func signInEmailPassword(email: String, password: String) async throws {
-        let s = try await client.auth.signIn(email: email, password: password)
-        applyAuthSession(s)
+        AuthLogger.emailSignInStart(email: email, mode: "sign-in")
+        do {
+            let s = try await client.auth.signIn(email: email, password: password)
+            applyAuthSession(s)
+            AuthLogger.emailSignInSuccess(email: email, mode: "sign-in", userId: s.user.id.uuidString)
+        } catch {
+            AuthLogger.emailSignInFailure(email: email, mode: "sign-in", error: error)
+            throw error
+        }
     }
 
     /// Call this on successful login flows to store the session and mark authenticated.
@@ -288,6 +315,7 @@ final class SupabaseService: NSObject, ObservableObject {
 
     @MainActor
     func signOut() async {
+        AuthLogger.signOutTriggered()
         do { try await client.auth.signOut(scope: .local) } catch { }
         KeychainStore.clearSession()
         applyAuthSession(nil)
@@ -933,6 +961,7 @@ private extension SupabaseService {
             if tokenOk {
                 KeychainStore.saveSession(accessToken: s.accessToken, refreshToken: s.refreshToken)
                 if phase != .signedIn { phase = .signedIn }
+                AuthLogger.sessionApplied(userId: s.user.id.uuidString, accessTokenPresent: true)
             } else {
                 KeychainStore.clearSession()
                 if phase != .signedOut { phase = .signedOut }
