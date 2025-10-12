@@ -369,7 +369,7 @@ struct FeedCard: View {
             HStack(spacing: 8) {
                 ForEach(0..<count, id: \.self) { index in
                     Circle()
-                        .fill(index == currentImageIndex ? AppTheme.ColorToken.primary : AppTheme.ColorToken.primary.opacity(0.35))
+                        .fill(index == currentImageIndex ? AppTheme.ColorToken.accent : AppTheme.ColorToken.accent.opacity(0.35))
                         .frame(width: 6, height: 6)
                 }
             }

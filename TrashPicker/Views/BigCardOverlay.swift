@@ -180,7 +180,7 @@ extension BigCardOverlay {
                 HStack(spacing: 8) {
                     ForEach(0..<images.count, id: \.self) { index in
                         Circle()
-                            .fill(index == currentImageIndex ? primaryColor : primaryColor.opacity(0.35))
+                            .fill(index == currentImageIndex ? accentColor : accentColor.opacity(0.35))
                             .frame(width: 8, height: 8)
                     }
                 }
@@ -544,3 +544,4 @@ extension Color {
         )
     }
 }
+

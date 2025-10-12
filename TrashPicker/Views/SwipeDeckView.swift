@@ -8,6 +8,7 @@
 import SwiftUI
 import MapKit
 import Combine
+import UIKit
 
 // Using real API service for feed data
 
@@ -68,6 +69,48 @@ private class HiddenPostsStore {
         let dismissed = loadDismissed()
         let reserved = loadReserved()
         return dismissed.contains(id) || reserved.contains(id)
+    }
+}
+
+private struct ViewSizePreferenceKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let candidate = nextValue()
+        if candidate.width > 0 && candidate.height > 0 {
+            value = candidate
+        }
+    }
+}
+
+private struct SizeObserverModifier: ViewModifier {
+    let onChange: (CGSize) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .preference(key: ViewSizePreferenceKey.self, value: proxy.size)
+                }
+            )
+            .onPreferenceChange(ViewSizePreferenceKey.self) { newSize in
+                Task { @MainActor in
+                    onChange(newSize)
+                }
+            }
+    }
+}
+
+private extension View {
+    func onSizeChange(_ perform: @escaping (CGSize) -> Void) -> some View {
+        modifier(SizeObserverModifier(onChange: perform))
+    }
+}
+
+private extension CGSize {
+    func validOrDefault(fallback: CGSize) -> CGSize {
+        guard width > 0 && height > 0 else { return fallback }
+        return self
     }
 }
 
@@ -1037,21 +1080,33 @@ extension SwipeDeckView {
         let onBack: @MainActor () -> Void
         @EnvironmentObject private var svc: SupabaseService
         @StateObject private var loc = LocationService.shared
-        
+
         @State private var api: ApiService?
         @State private var posts: [Post] = []
         @State private var isFetching = false
         @State private var mapError: String?
         @State private var fetchTask: Task<Void, Never>?
         @StateObject private var recenterHelper = MapRecenterHelper()
-        
+
         @State private var region: MKCoordinateRegion = MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
             span: .init(latitudeDelta: 0.05, longitudeDelta: 0.05)
         )
         @State private var didCenterFromDefault = false
-        @State private var forceMapUpdate = false  // Toggle to force CheapMapView to bypass guards
-        
+        @State private var forceMapUpdate = false
+
+        @State private var selectedPostID: UUID?
+        @State private var calloutPhase: CalloutPhase = .none
+        @State private var calloutAnchor: CGPoint?
+        @State private var teaserSize: CGSize = .zero
+        @State private var cardSize: CGSize = .zero
+        @State private var refreshSuppressionUntil: Date?
+        @State private var reserveInFlight = false
+        @State private var shouldCollapseAfterGesture = false
+        @State private var gestureCollapseTargetID: UUID?
+
+        private let refreshSuppressionSeconds: Double = 0.5
+
         private struct RegionSignature: Equatable {
             let lat: Double
             let lon: Double
@@ -1059,16 +1114,72 @@ extension SwipeDeckView {
             let dLon: Double
 
             init(region: MKCoordinateRegion) {
-                self.lat = region.center.latitude
-                self.lon = region.center.longitude
-                self.dLat = region.span.latitudeDelta
-                self.dLon = region.span.longitudeDelta
+                lat = region.center.latitude
+                lon = region.center.longitude
+                dLat = region.span.latitudeDelta
+                dLon = region.span.longitudeDelta
             }
         }
-        
+
+        private enum CalloutPhase {
+            case none
+            case teaser
+            case expanded
+        }
+
+        private enum CollapseReason: String {
+            case gesture
+            case tapOutside
+            case dismiss
+        }
+
         var body: some View {
-            CheapMapView(region: $region, forceUpdate: forceMapUpdate)
-                .overlay(alignment: .topLeading) {
+            let annotations = streetAnnotations
+            GeometryReader { geo in
+                ZStack {
+                    CheapMapView(
+                        region: $region,
+                        forceUpdate: forceMapUpdate,
+                        annotations: annotations,
+                        selectedAnnotationID: $selectedPostID,
+                        calloutAnchor: $calloutAnchor,
+                        onAnnotationTapped: { id in
+                            Task { @MainActor in selectPin(id: id) }
+                        },
+                        onAnnotationDeselected: {
+                            Task { @MainActor in collapseAll(reason: .dismiss) }
+                        },
+                        onMapTap: { Task { @MainActor in handleMapTap() } },
+                        onRegionWillChange: { userInitiated in
+                            Task { @MainActor in handleRegionWillChange(userInitiated: userInitiated) }
+                        },
+                        onRegionDidChange: { newRegion, userInitiated in
+                            Task { @MainActor in handleRegionDidChange(newRegion: newRegion, userInitiated: userInitiated) }
+                        }
+                    )
+                    .ignoresSafeArea()
+
+                    calloutOverlay(in: geo, annotations: annotations)
+
+                    topControls
+                    bannerOverlay
+                }
+            }
+            .onAppear(perform: setupAndFetch)
+            .onDisappear {
+                dbg("MAP", "lifecycle onDisappear stopping_location")
+                fetchTask?.cancel()
+                loc.stopContinuous()
+            }
+            .onChange(of: loc.lastFix, handleLocationChange)
+            .onChange(of: RegionSignature(region: region)) { _, _ in
+                debouncedFetchPosts()
+            }
+        }
+
+        private var topControls: some View {
+            VStack {
+                HStack {
                     Button(action: onBack) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 20, weight: .semibold))
@@ -1077,10 +1188,9 @@ extension SwipeDeckView {
                             .background(.ultraThinMaterial, in: Circle())
                     }
                     .buttonStyle(.plain)
-                    .padding(.leading, 16)
-                    .padding(.top, 64)
-                }
-                .overlay(alignment: .topTrailing) {
+
+                    Spacer()
+
                     Button(action: recenterOnUser) {
                         Image(systemName: "location.fill")
                             .font(.system(size: 18, weight: .semibold))
@@ -1097,39 +1207,269 @@ extension SwipeDeckView {
                             )
                     }
                     .buttonStyle(.plain)
-                    .padding(.trailing, 16)
-                    .padding(.top, 64)
                 }
-                .overlay(alignment: .top) {
-                    if let mapError {
-                        Text(mapError)
-                            .font(.footnote)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(Color.black.opacity(0.75))
-                            .clipShape(Capsule())
-                            .padding(.top, 64)
-                    }
-                }
-                .ignoresSafeArea()
-                .onAppear(perform: setupAndFetch)
-                .onDisappear {
-                    dbg("MAP", "lifecycle onDisappear stopping_location")
-                    fetchTask?.cancel()
-                    loc.stopContinuous()
-                }
-                .onChange(of: loc.lastFix, handleLocationChange)
-                .onChange(of: RegionSignature(region: region)) { _, _ in
-                    debouncedFetchPosts()
-                }
+                .padding(.horizontal, 16)
+                .padding(.top, 64)
+
+                Spacer()
+            }
         }
-        
+
+        @ViewBuilder
+        private var bannerOverlay: some View {
+            if let mapError {
+                VStack {
+                    Text(mapError)
+                        .font(.footnote)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.75))
+                        .clipShape(Capsule())
+                        .padding(.top, 64)
+                    Spacer()
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+
+        private var streetAnnotations: [StreetPinAnnotation] {
+            posts.compactMap { post in
+                guard post.mode == .street,
+                      let uuid = UUID(uuidString: post.id),
+                      let coordinate = post.exactLocation?.coordinate ?? post.approxLocation?.coordinate
+                else { return nil }
+
+                let thumbnail = post.images.sorted { $0.orderIndex < $1.orderIndex }.first?.url
+                let distanceMeters = post.distance.map { $0 * 1_000 }
+                return StreetPinAnnotation(
+                    id: uuid,
+                    rawId: post.id,
+                    coordinate: coordinate,
+                    title: post.title,
+                    thumbnailURL: thumbnail,
+                    distanceMeters: distanceMeters
+                )
+            }
+        }
+
+        @ViewBuilder
+        private func calloutOverlay(in geo: GeometryProxy, annotations: [StreetPinAnnotation]) -> some View {
+            if calloutPhase != .none,
+               let selectedID = selectedPostID,
+               let anchor = calloutAnchor,
+               let annotation = annotations.first(where: { $0.id == selectedID }) {
+                switch calloutPhase {
+                case .teaser:
+                    let size = teaserSize.validOrDefault(fallback: CGSize(width: 190, height: 96))
+                    let placement = placement(for: size, anchor: anchor, in: geo)
+                    StreetPinTeaser(
+                        annotation: annotation,
+                        distanceText: distanceText(for: annotation),
+                        onExpand: expandSelected,
+                        arrowOffset: placement.arrowX,
+                        arrowYOffset: placement.arrowY
+                    )
+                    .onSizeChange { newSize in
+                        teaserSize = newSize
+                    }
+                    .position(placement.position)
+                    .transition(.scale(scale: 0.9).combined(with: .opacity))
+                case .expanded:
+                    if let post = posts.first(where: { $0.id == annotation.rawId }) {
+                        let expandedScale: CGFloat = 0.5
+                        let size = cardSize.validOrDefault(fallback: CGSize(width: 320 * expandedScale, height: 360 * expandedScale))
+                        let placement = placement(for: size, anchor: anchor, in: geo)
+                        MapAttachedCard(
+                            post: post,
+                            isReserving: reserveInFlight,
+                            onReserve: {
+                                Task { await handleReserve(post: post) }
+                            },
+                            onPass: { collapseAll(reason: .dismiss) },
+                            arrowOffset: placement.arrowX,
+                            arrowYOffset: placement.arrowY
+                        )
+                        .onSizeChange { newSize in
+                            cardSize = CGSize(width: newSize.width * expandedScale, height: newSize.height * expandedScale)
+                        }
+                        .position(placement.position)
+                        .transition(.scale(scale: 0.9).combined(with: .opacity))
+                    }
+                case .none:
+                    EmptyView()
+                }
+            } else {
+                EmptyView()
+            }
+        }
+
+        @MainActor
+        private func selectPin(id: UUID) {
+            if selectedPostID == id {
+                if calloutPhase == .none {
+                    logPinSelect(id)
+                    showTeaser(for: id, reason: "reselect")
+                }
+                return
+            }
+            selectedPostID = id
+            logPinSelect(id)
+            showTeaser(for: id, reason: "select")
+        }
+
+        @MainActor
+        private func showTeaser(for id: UUID, reason: String) {
+            withCalloutSpring {
+                calloutPhase = .teaser
+            }
+            suppressRefresh(for: refreshSuppressionSeconds)
+            shouldCollapseAfterGesture = false
+            gestureCollapseTargetID = nil
+            announceCalloutChange(.teaser)
+            logCallout("[CALLOUT] show teaser id=\(id.uuidString) reason=\(reason)")
+        }
+
+        @MainActor
+        private func expandSelected() {
+            guard let id = selectedPostID else { return }
+            if calloutPhase != .expanded {
+                withCalloutSpring {
+                    calloutPhase = .expanded
+                }
+                announceCalloutChange(.expanded)
+                logCallout("[CALLOUT] expand id=\(id.uuidString)")
+            }
+            suppressRefresh(for: refreshSuppressionSeconds)
+            shouldCollapseAfterGesture = false
+            gestureCollapseTargetID = nil
+        }
+
+        @MainActor
+        private func collapseToTeaser(reason: CollapseReason) {
+            guard calloutPhase == .expanded, let id = selectedPostID else { return }
+            withCalloutSpring {
+                calloutPhase = .teaser
+            }
+            suppressRefresh(for: refreshSuppressionSeconds)
+            announceCalloutChange(.teaser)
+            logCallout("[CALLOUT] collapse reason=\(reason.rawValue) stage=teaser id=\(id.uuidString)")
+        }
+
+        @MainActor
+        private func collapseAll(reason: CollapseReason) {
+            guard calloutPhase != .none || selectedPostID != nil else { return }
+            let id = selectedPostID
+            withCalloutSpring {
+                calloutPhase = .none
+                selectedPostID = nil
+            }
+            calloutAnchor = nil
+            suppressRefresh(for: refreshSuppressionSeconds)
+            announceCalloutChange(.none)
+            if let id {
+                logCallout("[CALLOUT] collapse reason=\(reason.rawValue) stage=none id=\(id.uuidString)")
+            } else {
+                logCallout("[CALLOUT] collapse reason=\(reason.rawValue) stage=none id=none")
+            }
+            shouldCollapseAfterGesture = false
+            gestureCollapseTargetID = nil
+        }
+
+        @MainActor
+        private func handleMapTap() {
+            switch calloutPhase {
+            case .expanded:
+                collapseToTeaser(reason: .tapOutside)
+            case .teaser:
+                collapseAll(reason: .tapOutside)
+            case .none:
+                break
+            }
+        }
+
+        @MainActor
+        private func handleRegionWillChange(userInitiated: Bool) {
+            guard userInitiated else { return }
+            gestureCollapseTargetID = selectedPostID
+            if calloutPhase == .expanded {
+                collapseToTeaser(reason: .gesture)
+                shouldCollapseAfterGesture = true
+            } else if calloutPhase == .teaser {
+                collapseAll(reason: .gesture)
+                shouldCollapseAfterGesture = false
+            } else {
+                shouldCollapseAfterGesture = false
+            }
+        }
+
+        @MainActor
+        private func handleRegionDidChange(newRegion: MKCoordinateRegion, userInitiated: Bool) {
+            guard userInitiated else { return }
+            if shouldCollapseAfterGesture {
+                if gestureCollapseTargetID == nil || gestureCollapseTargetID == selectedPostID {
+                    collapseAll(reason: .gesture)
+                }
+            }
+            shouldCollapseAfterGesture = false
+            gestureCollapseTargetID = nil
+        }
+
+        private func withCalloutSpring(_ updates: @escaping () -> Void) {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                updates()
+            }
+        }
+
+        private func placement(for size: CGSize, anchor: CGPoint, in geo: GeometryProxy) -> (position: CGPoint, arrowX: CGFloat, arrowY: CGFloat) {
+            let padding: CGFloat = 16
+            let verticalSpacing: CGFloat = 10
+            let safeInsets = geo.safeAreaInsets
+            let safeRect = CGRect(
+                x: padding,
+                y: safeInsets.top + padding,
+                width: geo.size.width - padding * 2,
+                height: geo.size.height - safeInsets.top - safeInsets.bottom - padding * 2
+            )
+
+            let desiredCenterX = anchor.x
+            let desiredCenterY = anchor.y - size.height / 2 - verticalSpacing
+
+            let clampedX = min(max(desiredCenterX, safeRect.minX + size.width / 2), safeRect.maxX - size.width / 2)
+            let clampedY = min(max(desiredCenterY, safeRect.minY + size.height / 2), safeRect.maxY - size.height / 2)
+
+            let arrowLimit = max(0, size.width / 2 - 28)
+            let arrowX = max(-arrowLimit, min(arrowLimit, desiredCenterX - clampedX))
+            let arrowY = verticalSpacing
+
+            return (CGPoint(x: clampedX, y: clampedY), arrowX, arrowY)
+        }
+
+        private func distanceText(for annotation: StreetPinAnnotation) -> String? {
+            guard let meters = annotation.distanceMeters else { return nil }
+            if meters < 950 {
+                let rounded = max(1, Int(meters.rounded()))
+                return "\(rounded) m away"
+            }
+            return String(format: "%.1f km away", meters / 1_000)
+        }
+
+        private func suppressRefresh(for duration: Double) {
+            refreshSuppressionUntil = Date().addingTimeInterval(duration)
+        }
+
+        private func pruneSelectionIfNeeded() {
+            guard let selectedID = selectedPostID else { return }
+            if !streetAnnotations.contains(where: { $0.id == selectedID }) {
+                collapseAll(reason: .dismiss)
+            }
+        }
+
         private func setupAndFetch() {
             dbg("MAP", "lifecycle onAppear starting_location")
             if api == nil { api = ApiService(supabaseService: svc) }
             loc.startContinuous()
-            
+
             if let initialLocation = loc.lastFix {
                 region = MKCoordinateRegion(
                     center: initialLocation.coordinate,
@@ -1140,10 +1480,10 @@ extension SwipeDeckView {
             } else {
                 dbg("MAP", "lifecycle initial_region using_fallback")
             }
-            
+
             Task { await fetchPosts() }
         }
-        
+
         private func handleLocationChange(_: CLLocation?, newLocation: CLLocation?) {
             guard let newLocation else { return }
             if !didCenterFromDefault {
@@ -1154,29 +1494,76 @@ extension SwipeDeckView {
                 didCenterFromDefault = true
             }
         }
-        
+
         private func debouncedFetchPosts() {
-            // Cancel previous fetch
             fetchTask?.cancel()
-            
-            // Wait 350ms before starting new fetch
-            fetchTask = Task {
+            fetchTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 350_000_000)
                 guard !Task.isCancelled else { return }
-                await fetchPosts()
+                await fetchPostsIfAllowed()
             }
         }
-        
+
+        @MainActor
+        private func fetchPostsIfAllowed() async {
+            if shouldDelayFetch() {
+                fetchTask?.cancel()
+                fetchTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    guard !Task.isCancelled else { return }
+                    await fetchPostsIfAllowed()
+                }
+                return
+            }
+            await fetchPosts()
+        }
+
+        @MainActor
+        private func shouldDelayFetch() -> Bool {
+            if calloutPhase == .expanded { return true }
+            if let until = refreshSuppressionUntil, until > Date() { return true }
+            return false
+        }
+
+        private func logCallout(_ message: String) {
+            #if DEBUG
+            print(message)
+            #endif
+        }
+
+        private func logPinSelect(_ id: UUID) {
+            #if DEBUG
+            let rawId = posts.first { UUID(uuidString: $0.id) == id }?.id ?? id.uuidString
+            print("[PIN] select id=\(rawId)")
+            #endif
+        }
+
+        private func announceCalloutChange(_ phase: CalloutPhase) {
+            #if canImport(UIKit)
+            guard UIAccessibility.isVoiceOverRunning else { return }
+            let message: String?
+            switch phase {
+            case .teaser:
+                message = "Post teaser shown"
+            case .expanded:
+                message = "Post details shown"
+            case .none:
+                message = "Callout hidden"
+            }
+            UIAccessibility.post(notification: .layoutChanged, argument: message)
+            #endif
+        }
+
         @MainActor
         private func fetchPosts() async {
             guard let api else { return }
             guard !isFetching else { return }
-            
+
             let center = region.center
-            
+
             isFetching = true
             defer { isFetching = false }
-            
+
             do {
                 let query = FeedQuery(
                     lng: center.longitude,
@@ -1186,10 +1573,10 @@ extension SwipeDeckView {
                     mode: "street",
                     limit: 40
                 )
-                
+
                 var latestError: Error?
                 let maxAttempts = 2
-                
+
                 for attempt in 1...maxAttempts {
                     do {
                         let result = try await withTimeout(seconds: 18.0) {
@@ -1197,23 +1584,23 @@ extension SwipeDeckView {
                         }
                         posts = result
                         mapError = nil
+                        pruneSelectionIfNeeded()
                         return
                     } catch {
                         latestError = error
-                        
-                        // Don't retry on cancellation or timeout
+
                         if error.isCancellationLike {
                             dbg("FEED", "map fetch cancelled/timeout - no retry")
                             throw error
                         }
-                        
+
                         dbg("FEED", "map fetch attempt \(attempt) failed: \(error.localizedDescription)")
                         if attempt < maxAttempts {
                             try? await Task.sleep(nanoseconds: 400_000_000)
                         }
                     }
                 }
-                
+
                 if let latestError {
                     throw latestError
                 } else {
@@ -1221,7 +1608,6 @@ extension SwipeDeckView {
                 }
             } catch {
                 dbg("API", "Failed to fetch map posts: \(error.localizedDescription)")
-                // Soft error: show banner, keep existing pins
                 let message = "Couldn't load items. Showing last results."
                 mapError = message
                 Task { @MainActor in
@@ -1230,20 +1616,17 @@ extension SwipeDeckView {
                         mapError = nil
                     }
                 }
-                // Don't clear posts - keep last pins visible
             }
         }
-        
+
         private func recenterOnUser() {
-            // Toggle forceUpdate to bypass CheapMapView guards for user-initiated recenter
             forceMapUpdate = true
-            
+
             recenterHelper.recenter(
                 region: &region,
                 locationService: loc,
                 onPermissionDenied: { message in
                     mapError = message
-                    // Auto-hide banner after 3 seconds
                     Task { @MainActor in
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
                         if mapError == message {
@@ -1252,25 +1635,48 @@ extension SwipeDeckView {
                     }
                 },
                 completion: {
-                    // Reset forceUpdate after the map has been updated
                     Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms delay
+                        try? await Task.sleep(nanoseconds: 100_000_000)
                         forceMapUpdate = false
                     }
                 }
             )
         }
-        
-        private func distanceBetween(_ first: CLLocationCoordinate2D, _ second: CLLocationCoordinate2D) -> CLLocationDistance {
-            let a = CLLocation(latitude: first.latitude, longitude: first.longitude)
-            let b = CLLocation(latitude: second.latitude, longitude: second.longitude)
-            return a.distance(from: b)
+
+        @MainActor
+        private func handleReserve(post: Post) async {
+            guard let api else { return }
+            guard !reserveInFlight else { return }
+
+            reserveInFlight = true
+            defer { reserveInFlight = false }
+
+            do {
+                _ = try await fetchWithRetry(svc: svc) {
+                    try await api.reservePost(post.id)
+                }
+                let successMessage = "Reserved for 2h 🎉"
+                mapError = successMessage
+                collapseAll(reason: .dismiss)
+                scheduleBannerDismiss(for: successMessage)
+                await fetchPosts()
+            } catch let authError as AuthError {
+                mapError = authError.localizedDescription
+                scheduleBannerDismiss(for: authError.localizedDescription)
+            } catch {
+                let message = "Couldn't reserve right now. Please try again."
+                mapError = message
+                scheduleBannerDismiss(for: message)
+            }
         }
-        
-        private func openInMaps(post: Post, coord: CLLocationCoordinate2D) {
-            let item = MKMapItem(placemark: MKPlacemark(coordinate: coord))
-            item.name = post.title
-            item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeWalking])
+
+        private func scheduleBannerDismiss(for message: String) {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if mapError == message {
+                    mapError = nil
+                }
+            }
         }
     }
 }
