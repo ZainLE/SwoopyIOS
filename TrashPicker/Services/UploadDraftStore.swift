@@ -15,13 +15,13 @@ final class UploadDraftStore: ObservableObject {
     
     private let maxPhotos = 3
     
-    /// Insert photo as primary (newest first), trim to max, bump tick
+    /// Insert photo preserving capture order, trim to max, bump tick
     func insertPrimary(_ image: UIImage) {
         // Process image: fix orientation and downsample
         let processedImage = processImage(image)
         
-        // Insert at beginning (newest first)
-        photos.insert(processedImage, at: 0)
+        // Append so earlier captures stay at lower indices
+        photos.append(processedImage)
         
         // Trim to max photos
         if photos.count > maxPhotos {

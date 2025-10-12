@@ -203,31 +203,31 @@ struct ProfileView: View {
                     }
                 }
                 
-                // MARK: - Reservation History Section
-                Section {
-                    NavigationLink(destination: ReservationHistoryView()) {
-                        HStack(spacing: 12) {
-                            Image(systemName: "clock.arrow.circlepath")
-                                .font(.system(size: 20))
-                                .foregroundColor(AppColor.brandGreen)
-                                .frame(width: 24)
-                            
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Reservation history")
-                                    .font(AppFont.body)
-                                    .foregroundColor(AppColor.text)
-                                
-                                Text(viewModel.reservationSubtitle)
-                                    .font(AppFont.sub)
-                                    .foregroundColor(AppColor.muted)
-                            }
-                            
-                            Spacer()
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-                
+//                // MARK: - Reservation History Section
+//                Section {
+//                    NavigationLink(destination: ReservationHistoryView()) {
+//                        HStack(spacing: 12) {
+//                            Image(systemName: "clock.arrow.circlepath")
+//                                .font(.system(size: 20))
+//                                .foregroundColor(AppColor.brandGreen)
+//                                .frame(width: 24)
+//                            
+//                            VStack(alignment: .leading, spacing: 2) {
+//                                Text("Reservation history")
+//                                    .font(AppFont.body)
+//                                    .foregroundColor(AppColor.text)
+//                                
+//                                Text(viewModel.reservationSubtitle)
+//                                    .font(AppFont.sub)
+//                                    .foregroundColor(AppColor.muted)
+//                            }
+//                            
+//                            Spacer()
+//                        }
+//                        .padding(.vertical, 4)
+//                    }
+//                }
+//                
                 // MARK: - Notifications Section
                 Section {
                     NavigationLink(destination: NotificationsView()) {
@@ -579,36 +579,36 @@ private struct UploadsHistoryView: View {
     }
     
 }
-
-private struct ReservationHistoryView: View {
-    @EnvironmentObject var svc: SupabaseService
-    @State private var loadTask: Task<Void, Never>?
-    
-    var body: some View {
-        List {
-            if svc.myReservations.isEmpty {
-                ContentUnavailableView(
-                    "No Reservations Yet",
-                    systemImage: "clock.arrow.circlepath",
-                    description: Text("Items you've reserved will appear here")
-                )
-            } else {
-                ForEach(svc.myReservations) { item in
-                    ProfileReservationRow(item: item)
-                }
-            }
-        }
-        .navigationTitle("Reservation History")
-        .navigationBarTitleDisplayMode(.large)
-        .onAppear {
-            loadTask = Task { await svc.fetchMyStuff() }
-        }
-        .onDisappear {
-            loadTask?.cancel()
-        }
-        .refreshable { await svc.fetchMyStuff() }
-    }
-}
+//
+//private struct ReservationHistoryView: View {
+//    @EnvironmentObject var svc: SupabaseService
+//    @State private var loadTask: Task<Void, Never>?
+//    
+//    var body: some View {
+//        List {
+//            if svc.myReservations.isEmpty {
+//                ContentUnavailableView(
+//                    "No Reservations Yet",
+//                    systemImage: "clock.arrow.circlepath",
+//                    description: Text("Items you've reserved will appear here")
+//                )
+//            } else {
+//                ForEach(svc.myReservations) { item in
+//                    ProfileReservationRow(item: item)
+//                }
+//            }
+//        }
+//        .navigationTitle("Reservation History")
+//        .navigationBarTitleDisplayMode(.large)
+//        .onAppear {
+//            loadTask = Task { await svc.fetchMyStuff() }
+//        }
+//        .onDisappear {
+//            loadTask?.cancel()
+//        }
+//        .refreshable { await svc.fetchMyStuff() }
+//    }
+//}
 
 // MARK: Convenience helpers (align with TrashDTO)
 
