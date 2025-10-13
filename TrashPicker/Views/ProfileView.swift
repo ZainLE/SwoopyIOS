@@ -16,6 +16,10 @@ final class ProfileVM: ObservableObject {
     private var profileTask: Task<Void, Never>?
     private var isActive = false
     
+    // Single-flight tracking: prevent duplicate fetches
+    private var lastFetchTime: Date?
+    private let fetchCooldown: TimeInterval = 3.0 // 3 seconds
+    
     init(supabaseService: SupabaseService) {
         self.supabaseService = supabaseService
     }
@@ -25,7 +29,12 @@ final class ProfileVM: ObservableObject {
     }
     
     func load() async {
-        // Get data from Supabase session first
+        // Load immediately from cached session (no network, instant)
+        await loadFromCache()
+    }
+    
+    private func loadFromCache() async {
+        // Get data from Supabase session (already in memory, instant)
         if let session = supabaseService.session {
             userEmail = session.user.email ?? "No email"
             displayName = session.user.userMetadata["full_name"]?.description
@@ -34,16 +43,30 @@ final class ProfileVM: ObservableObject {
             createdAt = session.user.createdAt
         }
         
-        // Get counts from service
+        // Get counts from service (already in memory, instant)
         uploadsCount = supabaseService.myUploads.count
         reservationsCount = supabaseService.myReservations.count
     }
     
     // MARK: - Lifecycle Management
     
-    func startProfileRefresh() {
+    func startProfileRefresh(force: Bool = false) {
         // Single-flight: if already running, don't start another
-        guard profileTask == nil else { return }
+        guard profileTask == nil else {
+            #if DEBUG
+            print("[PROFILE] startProfileRefresh skipped (already running)")
+            #endif
+            return
+        }
+        
+        // Cooldown check: don't fetch if we fetched recently (unless forced)
+        if !force, let lastFetch = lastFetchTime, Date().timeIntervalSince(lastFetch) < fetchCooldown {
+            #if DEBUG
+            let elapsed = Date().timeIntervalSince(lastFetch)
+            print("[PROFILE] startProfileRefresh skipped (cooldown elapsed=\(String(format: "%.1f", elapsed))s)")
+            #endif
+            return
+        }
         
         isActive = true
         profileTask = Task { [weak self] in
@@ -61,17 +84,44 @@ final class ProfileVM: ObservableObject {
     private func fetchOnce() async {
         guard isActive, !Task.isCancelled else { return }
         
-        do {
-            try Task.checkCancellation()
-            await supabaseService.fetchMyStuff()
-            await load()
-        } catch {
-            // Silently ignore cancellations
-            if error.isCancellationLike {
-                return
+        #if DEBUG
+        let fetchStart = Date()
+        print("[PROFILE] fetchOnce starting")
+        #endif
+        
+        // Run network call in background Task.detached
+        let result = await Task.detached(priority: .userInitiated) { [supabaseService] in
+            do {
+                try Task.checkCancellation()
+                await supabaseService.fetchMyStuff()
+                return true
+            } catch {
+                // Silently ignore cancellations
+                if error.isCancellationLike {
+                    return false
+                }
+                // Log other errors with rate limiting
+                NetLog.profileOnce("fetchOnce error=\(error.localizedDescription)")
+                return false
             }
-            // Log other errors with rate limiting
-            NetLog.profileOnce("fetchOnce error=\(error.localizedDescription)")
+        }.value
+        
+        // Update UI on main actor
+        if result {
+            await loadFromCache()
+            await MainActor.run {
+                lastFetchTime = Date()
+                profileTask = nil
+            }
+            
+            #if DEBUG
+            let elapsed = Date().timeIntervalSince(fetchStart)
+            print("[PROFILE] fetchOnce complete elapsed=\(String(format: "%.0f", elapsed * 1000))ms")
+            #endif
+        } else {
+            await MainActor.run {
+                profileTask = nil
+            }
         }
     }
     
@@ -312,7 +362,10 @@ struct ProfileView: View {
             .navigationTitle("Profile")
             .navigationBarTitleDisplayMode(.large)
             .refreshable {
-                await svc.fetchMyStuff()
+                // Force refresh (bypass cooldown)
+                viewModel.startProfileRefresh(force: true)
+                // Wait for refresh to complete
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
                 await viewModel.load()
                 notificationsCount = svc.pending.count
             }
@@ -367,8 +420,13 @@ struct ProfileView: View {
                 notificationsCount = max(notificationsCount - 1, 0)
             }
             .onAppear {
+                // Load cached data immediately (instant, no network)
+                Task {
+                    await viewModel.load()
+                    notificationsCount = svc.pending.count
+                }
+                // Start background refresh (respects cooldown)
                 viewModel.startProfileRefresh()
-                notificationsCount = svc.pending.count
             }
             .onDisappear {
                 viewModel.stopProfileRefresh()
