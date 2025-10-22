@@ -14,6 +14,7 @@ private let kAuthCornerRadius: CGFloat = 12
 
 struct AuthView: View {
     @EnvironmentObject var svc: SupabaseService
+    @EnvironmentObject var api: ApiService
     
     @State private var mode: AuthMode = .signIn
     @State private var email = ""
@@ -24,6 +25,8 @@ struct AuthView: View {
     @State private var errorMessage: String?
     @State private var canSubmit = false
     @FocusState private var focus: Field?
+    @State private var hasAgreedToTerms = false
+    @State private var pulseTermsWarning = false
     
     private var trimmedEmail: String { email.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedPass:  String { password.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -37,42 +40,65 @@ struct AuthView: View {
     
     // MARK: - Legal Links Footer
     @ViewBuilder private var legalLinksFooter: some View {
-        Text(attributedLegalText())
+        // one centered line; no left alignment drift
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            
+            // ☐ small checkbox; baseline-aligned & tap target 28x28
+            let checkSize: CGFloat = 14
+            Button {
+                hasAgreedToTerms.toggle()
+                if hasAgreedToTerms { pulseTermsWarning = false }
+            } label: {
+                Image(systemName: hasAgreedToTerms ? "checkmark.square.fill" : "square")
+                    .font(.system(size: checkSize, weight: .semibold))
+                    .foregroundColor(hasAgreedToTerms ? Color(AppColor.cta) : .secondary)
+                    .frame(width: 28, height: 28)               // friendly hit target
+                    // Nudge so the glyph visually shares the text baseline
+                    .alignmentGuide(.firstTextBaseline) { d in d[.bottom] - 8 }
+                    .offset(y: 10)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(hasAgreedToTerms ? "Agreed to terms" : "Agree to terms")
+            .accessibilityHint("Required before signing in")
+            
+            // "Read the privacy policy, terms and conditions"
+            HStack(spacing: 0) {
+                Text("Read the ")
+                    .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : .secondary)
+                Text("privacy policy")
+                    .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : Color(AppColor.cta))
+                    .onTapGesture { openPrivacyPolicy() }
+                Text(", ")
+                    .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : .secondary)
+                Text("terms and conditions")
+                    .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : Color(AppColor.cta))
+                    .onTapGesture { openTerms() }
+            }
             .font(.footnote)
-            .multilineTextAlignment(.center)
-            .tint(AppTheme.ColorToken.cta) // light green token
-            .textSelection(.enabled)
-            .padding(.vertical, 8)
-            .padding(.horizontal, 24)
-    }
-
-
-    private func attributedLegalText() -> AttributedString {
-        var composed = AttributedString("Read the ")
-        if let privacyURL = URL(string: "https://privacy.swoopy.eu/") {
-            var privacy = AttributedString("privacy policy")
-            privacy.link = privacyURL
-            composed += privacy
-        } else {
-            composed += AttributedString("privacy policy")
         }
-        var cta = AttributedString(", ")
-        cta.foregroundColor = Color(AppTheme.ColorToken.cta)
-        composed += cta
-        if let termsURL = URL(string: "https://terms.swoopy.eu/") {
-            var terms = AttributedString("terms and conditions")
-            terms.link = termsURL
-            composed += terms
-        } else {
-            composed += AttributedString("terms and conditions")
-        }
-        return composed
+        .frame(maxWidth: .infinity, alignment: .center) // truly centered
+        .padding(.horizontal, 20)
+        .padding(.bottom, 12)
+        .animation(.easeInOut(duration: 0.2), value: pulseTermsWarning)
     }
     
     private func isValidEmail(_ s: String) -> Bool {
         // light validation is fine; avoids locale edge cases
         let s = s.trimmingCharacters(in: .whitespacesAndNewlines)
         return s.contains("@") && s.contains(".") && s.count >= 6
+    }
+    
+    // MARK: - Terms Helper
+    private func requireTerms(_ action: @escaping () -> Void) {
+        if hasAgreedToTerms {
+            action()
+        } else {
+            withAnimation(.easeInOut(duration: 0.2)) { pulseTermsWarning = true }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                withAnimation(.easeInOut(duration: 0.2)) { pulseTermsWarning = false }
+            }
+        }
     }
     
     private func recalcSubmit() {
@@ -104,17 +130,17 @@ struct AuthView: View {
             .padding(.bottom, 20)
         }
         .tint(Color(AppColor.darkGreen))
-        .onChange(of: email) { _ in recalcSubmit() }
-        .onChange(of: password) { _ in recalcSubmit() }
-        .onChange(of: confirm) { _ in recalcSubmit() }
-        .onChange(of: mode) { _ in
+        .onChange(of: email) { recalcSubmit() }
+        .onChange(of: password) { recalcSubmit() }
+        .onChange(of: confirm) { recalcSubmit() }
+        .onChange(of: mode) {
             // reset cross-mode state, then recalc
             email = ""; password = ""; confirm = ""
             errorMessage = nil; focus = nil
             loading = nil
             recalcSubmit()
         }
-        .onAppear { recalcSubmit() }
+        .onAppear { recalcSubmit(); BootCoordinator.shared.start(svc: svc, api: api) }
         .onTapGesture { focus = nil }
         .background(Color(AppColor.surface))
         .safeAreaInset(edge: .bottom) { legalLinksFooter }
@@ -180,7 +206,9 @@ struct AuthView: View {
                 }
             }
             
-            Button(action: submitEmail) {
+            Button(action: {
+                requireTerms { submitEmail() }
+            }) {
                 HStack(spacing: 8) {
                     if loading == .email { ProgressView().tint(.white) }
                     Text(mode == .signIn ? "Sign In" : "Create Account")
@@ -188,11 +216,12 @@ struct AuthView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding()
-                .background(canSubmit ? Color(AppColor.darkGreen) : Color.gray.opacity(0.3))
+                .background((canSubmit && hasAgreedToTerms) ? Color(AppColor.darkGreen) : Color.gray.opacity(0.3))
                 .foregroundColor(.white)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .disabled(!canSubmit || loading != nil)
+            .opacity(hasAgreedToTerms ? 1.0 : 0.45)
             .padding(.top, 8)
         }
         .frame(maxWidth: 360)
@@ -239,6 +268,7 @@ struct AuthView: View {
             .onSubmit { submitEmail() }
     }
     
+    
     @ViewBuilder private var separator: some View {
         HStack {
             Rectangle().frame(height: 1).foregroundStyle(Color(AppColor.stroke))
@@ -268,6 +298,8 @@ struct AuthView: View {
                     }
                 }
             ),
+            hasAgreedToTerms: $hasAgreedToTerms,
+            pulseTermsWarning: $pulseTermsWarning,
             onApple: { signInWithApple() },
             onGoogle: { signInWithGoogle() }
         )
@@ -322,13 +354,39 @@ struct AuthView: View {
         }
     }
     
+    private func openPrivacyPolicy() {
+        if let url = URL(string: "https://privacy.swoopy.eu/") {
+            UIApplication.shared.open(url)
+        }
+    }
+    
+    private func openTerms() {
+        if let url = URL(string: "https://terms.swoopy.eu/") {
+            UIApplication.shared.open(url)
+        }
+    }
+    
     // MARK: - Auth Buttons Component
     
     private struct AuthButtons: View {
         enum Loading { case none, apple, google }
         @Binding var loading: Loading
+        @Binding var hasAgreedToTerms: Bool
+        @Binding var pulseTermsWarning: Bool
         let onApple: () -> Void
         let onGoogle: () -> Void
+        
+        private func requireTerms(_ action: @escaping () -> Void) {
+            if hasAgreedToTerms {
+                action()
+            } else {
+                withAnimation(.easeInOut(duration: 0.2)) { pulseTermsWarning = true }
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    withAnimation(.easeInOut(duration: 0.2)) { pulseTermsWarning = false }
+                }
+            }
+        }
         
         var body: some View {
             VStack(spacing: 12) {
@@ -350,18 +408,27 @@ struct AuthView: View {
                         }
                     }
                 )
-                .opacity(loading == .apple ? 0.6 : 1.0)
-                .allowsHitTesting(loading == .none)
+                .opacity(hasAgreedToTerms ? 1.0 : 0.45)
+                .disabled(loading != .none)
+                .allowsHitTesting(true)
                 .onTapGesture {
                     guard loading == .none else { return }
-                    onApple()
+                    requireTerms { onApple() }
                 }
+                .overlay(
+                    Group {
+                        if !hasAgreedToTerms {
+                            Color.clear.contentShape(Rectangle())
+                                .onTapGesture { requireTerms({}) }
+                        }
+                    }
+                )
                 .accessibilityLabel("Sign in with Apple")
                 
                 // Google button (matches size/shape)
                 Button {
                     guard loading == .none else { return }
-                    onGoogle()
+                    requireTerms { onGoogle() }
                 } label: {
                     ZStack {
                         // Hidden label while loading (prevents ghost text)
@@ -393,7 +460,17 @@ struct AuthView: View {
                     )
                     .clipShape(RoundedRectangle(cornerRadius: kAuthCornerRadius, style: .continuous))
                 }
-                .allowsHitTesting(loading == .none)
+                .disabled(loading != .none)
+                .opacity(hasAgreedToTerms ? 1.0 : 0.45)
+                .overlay(
+                    Group {
+                        if !hasAgreedToTerms {
+                            Color.clear.contentShape(Rectangle())
+                                .onTapGesture { requireTerms({}) }
+                        }
+                    }
+                )
+                .allowsHitTesting(true)
                 .accessibilityLabel("Sign in with Google")
             }
         }
@@ -458,4 +535,5 @@ struct AuthView: View {
         }
     }
 }
+
 

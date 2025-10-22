@@ -7,7 +7,7 @@ struct AppTabView: View {
     @EnvironmentObject var draftStore: UploadDraftStore
 
     @State private var showUpload = false
-    @State private var cameraService: CameraService?
+    @State private var showCamera = false
 
     // App green
     private let appGreen = Color(red: 0/255.0, green: 81/255.0, blue: 63/255.0)
@@ -77,11 +77,17 @@ struct AppTabView: View {
         VStack(spacing: 0) {
             tabsContent(selectedTab: selectedTabBinding)
         }
-        .onAppear {
-            // Initialize camera service with injected draft store
-            if cameraService == nil {
-                cameraService = CameraService(draftStore: draftStore)
-            }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraOverlay(
+                onCaptured: { image in
+                    draftStore.insertPrimary(image)
+                    showCamera = false
+                },
+                onCancel: {
+                    showCamera = false
+                }
+            )
+            .ignoresSafeArea()
         }
         .onChange(of: draftStore.lastCaptureTick) {
             // Show upload form when new photo is captured
@@ -113,23 +119,7 @@ struct AppTabView: View {
     // MARK: - Camera Handling
     
     private func handleCameraTab() {
-        guard let cameraService = cameraService else { return }
-        
-        cameraService.ensureCameraPermission { granted in
-            if granted {
-                // Present camera with proper view controller
-                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                   let window = windowScene.windows.first,
-                   let rootViewController = window.rootViewController {
-                    
-                    var topController = rootViewController
-                    while let presented = topController.presentedViewController {
-                        topController = presented
-                    }
-                    
-                    cameraService.presentCamera(from: topController)
-                }
-            }
-        }
+        // Show camera overlay
+        showCamera = true
     }
 }

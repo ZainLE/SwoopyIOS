@@ -10,11 +10,7 @@ import MapKit
 import Combine
 import UIKit
 
-// Using real API service for feed data
 
-// MARK: - Debug Logging
-
-/// Centralized debug logger with component tags
 private let VERBOSE_LOGS = true
 
 @inline(__always)
@@ -31,8 +27,8 @@ private class HiddenPostsStore {
     static let shared = HiddenPostsStore()
     private let dismissedKey = "feed.dismissed"
     private let reservedKey = "feed.reserved"
-    private let dismissedTTL: TimeInterval = 24 * 3600 // 24 hours
-    private let reservedTTL: TimeInterval = 2 * 3600   // 2 hours
+    private let dismissedTTL: TimeInterval = 24 * 3600 
+    private let reservedTTL: TimeInterval = 2 * 3600  
     
     func saveDismissed(_ ids: Set<String>) {
         let dict = ids.reduce(into: [String: Date]()) { $0[$1] = Date() }
@@ -164,7 +160,7 @@ struct SwipeDeckView: View {
     
     // Camera and upload flow - using draft store
     @State private var showUploadForm = false
-    @State private var cameraService: CameraService?
+    @State private var showCamera = false
 
     // Convert Post objects to visible feed items
     private var visible: [Post] {
@@ -187,6 +183,19 @@ struct SwipeDeckView: View {
         baseView
             .overlay { errorOverlay }
             .overlay { successOverlay }
+            .fullScreenCover(isPresented: $showCamera) {
+                CameraOverlay(
+                    onCaptured: { image in
+                        presentUploadImmediately(with: image)
+                    },
+                    onCancel: {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showCamera = false
+                        }
+                    }
+                )
+                .ignoresSafeArea()
+            }
             .fullScreenCover(isPresented: $showUploadForm, onDismiss: { handleUploadFormDismiss() }) {
                 uploadFormView
             }
@@ -517,9 +526,7 @@ struct SwipeDeckView: View {
     // MARK: - Action Handlers
 
     private func handleViewAppear() {
-        if cameraService == nil {
-            cameraService = CameraService(draftStore: draftStore)
-        }
+        // View appeared - no camera service initialization needed
     }
 
     private func handleUploadFormDismiss() {
@@ -676,24 +683,21 @@ struct SwipeDeckView: View {
     }
     
     private func handleMakePost() {
-        guard let cameraService = cameraService else { return }
+        showCamera = true
+    }
+    
+    private func presentUploadImmediately(with image: UIImage) {
+        draftStore.insertPrimary(image)
         
-        cameraService.ensureCameraPermission { granted in
-            if granted {
-                // Present camera with proper view controller
-                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                   let window = windowScene.windows.first,
-                   let rootViewController = window.rootViewController {
-                    
-                    var topController = rootViewController
-                    while let presented = topController.presentedViewController {
-                        topController = presented
-                    }
-                    
-                    cameraService.presentCamera(from: topController)
-                }
-            }
-        }
+        // Dismiss camera and show upload in same transaction
+// Transition directly to upload form without visible camera drop
+CATransaction.begin()
+CATransaction.setDisableActions(true)
+withAnimation(.easeInOut(duration: 0.2)) {
+    showCamera = false
+    showUploadForm = true
+}
+CATransaction.commit()  
     }
 
     // MARK: - Feed Management
@@ -1104,6 +1108,12 @@ extension SwipeDeckView {
         @State private var reserveInFlight = false
         @State private var shouldCollapseAfterGesture = false
         @State private var gestureCollapseTargetID: UUID?
+        @State private var isUserPanning = false
+        @State private var lastFetchedCoordKey: String?
+        
+        // Metrics tracking
+        @State private var mapOpenTime: Date?
+        @State private var fetchCountThisPan = 0
 
         private let refreshSuppressionSeconds: Double = 0.5
 
@@ -1165,7 +1175,17 @@ extension SwipeDeckView {
                     bannerOverlay
                 }
             }
-            .onAppear(perform: setupAndFetch)
+            .onAppear {
+                setupAndFetch()
+                // Track first frame time
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 100_000_000)  // wait 1 frame
+                    if let start = mapOpenTime {
+                        let ms = Int(Date().timeIntervalSince(start) * 1000)
+                        Metrics.firstMapFrameMs(ms)
+                    }
+                }
+            }
             .onDisappear {
                 dbg("MAP", "lifecycle onDisappear stopping_location")
                 fetchTask?.cancel()
@@ -1209,9 +1229,13 @@ extension SwipeDeckView {
                     .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 64)
+                .padding(.top, 72)  // Increased from 64 to ensure no overlap with map compass
 
                 Spacer()
+            }
+            .safeAreaInset(edge: .bottom) {
+                // Ensure legal text has ≥10pt from safe area bottom
+                Color.clear.frame(height: 10)
             }
         }
 
@@ -1391,6 +1415,9 @@ extension SwipeDeckView {
         @MainActor
         private func handleRegionWillChange(userInitiated: Bool) {
             guard userInitiated else { return }
+            isUserPanning = true  // Mark gesture start
+            fetchTask?.cancel()   // Cancel pending fetch
+            fetchCountThisPan = 0  // Reset counter for new pan session
             gestureCollapseTargetID = selectedPostID
             if calloutPhase == .expanded {
                 collapseToTeaser(reason: .gesture)
@@ -1405,14 +1432,16 @@ extension SwipeDeckView {
 
         @MainActor
         private func handleRegionDidChange(newRegion: MKCoordinateRegion, userInitiated: Bool) {
-            guard userInitiated else { return }
-            if shouldCollapseAfterGesture {
-                if gestureCollapseTargetID == nil || gestureCollapseTargetID == selectedPostID {
-                    collapseAll(reason: .gesture)
+            if userInitiated {
+                isUserPanning = false  // Mark gesture end
+                if shouldCollapseAfterGesture {
+                    if gestureCollapseTargetID == nil || gestureCollapseTargetID == selectedPostID {
+                        collapseAll(reason: .gesture)
+                    }
                 }
+                shouldCollapseAfterGesture = false
+                gestureCollapseTargetID = nil
             }
-            shouldCollapseAfterGesture = false
-            gestureCollapseTargetID = nil
         }
 
         private func withCalloutSpring(_ updates: @escaping () -> Void) {
@@ -1466,20 +1495,11 @@ extension SwipeDeckView {
         }
 
         private func setupAndFetch() {
+            mapOpenTime = Date()  // Track open time for metrics
             dbg("MAP", "lifecycle onAppear starting_location")
             if api == nil { api = ApiService(supabaseService: svc) }
             loc.startContinuous()
-
-            if let initialLocation = loc.lastFix {
-                region = MKCoordinateRegion(
-                    center: initialLocation.coordinate,
-                    span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)
-                )
-                didCenterFromDefault = true
-                dbg("MAP", "lifecycle initial_region from_cache center=(\(initialLocation.coordinate.latitude),\(initialLocation.coordinate.longitude))")
-            } else {
-                dbg("MAP", "lifecycle initial_region using_fallback")
-            }
+            didCenterFromDefault = true  // Already set in @State init
 
             Task { await fetchPosts() }
         }
@@ -1560,9 +1580,40 @@ extension SwipeDeckView {
             guard !isFetching else { return }
 
             let center = region.center
+            let start = Date()
+            
+            // Single-flight: skip if already fetched this coord recently
+            let coordKey = LocationReadiness.cacheKey(center)
+            if let lastKey = lastFetchedCoordKey {
+                // Check if moved >200m from last fetch
+                let lastCoordParts = lastKey.split(separator: ",")
+                if lastCoordParts.count == 2,
+                   let lastLat = Double(lastCoordParts[0]),
+                   let lastLng = Double(lastCoordParts[1]) {
+                    let lastCoord = CLLocationCoordinate2D(latitude: lastLat, longitude: lastLng)
+                    let currentLoc = CLLocation(latitude: center.latitude, longitude: center.longitude)
+                    let lastLoc = CLLocation(latitude: lastCoord.latitude, longitude: lastCoord.longitude)
+                    let distance = currentLoc.distance(from: lastLoc)
+                    
+                    if distance < 200 {
+                        #if DEBUG
+                        print("[FEED gate] skip (reason=moved-only-\(Int(distance))m key=\(coordKey))")
+                        #endif
+                        return
+                    }
+                }
+            }
 
+            fetchCountThisPan += 1
             isFetching = true
-            defer { isFetching = false }
+            defer { 
+                isFetching = false
+                lastFetchedCoordKey = coordKey
+                
+                let ms = Int(Date().timeIntervalSince(start) * 1000)
+                Metrics.avgFeedMs(ms)
+                Metrics.fetchCountPerPan(fetchCountThisPan)
+            }
 
             do {
                 let query = FeedQuery(

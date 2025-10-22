@@ -4,6 +4,8 @@
 //
 //  Created by Zain Latif on 19/9/25.
 //
+//  NOTE: Now uses CameraOverlay (AVCam-style) for all camera operations.
+//
 
 import SwiftUI
 import MapKit
@@ -83,7 +85,7 @@ struct AddTrashView: View {
                             Spacer()
                             
                             // Top-right photo icon
-                            Button(action: { 
+                            Button(action: {
                                 // Find first empty slot or use slot 0
                                 let emptySlot = slots.firstIndex(of: nil) ?? 0
                                 slotMenuIndex = emptySlot
@@ -213,7 +215,7 @@ struct AddTrashView: View {
                     // 5) Share Your Find Button
                     Button(action: submit) {
                         HStack(spacing: AppTheme.Spacing.s) {
-                            if saving { 
+                            if saving {
                                 ProgressView()
                                     .progressViewStyle(CircularProgressViewStyle(tint: AppTheme.ColorToken.textInv))
                                     .scaleEffect(0.8)
@@ -253,7 +255,15 @@ struct AddTrashView: View {
             ), titleVisibility: .visible) {
                 if let idx = slotMenuIndex {
                     if slots[idx] == nil {
-                        Button("Take Photo") { showCamera = true }
+                        Button("Take Photo") {
+                            Task {
+                                let ok = await CameraSessionManager.shared.ensurePermission()
+                                if ok {
+                                    CameraSessionManager.shared.configureIfNeeded()
+                                    showCamera = true
+                                }
+                            }
+                        }
                         Button("Choose from Library") { showLibrary = true }
                     } else {
                         Button("Replace Photo") { showLibrary = true }
@@ -265,15 +275,19 @@ struct AddTrashView: View {
                     Button("Cancel", role: .cancel) {}
                 }
             }
-            .sheet(isPresented: $showCamera) {
-                CameraPicker { image in
-                    if let idx = slotMenuIndex, let img = image {
-                        slots[idx] = img
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            .fullScreenCover(isPresented: $showCamera) {
+                CameraOverlay(
+                    onCaptured: { image in
+                        if let idx = slotMenuIndex {
+                            slots[idx] = image
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        }
+                        showCamera = false
+                    },
+                    onCancel: {
+                        showCamera = false
                     }
-                    showCamera = false
-                }
-                .ignoresSafeArea()
+                )
             }
             .sheet(isPresented: $showLibrary) {
                 LibraryPicker(limit: 1) { images in
@@ -500,7 +514,7 @@ private struct DescriptionChipView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.s) {
             // Chip that expands/collapses
-            Button(action: { 
+            Button(action: {
                 withAnimation(.easeInOut(duration: 0.3)) {
                     isExpanded.toggle()
                 }
@@ -625,27 +639,6 @@ private struct InlineMap: View {
 }
 
 // MARK: - Pickers
-
-private struct CameraPicker: UIViewControllerRepresentable {
-    var onFinish: (UIImage?) -> Void
-    func makeCoordinator() -> Coordinator { Coordinator(onFinish: onFinish) }
-    func makeUIViewController(context: Context) -> UIImagePickerController {
-        let vc = UIImagePickerController()
-        vc.sourceType = .camera
-        vc.delegate = context.coordinator
-        vc.allowsEditing = false
-        return vc
-    }
-    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
-    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
-        let onFinish: (UIImage?) -> Void
-        init(onFinish: @escaping (UIImage?) -> Void) { self.onFinish = onFinish }
-        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { self.onFinish(nil) }
-        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
-            self.onFinish(info[.originalImage] as? UIImage)
-        }
-    }
-}
 
 private struct LibraryPicker: UIViewControllerRepresentable {
     let limit: Int

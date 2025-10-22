@@ -54,6 +54,7 @@ struct CheapMapView: UIViewRepresentable {
         mapView.showsCompass = false
         mapView.showsScale = false
         mapView.register(StreetPostAnnotationView.self, forAnnotationViewWithReuseIdentifier: StreetPostAnnotationView.reuseIdentifier)
+        mapView.register(MKMarkerAnnotationView.self, forAnnotationViewWithReuseIdentifier: MKMapViewDefaultClusterAnnotationViewReuseIdentifier)
 
         context.coordinator.mapView = mapView
         context.coordinator.attachTapRecognizer(to: mapView)
@@ -150,6 +151,17 @@ struct CheapMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            // Handle clusters
+            if let cluster = annotation as? MKClusterAnnotation {
+                let view = mapView.dequeueReusableAnnotationView(
+                    withIdentifier: MKMapViewDefaultClusterAnnotationViewReuseIdentifier,
+                    for: cluster
+                ) as! MKMarkerAnnotationView
+                view.markerTintColor = UIColor(AppTheme.ColorToken.brandDark)
+                return view
+            }
+            
+            // Handle individual pins
             guard let streetAnnotation = annotation as? StreetPostMKAnnotation else {
                 return nil
             }
@@ -192,26 +204,36 @@ struct CheapMapView: UIViewRepresentable {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 parent.onRegionWillChange(isUserGesture)
+                
+                // Clear anchor immediately when user pan starts
+                if isUserGesture {
+                    parent.calloutAnchor.wrappedValue = nil
+                }
             }
         }
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             let region = mapView.region
             let isUserGesture = lastRegionChangeWasUserInitiated
+            let wasAnimated = animated
             lastRegionChangeWasUserInitiated = false
+            
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 parent.region = region
                 parent.onRegionDidChange(region, isUserGesture)
-                if let selected = selectedAnnotation {
-                    let point = mapView.convert(selected.coordinate, toPointTo: mapView)
-                    parent.calloutAnchor.wrappedValue = point
-                    assert(Thread.isMainThread)
-                    #if DEBUG
-                    print("[CALLOUT] anchor screenPoint=(\(String(format: "%.1f", point.x)),\(String(format: "%.1f", point.y))) id=\(selected.model.rawId)")
-                    #endif
-                } else {
-                    parent.calloutAnchor.wrappedValue = nil
+                
+                // Only update anchor if NOT animating (user stopped panning)
+                if !wasAnimated || !isUserGesture {
+                    if let selected = selectedAnnotation {
+                        let point = mapView.convert(selected.coordinate, toPointTo: mapView)
+                        parent.calloutAnchor.wrappedValue = point
+                        #if DEBUG
+                        print("[CALLOUT] anchor screenPoint=(\(String(format: "%.1f", point.x)),\(String(format: "%.1f", point.y))) id=\(selected.model.rawId)")
+                        #endif
+                    } else {
+                        parent.calloutAnchor.wrappedValue = nil
+                    }
                 }
             }
         }
@@ -297,7 +319,7 @@ private final class StreetPostAnnotationView: MKAnnotationView {
 
     private func configure() {
         canShowCallout = false
-        clusteringIdentifier = nil
+        clusteringIdentifier = "StreetPostCluster"
         image = Self.pinImage
         displayPriority = .required
         centerOffset = CGPoint(x: 0, y: -Self.pinImage.size.height / 2)

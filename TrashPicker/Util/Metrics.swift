@@ -1,7 +1,6 @@
 import Foundation
 
-/// Minimal release-safe metrics (no PII)
-/// Prints compact key=value pairs. Verbose logs remain under #if DEBUG elsewhere.
+
 enum Metrics {
     static func sessionRestoreMs(_ ms: Int) {
         print("[METRIC] sessionRestoreMs=\(ms)")
@@ -20,5 +19,17 @@ enum Metrics {
     }
     static func errorType(_ type: String) {
         print("[METRIC] errorType=\(type)")
+    }
+    static func firstMapFrameMs(_ ms: Int) {
+        print("[METRIC] firstMapFrameMs=\(ms)")
+    }
+    static func mapDebounceMs(_ ms: Int) {
+        print("[METRIC] mapDebounceMs=\(ms)")
+    }
+    static func fetchCountPerPan(_ count: Int) {
+        print("[METRIC] fetchCountPerPan=\(count)")
+    }
+    static func avgFeedMs(_ ms: Int) {
+        print("[METRIC] avgFeedMs=\(ms)")
     }
 }

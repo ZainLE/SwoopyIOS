@@ -79,7 +79,26 @@ struct UploadFindView: View {
         .onChange(of: loc.userLocation) { _, newValue in
             vm.bootstrapLocation(newValue?.coordinate)
         }
-        .fullScreenCover(isPresented: $showCamera) { cameraView }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraOverlay(
+                onCaptured: { image in
+                    if let index = showActionForTile, draftStore.photos.indices.contains(index) {
+                        draftStore.replacePhoto(at: index, with: image)
+                    } else if draftStore.canAddPhoto {
+                        draftStore.insertPrimary(image)
+                    }
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showCamera = false
+                    }
+                },
+                onCancel: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showCamera = false
+                    }
+                }
+            )
+            .ignoresSafeArea()
+        }
         .sheet(isPresented: $showPicker) { photoPickerView }
     }
 
@@ -361,32 +380,6 @@ struct UploadFindView: View {
         }
     }
 
-
-
-
-    private var cameraView: some View {
-        CameraCaptureView { image in
-            Task { @MainActor in
-                if let img = image {
-                    if let index = showActionForTile, draftStore.photos.indices.contains(index) {
-                        draftStore.replacePhoto(at: index, with: img)
-                    } else if draftStore.canAddPhoto {
-                        draftStore.insertPrimary(img)
-                    }
-                } else {
-                    // Image was nil - either cancelled or failed validation
-                    // Show toast only if it wasn't a cancel (we can't distinguish easily)
-                    // The camera component already logs the issue
-                    #if DEBUG
-                    print("[UploadFindView] Camera returned nil image")
-                    #endif
-                }
-            }
-        }
-        .ignoresSafeArea(.all)
-        .background(Color.black)
-    }
-
     private var photoPickerView: some View {
         PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
             Text("Choose Photo")
@@ -587,9 +580,13 @@ struct UploadFindView: View {
         let alert = UIAlertController(title: "Photo Options", message: nil, preferredStyle: .actionSheet)
         
         alert.addAction(UIAlertAction(title: takePhotoTitle, style: .default) { _ in
-            DispatchQueue.main.async {
-                self.showActionForTile = index
-                self.showCamera = true
+            Task { @MainActor in
+                let ok = await CameraSessionManager.shared.ensurePermission()
+                if ok {
+                    CameraSessionManager.shared.configureIfNeeded()
+                    self.showActionForTile = index
+                    self.showCamera = true
+                }
             }
         })
         
@@ -703,8 +700,19 @@ final class UploadFindViewModel: ObservableObject {
     @Published var descriptionText = ""
 
     // Map state
-    @Published var camera: MapCameraPosition = .region(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
-                                                                          span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)))
+    @Published var camera: MapCameraPosition = {
+        let fallback = CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686)
+        if let cached = LocationService.shared.lastKnownFromSystem() {
+            return .region(MKCoordinateRegion(
+                center: cached.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+            ))
+        }
+        return .region(MKCoordinateRegion(
+            center: fallback,
+            span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+        ))
+    }()
     @Published var currentCoordinate: CLLocationCoordinate2D?
     @Published var addressText: String = "Locating address…"
     
@@ -738,9 +746,9 @@ final class UploadFindViewModel: ObservableObject {
         let geocoder = CLGeocoder()
         do {
             let placemarks = try await geocoder.reverseGeocodeLocation(CLLocation(latitude: coord.latitude, longitude: coord.longitude))
-            guard let p = placemarks.first else { 
+            guard let p = placemarks.first else {
                 addressText = "Address unavailable"
-                return 
+                return
             }
             // Build string safely:
             let parts = [p.name, p.thoroughfare, p.subLocality, p.locality].compactMap { $0 }.filter { !$0.isEmpty }
@@ -777,7 +785,7 @@ enum Condition: CaseIterable, Hashable, Identifiable {
     var backendValue: String {
         switch self {
         case .needsFixing: return "bad"        // "Needs Fixing" = bad
-        case .good:        return "good"       // "Good" = good  
+        case .good:        return "good"       // "Good" = good
         case .excellent:   return "excellent" // "Excellent" = excellent
         case .likeNew:     return "excellent" // "Like New" = excellent (same as excellent)
         }

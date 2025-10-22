@@ -10,7 +10,9 @@ struct SystemGlassTabsWithFab: View {
     @State private var tab = 0
     @State private var previousTab = 0  // Track previous tab for reselect detection
     @State private var showUploadForm = false
-    @State private var cameraService: CameraService?
+    
+    // Camera overlay state
+    @State private var showCamera = false
     
     // App green
     private let appGreen = Color(red: 0/255, green: 81/255, blue: 63/255)
@@ -35,7 +37,7 @@ struct SystemGlassTabsWithFab: View {
             .tint(appGreen)
 
             // Detached FAB (+), aligned to bar baseline with a visible gap
-            Button { 
+            Button {
                 handleFabTap()
             } label: {
                 FabGlassCircle(appGreen: appGreen) {
@@ -53,10 +55,6 @@ struct SystemGlassTabsWithFab: View {
         }
         .ignoresSafeArea(edges: .bottom)
         .onAppear {
-            // Initialize camera service with injected draft store
-            if cameraService == nil {
-                cameraService = CameraService(draftStore: draftStore)
-            }
             // Prewarm haptics engine on first appearance
             Haptics.prewarm()
             CHaptic.shared.prepare()
@@ -71,16 +69,6 @@ struct SystemGlassTabsWithFab: View {
                 Haptics.play(.tabSelect)
                 previousTab = oldValue
             }
-        }
-        .alert("Camera Permission Required", isPresented: .constant(cameraService?.showPermissionDeniedAlert == true)) {
-            Button("Open Settings") {
-                cameraService?.openSettings()
-            }
-            Button("Cancel", role: .cancel) {
-                cameraService?.showPermissionDeniedAlert = false
-            }
-        } message: {
-            Text("Please enable camera access in Settings to take photos for your posts.")
         }
         .fullScreenCover(isPresented: $showUploadForm) {
             NavigationStack {
@@ -106,34 +94,36 @@ struct SystemGlassTabsWithFab: View {
                 showUploadForm = true
             }
         }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraOverlay(
+                onCaptured: { image in
+                    // Deliver to draft store (same pipeline as before)
+                    draftStore.insertPrimary(image)
+                    showCamera = false
+                },
+                onCancel: {
+                    showCamera = false
+                }
+            )
+        }
     }
     
     // MARK: - Actions
     
     private func handleFabTap() {
-        guard let cameraService = cameraService else { return }
-        
         // Premium haptic feedback for primary action (camera +)
         if CHHapticEngine.capabilitiesForHardware().supportsHaptics {
             CHaptic.shared.primaryAction()
         } else {
             Haptics.play(.primaryAction)
         }
-        
-        cameraService.ensureCameraPermission { granted in
-            if granted {
-                // Present camera with proper view controller
-                if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-                   let window = windowScene.windows.first,
-                   let rootViewController = window.rootViewController {
-                    
-                    var topController = rootViewController
-                    while let presented = topController.presentedViewController {
-                        topController = presented
-                    }
-                    
-                    cameraService.presentCamera(from: topController)
-                }
+
+        // Open camera via CameraOverlay
+        Task {
+            let ok = await CameraSessionManager.shared.ensurePermission()
+            if ok {
+                CameraSessionManager.shared.configureIfNeeded()
+                showCamera = true
             }
         }
     }

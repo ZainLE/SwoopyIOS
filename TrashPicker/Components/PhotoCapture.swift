@@ -1,3 +1,14 @@
+//
+//  PhotoCapture.swift
+//  TrashPicker
+//
+//  DEPRECATED: System camera (UIImagePickerController) replaced by CameraOverlay.
+//  This file is kept for rollback purposes only. No active call sites should remain.
+//  Wrapped in #if LEGACY_CAMERA to exclude from build.
+//
+
+#if LEGACY_CAMERA
+
 import SwiftUI
 import PhotosUI
 import AVFoundation
@@ -5,7 +16,7 @@ import AVFoundation
 struct PhotoCapture: View {
     @Binding var image: UIImage?
 
-    @State private var showCamera = false
+    // Camera now presented via CameraService overlay (no sheet toggle needed)
     @State private var pickerItem: PhotosPickerItem?
     @State private var showCameraAlert = false
     @State private var cameraAlertMessage = ""
@@ -25,9 +36,6 @@ struct PhotoCapture: View {
             }
             .buttonStyle(.borderedProminent)         // filled button
             .tint(.blue)                             // choose your accent
-            .sheet(isPresented: $showCamera) {
-                UIKitCamera(image: $image)
-            }
             .alert("Camera Unavailable", isPresented: $showCameraAlert) {
                 Button("OK", role: .cancel) {}
             } message: {
@@ -58,58 +66,26 @@ struct PhotoCapture: View {
     // MARK: - Permissions / Camera
 
     private func openCameraSafely() async {
-        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
-            cameraAlertMessage = "Camera not available on this device."
-            showCameraAlert = true
-            return
-        }
-
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized:
-            showCamera = true
-        case .notDetermined:
-            let granted = await AVCaptureDevice.requestAccess(for: .video)
-            if granted {
-                showCamera = true
-            } else {
-                cameraAlertMessage = "Please allow camera access in Settings."
+        await MainActor.run {
+            guard let presenter = UIApplication.shared.topViewController else {
+                cameraAlertMessage = "Couldn't present camera."
                 showCameraAlert = true
+                return
             }
-        default:
-            cameraAlertMessage = "Please allow camera access in Settings."
-            showCameraAlert = true
+            CameraService.shared.ensureCameraPermission(from: presenter) { ok in
+                guard ok else {
+                    cameraAlertMessage = "Please allow camera access in Settings."
+                    showCameraAlert = true
+                    return
+                }
+                CameraService.shared.presentCamera(from: presenter, onImage: { img in
+                    image = img
+                }, onCancel: {
+                    // no-op
+                })
+            }
         }
     }
 }
 
-// MARK: - UIKit Camera Bridge
-
-struct UIKitCamera: UIViewControllerRepresentable {
-    @Binding var image: UIImage?
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
-        let parent: UIKitCamera
-        init(_ p: UIKitCamera) { parent = p }
-
-        func imagePickerController(_ picker: UIImagePickerController,
-                                   didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
-            parent.image = info[.originalImage] as? UIImage
-            picker.dismiss(animated: true)
-        }
-
-        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            picker.dismiss(animated: true)
-        }
-    }
-
-    func makeUIViewController(context: Context) -> UIImagePickerController {
-        let vc = UIImagePickerController()
-        vc.sourceType = .camera
-        vc.delegate = context.coordinator
-        return vc
-    }
-
-    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
-}
+#endif // LEGACY_CAMERA

@@ -38,7 +38,19 @@ struct TrashMapPage: View {
     var onClose: (() -> Void)? = nil
 
     // Camera & state
-    @State private var position: MapCameraPosition = .automatic
+    @State private var position: MapCameraPosition = {
+        let fallback = MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
+            span: .init(latitudeDelta: 0.05, longitudeDelta: 0.05)
+        )
+        if let cached = LocationService.shared.lastKnownFromSystem() {
+            return .region(MKCoordinateRegion(
+                center: cached.coordinate,
+                span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)
+            ))
+        }
+        return .region(fallback)
+    }()
     @State private var lastRegion: MKCoordinateRegion? = nil
     @State private var regionFallback = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),

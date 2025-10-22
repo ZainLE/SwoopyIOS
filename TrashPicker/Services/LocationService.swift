@@ -115,17 +115,35 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     // MARK: - Delegate
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         if let newLocation = locations.last {
-            // Only persist valid, non-zero coordinates
             let coord = newLocation.coordinate
-            if CLLocationCoordinate2DIsValid(coord) && !(coord.latitude == 0.0 && coord.longitude == 0.0) {
-                lastFix = newLocation
-                saveLastKnownCoordinate(newLocation)
-                dbg("APP", "LocationService: updated location to \(coord)")
-            } else {
+            
+            // Validate coordinate
+            guard CLLocationCoordinate2DIsValid(coord) && !(coord.latitude == 0.0 && coord.longitude == 0.0) else {
                 dbg("APP", "LocationService: rejected invalid/zero coordinate")
+                return
             }
             
-            // If someone is awaiting the first fix, deliver it once
+            // Distinct-until-changed: ignore if <10m from last fix
+            if let last = lastFix {
+                let distance = newLocation.distance(from: last)
+                if distance < 10.0 {
+                    dbg("APP", "LocationService: ignored duplicate (distance=\(String(format: "%.1fm", distance)))")
+                    // Still deliver to continuation for firstFix() callers
+                    if let cont = firstFixContinuation {
+                        firstFixContinuation = nil
+                        print("[LOC] firstFix result: success(lat=\(newLocation.coordinate.latitude), lon=\(newLocation.coordinate.longitude), hdop=\(newLocation.horizontalAccuracy))) [delegate]")
+                        cont.resume(returning: newLocation)
+                    }
+                    return
+                }
+            }
+            
+            // Accept update
+            lastFix = newLocation
+            saveLastKnownCoordinate(newLocation)
+            dbg("APP", "LocationService: updated location to \(coord)")
+            
+            // Deliver to continuation
             if let cont = firstFixContinuation {
                 firstFixContinuation = nil
                 print("[LOC] firstFix result: success(lat=\(newLocation.coordinate.latitude), lon=\(newLocation.coordinate.longitude), hdop=\(newLocation.horizontalAccuracy))) [delegate]")
