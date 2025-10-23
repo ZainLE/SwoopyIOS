@@ -40,7 +40,7 @@ private struct AnyEncodable: Encodable {
 // MARK: - Unified request helper (Encodable body overload)
 extension ApiService {
     @discardableResult
-    func makeRequest<R: Decodable>(
+    func requestJSON<R: Decodable>(
         _ path: String,
         method: HTTPMethod = .GET,
         body: (any Encodable)? = nil,
@@ -206,14 +206,45 @@ extension Location {
 struct TolerantLocation: Decodable {
     let lat: StringOrDouble?
     let lng: StringOrDouble?
-    
+
+    init(lat: StringOrDouble?, lng: StringOrDouble?) {
+        self.lat = lat
+        self.lng = lng
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        lat = try Self.decodeValue(from: container, keys: ["lat", "latitude"])
+        lng = try Self.decodeValue(from: container, keys: ["lng", "lon", "longitude"])
+    }
+
     var coordinate: CLLocationCoordinate2D? {
         guard let lat = lat?.value, let lng = lng?.value else { return nil }
         return CLLocationCoordinate2D(latitude: lat, longitude: lng)
     }
-    
-    enum CodingKeys: String, CodingKey {
-        case lat, lng
+
+    private static func decodeValue(
+        from container: KeyedDecodingContainer<DynamicCodingKey>,
+        keys: [String]
+    ) throws -> StringOrDouble? {
+        for key in keys {
+            guard let codingKey = DynamicCodingKey(stringValue: key) else { continue }
+            if let value = try container.decodeIfPresent(StringOrDouble.self, forKey: codingKey) {
+                return value
+            }
+            if let rawString = try container.decodeIfPresent(String.self, forKey: codingKey), rawString.isEmpty {
+                return nil
+            }
+        }
+        return nil
+    }
+
+    private struct DynamicCodingKey: CodingKey {
+        let stringValue: String
+        let intValue: Int? = nil
+
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
     }
 }
 
@@ -369,6 +400,129 @@ struct ApiResponse<T: Codable>: Codable {
     let message: String?
 }
 
+// MARK: - Incoming Requests
+
+struct IncomingRequest: Decodable, Identifiable {
+    struct Requester: Decodable {
+        let userId: String?
+        let firstName: String?
+        let lastName: String?
+        let photoURL: URL?
+
+        enum CodingKeys: String, CodingKey {
+            case userId = "user_id"
+            case firstName = "first_name"
+            case lastName = "last_name"
+            case photoURL = "photo_url"
+        }
+    }
+
+    struct ImageReference: Decodable {
+        let rawURL: String?
+        let orderIndex: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case rawURL = "url"
+            case orderIndex = "order_index"
+        }
+
+        var url: URL? { rawURL.flatMap(URL.init(string:)) }
+    }
+
+    struct PostSummary: Decodable {
+        let id: String?
+        let title: String?
+        let mode: String?
+        let images: [ImageReference]?
+        let exactLocation: TolerantLocation?
+        let approxLocation: TolerantLocation?
+
+        enum CodingKeys: String, CodingKey {
+            case id, title, mode, images
+            case exactLocation = "exact_location"
+            case approxLocation = "approx_location"
+        }
+    }
+
+    let reservationId: String
+    let postId: String
+    let status: String?
+    let title: String?
+    let modeRaw: String?
+    let createdAt: RFC1123OrISODate?
+    let updatedAt: RFC1123OrISODate?
+    let expiresAt: RFC1123OrISODate?
+    let endAt: RFC1123OrISODate?
+    let requester: Requester?
+    let post: PostSummary?
+    let images: [ImageReference]?
+
+    enum CodingKeys: String, CodingKey {
+        case reservationId = "reservation_id"
+        case postId = "post_id"
+        case status, title, requester, post, images
+        case modeRaw = "mode"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case expiresAt = "expires_at"
+        case endAt = "end_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        reservationId = try container.decode(String.self, forKey: .reservationId)
+        postId = try container.decode(String.self, forKey: .postId)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        modeRaw = try container.decodeIfPresent(String.self, forKey: .modeRaw)
+        createdAt = try container.decodeIfPresent(RFC1123OrISODate.self, forKey: .createdAt)
+        updatedAt = try container.decodeIfPresent(RFC1123OrISODate.self, forKey: .updatedAt)
+        expiresAt = try container.decodeIfPresent(RFC1123OrISODate.self, forKey: .expiresAt)
+        endAt = try container.decodeIfPresent(RFC1123OrISODate.self, forKey: .endAt)
+        requester = try container.decodeIfPresent(Requester.self, forKey: .requester)
+        post = try container.decodeIfPresent(PostSummary.self, forKey: .post)
+        images = try container.decodeIfPresent([ImageReference].self, forKey: .images)
+    }
+
+    var id: String { reservationId }
+
+    var mode: ItemMode? {
+        if let modeRaw, let mode = ItemMode(rawValue: modeRaw) {
+            return mode
+        }
+        if let postMode = post?.mode, let mode = ItemMode(rawValue: postMode) {
+            return mode
+        }
+        return nil
+    }
+
+    var resolvedTitle: String? {
+        title ?? post?.title
+    }
+
+    var leadImageURL: URL? {
+        if let image = (images ?? []).sorted(by: { ($0.orderIndex ?? 0) < ($1.orderIndex ?? 0) }).first?.url {
+            return image
+        }
+        if let postImage = (post?.images ?? []).sorted(by: { ($0.orderIndex ?? 0) < ($1.orderIndex ?? 0) }).first?.url {
+            return postImage
+        }
+        return nil
+    }
+
+    var createdAtDate: Date? { createdAt?.value }
+    var expiresAtDate: Date? { expiresAt?.value }
+    var endAtDate: Date? { endAt?.value }
+
+    var requesterName: String? {
+        let first = requester?.firstName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let last = requester?.lastName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let combined = [first, last].filter { !$0.isEmpty }.joined(separator: " ")
+        if !combined.isEmpty { return combined }
+        return requester?.firstName ?? requester?.lastName
+    }
+}
+
 // MARK: - Enums
 
 enum ItemCondition: String, Codable, CaseIterable {
@@ -422,6 +576,21 @@ enum ApiServiceError: Error, LocalizedError {
             return "No authentication token available"
         }
     }
+}
+
+struct ApiHTTPError: LocalizedError {
+    let statusCode: Int
+    let message: String?
+
+    var errorDescription: String? {
+        message?.isEmpty == false ? message : "HTTP \(statusCode)"
+    }
+}
+
+struct RawHTTPResult {
+    let statusCode: Int
+    let data: Data
+    let message: String?
 }
 
 enum ReserveError: LocalizedError {
@@ -612,11 +781,11 @@ class ApiService: ObservableObject {
         authHeaders.forEach { key, value in
             request.setValue(value, forHTTPHeaderField: key)
         }
-        
+
         if let body = body {
             request.httpBody = body
         }
-        
+
         do {
             let (data, response) = try await session.data(for: request)
             
@@ -715,6 +884,47 @@ class ApiService: ObservableObject {
             throw ApiServiceError.networkError(error)
         }
     }
+
+    private func extractErrorMessage(from data: Data) -> String? {
+        guard !data.isEmpty else { return nil }
+
+        if let payload = try? JSONDecoder().decode(ApiResponse<String>.self, from: data) {
+            if let error = payload.error, !error.isEmpty {
+                return error
+            }
+            if let message = payload.message, !message.isEmpty {
+                return message
+            }
+            if let dataValue = payload.data, !dataValue.isEmpty {
+                return dataValue
+            }
+        }
+
+        if let errorMessage = try? JSONDecoder().decode(APIErrorMessage.self, from: data).error,
+           !errorMessage.isEmpty {
+            return errorMessage
+        }
+
+        if let text = String(data: data, encoding: .utf8), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return text
+        }
+
+        return nil
+    }
+
+    func rawRequest(
+        _ path: String,
+        method: HTTPMethod,
+        body: Data? = nil,
+        queryParams: [URLQueryItem]? = nil
+    ) async throws -> RawHTTPResult {
+        let headers = try await authHeaders()
+        let request = try buildRequest(path: path, method: method, query: queryParams, body: body, headers: headers)
+        let (data, response) = try await send(request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+        let message = (200...299).contains(statusCode) ? nil : extractErrorMessage(from: data)
+        return RawHTTPResult(statusCode: statusCode, data: data, message: message)
+    }
     
     // MARK: - Health Check
     
@@ -726,6 +936,38 @@ class ApiService: ObservableObject {
         
         let response: HealthResponse = try await makeRequest("/health")
         return ["status": response.status, "timestamp": response.timestamp]
+    }
+
+    // MARK: - Incoming Requests
+
+    enum IncomingRequestStatus: String { case pending, active }
+
+    private struct IncomingRequestsEnvelope: Decodable {
+        let requests: [IncomingRequest]?
+        let data: [IncomingRequest]?
+        let items: [IncomingRequest]?
+    }
+
+    func getIncomingRequests(status: IncomingRequestStatus) async throws -> [IncomingRequest] {
+        let query = [URLQueryItem(name: "status", value: status.rawValue)]
+        let headers = try await authHeaders()
+        let request = try buildRequest(path: "/my/incoming-requests", method: .GET, query: query, headers: headers)
+        let (data, response) = try await send(request)
+
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+
+        guard (200...299).contains(http.statusCode) else {
+            if http.statusCode == 401 { throw ApiServiceError.unauthorized }
+            if http.statusCode == 404 { throw ApiServiceError.notFound }
+            let message = extractErrorMessage(from: data)
+            throw ApiHTTPError(statusCode: http.statusCode, message: message)
+        }
+
+        let decoder = JSONDecoder()
+        let envelope = try decoder.decode(IncomingRequestsEnvelope.self, from: data)
+        return envelope.requests ?? envelope.data ?? envelope.items ?? []
     }
     
     // MARK: - Posts
@@ -811,7 +1053,7 @@ class ApiService: ObservableObject {
             let url: URL
             let order_index: Int
         }
-        
+
         struct ServerPost: Decodable {
             let id: String
             let title: String
@@ -820,7 +1062,7 @@ class ApiService: ObservableObject {
             let condition: String
             let mode: String
             let owner_id: String
-            let images: [ServerImage]
+            let images: [ServerImage]?
             let exact_location: TolerantLocation?
             let approx_location: TolerantLocation?
             let created_at: RFC1123OrISODate?
@@ -864,7 +1106,7 @@ class ApiService: ObservableObject {
             }
             
             // Convert ServerImage to PostImage
-            let images = serverPost.images.map { serverImg in
+            let images = (serverPost.images ?? []).map { serverImg in
                 PostImage(url: serverImg.url, orderIndex: serverImg.order_index)
             }
             
@@ -903,6 +1145,119 @@ class ApiService: ObservableObject {
         }
         
         return posts
+    }
+
+    // MARK: - Reservations (My) — tolerant to backend keys
+    func getMyReservations() async throws -> [Reservation] {
+        struct ServerImage: Decodable { let url: URL; let order_index: Int }
+        struct ServerPost: Decodable {
+            let id: String
+            let title: String?
+            let description: String?
+            let category: String?
+            let condition: String?
+            let mode: String?
+            let owner_id: String?
+            let images: [ServerImage]?
+            let exact_location: TolerantLocation?
+            let approx_location: TolerantLocation?
+            let distance: StringOrDouble?
+            let owner: Profile?
+        }
+        struct ServerReservation: Decodable {
+            let id: String
+            let item_id: String
+            let reserver: String
+            let status: String
+            let requested_at: String
+            let approved_at: String?
+            let start_at: String?
+            let end_at: String?
+            let picked_up_at: String?
+            let picked_at: String?
+            let canceled_at: String?
+            let post: ServerPost
+
+            enum CodingKeys: String, CodingKey {
+                case id, item_id, reserver, status, requested_at, approved_at, start_at, end_at, canceled_at
+                case picked_up_at, picked_at
+                case post, posts
+            }
+            init(from d: Decoder) throws {
+                let c = try d.container(keyedBy: CodingKeys.self)
+                id = try c.decode(String.self, forKey: .id)
+                item_id = try c.decode(String.self, forKey: .item_id)
+                reserver = try c.decode(String.self, forKey: .reserver)
+                status = try c.decode(String.self, forKey: .status)
+                requested_at = try c.decode(String.self, forKey: .requested_at)
+                approved_at = try? c.decode(String.self, forKey: .approved_at)
+                start_at = try? c.decode(String.self, forKey: .start_at)
+                end_at = try? c.decode(String.self, forKey: .end_at)
+                picked_up_at = try? c.decode(String.self, forKey: .picked_up_at)
+                picked_at = try? c.decode(String.self, forKey: .picked_at)
+                canceled_at = try? c.decode(String.self, forKey: .canceled_at)
+                if let p = try? c.decode(ServerPost.self, forKey: .post) {
+                    post = p
+                } else {
+                    post = try c.decode(ServerPost.self, forKey: .posts)
+                }
+            }
+        }
+        struct ReservationsResponse: Decodable { let reservations: [ServerReservation] }
+
+        let headers = try await authHeaders()
+        let req = try buildRequest(path: "/my/reservations", method: .GET, headers: headers)
+        let (data, resp) = try await send(req)
+        guard let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw ApiServiceError.serverError("HTTP status error for /my/reservations: \((resp as? HTTPURLResponse)?.statusCode ?? -1) body=\(body)")
+        }
+
+        let decoded = try JSONDecoder().decode(ReservationsResponse.self, from: data)
+        return decoded.reservations.compactMap { r in
+            guard let modeValue = r.post.mode else { return nil }
+
+            let mode = ItemMode(rawValue: modeValue) ?? .street
+            let condition = ItemCondition(rawValue: r.post.condition ?? "good") ?? .good
+            let category = r.post.category ?? "misc"
+            let ownerId = r.post.owner_id ?? ""
+
+            let images = (r.post.images ?? []).map { PostImage(url: $0.url, orderIndex: $0.order_index) }
+            let exactLoc = r.post.exact_location?.coordinate.map { Location(lng: "\($0.longitude)", lat: "\($0.latitude)") }
+            let approxLoc = r.post.approx_location?.coordinate.map { Location(lng: "\($0.longitude)", lat: "\($0.latitude)") }
+
+            let post = Post(
+                id: r.post.id,
+                title: r.post.title ?? "Untitled",
+                description: r.post.description,
+                category: category,
+                condition: condition,
+                mode: mode,
+                ownerId: ownerId,
+                createdAt: nil,
+                expiresAt: nil,
+                exactLocation: exactLoc,
+                approxLocation: approxLoc,
+                images: images,
+                distance: r.post.distance?.value,
+                owner: r.post.owner,
+                userReservation: nil
+            )
+
+            return Reservation(
+                id: r.id,
+                itemId: r.item_id,
+                reserver: r.reserver,
+                status: r.status,
+                requestedAt: r.requested_at,
+                approvedAt: r.approved_at,
+                startAt: r.start_at,
+                endAt: r.end_at,
+                pickedAt: r.picked_up_at ?? r.picked_at,
+                canceledAt: r.canceled_at,
+                post: post
+            )
+        }
     }
 
     
@@ -990,15 +1345,6 @@ class ApiService: ObservableObject {
         let _: CancelResponse = try await makeRequest("/feed/\(postId)/reserve", method: "DELETE")
     }
     
-    func getMyReservations() async throws -> [Reservation] {
-        struct ReservationsResponse: Codable {
-            let reservations: [Reservation]
-        }
-        
-        let response: ReservationsResponse = try await makeRequest("/my/reservations")
-        return response.reservations
-    }
-    
     func getMyPosts() async throws -> [Post] {
         struct PostsResponse: Codable {
             let posts: [Post]
@@ -1031,30 +1377,11 @@ class ApiService: ObservableObject {
     func updateProfile(_ patch: ProfilePatch) async throws -> Profile {
         let headers = try await authHeaders()
         let body = try JSONEncoder().encode(patch)
-        let req = try buildRequest(path: "/profile", method: .PATCH, body: body, headers: headers)
-        let (data, resp) = try await send(req)
-        
-        guard let http = resp as? HTTPURLResponse else {
-            throw ApiServiceError.unknownError
+        do {
+            return try await performProfileUpdate(path: "/me/profile", headers: headers, body: body)
+        } catch ApiServiceError.notFound {
+            return try await performProfileUpdate(path: "/profile", headers: headers, body: body)
         }
-        
-        // Check for 404 - endpoint doesn't exist, caller should fall back to SDK
-        if http.statusCode == 404 {
-            throw ApiServiceError.notFound
-        }
-        
-        // Check for other errors
-        guard (200...299).contains(http.statusCode) else {
-            if let msg = try? JSONDecoder().decode(APIErrorMessage.self, from: data).error {
-                throw ApiServiceError.serverError(msg)
-            } else {
-                throw ApiServiceError.serverError("HTTP \(http.statusCode)")
-            }
-        }
-        
-        // Decode response
-        let response = try JSONDecoder().decode(ProfileResponse.self, from: data)
-        return response.profile
     }
 }
 
@@ -1085,6 +1412,65 @@ extension Post {
     
     var reservationStatus: String? {
         userReservation?.status
+    }
+}
+
+private extension ApiService {
+    struct ProfileUpdateEnvelope: Decodable {
+        let profile: Profile?
+        let user_id: String?
+        let id: String?
+        let first_name: String?
+        let last_name: String?
+        let phone: String?
+        let photo_url: String?
+        let avatar_url: String?
+        let city: String?
+        let given_count: Int?
+        let picked_count: Int?
+    }
+
+    func performProfileUpdate(path: String, headers: [String: String], body: Data) async throws -> Profile {
+        let request = try buildRequest(path: path, method: .PATCH, body: body, headers: headers)
+        let (data, response) = try await send(request)
+
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+
+        if http.statusCode == 404 {
+            throw ApiServiceError.notFound
+        }
+
+        guard (200...299).contains(http.statusCode) else {
+            let message = extractErrorMessage(from: data) ?? "HTTP \(http.statusCode)"
+            throw ApiServiceError.serverError(message)
+        }
+
+        let decoder = JSONDecoder()
+        let envelope = try decoder.decode(ProfileUpdateEnvelope.self, from: data)
+
+        if let profile = envelope.profile {
+            return profile
+        }
+
+        guard let identifier = envelope.user_id ?? envelope.id else {
+            throw ApiServiceError.serverError("Profile payload missing identifier")
+        }
+
+        let avatarString = envelope.photo_url ?? envelope.avatar_url
+        let avatarURL = avatarString.flatMap { URL(string: $0) }
+
+        return Profile(
+            id: identifier,
+            firstName: envelope.first_name,
+            lastName: envelope.last_name,
+            city: envelope.city,
+            avatarUrl: avatarURL,
+            givenCount: envelope.given_count,
+            pickedCount: envelope.picked_count,
+            phone: envelope.phone
+        )
     }
 }
 

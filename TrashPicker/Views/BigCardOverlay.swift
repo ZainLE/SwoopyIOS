@@ -58,6 +58,7 @@ struct BigCardOverlay: View {
             case streetActive // Pick up, Cancel, Directions
             case homePending  // Contact (disabled), Cancel
             case homeActive   // Contact, Cancel
+            case completed    // No actions, success message
         }
     }
     
@@ -474,6 +475,22 @@ extension BigCardOverlay {
                         .stroke(primaryColor, lineWidth: 2)
                 )
             }
+        case .completed:
+            VStack(spacing: 12) {
+                Label("Reservation complete", systemImage: "checkmark.seal.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(successColor)
+
+                Button(action: onDismiss) {
+                    Text("Close")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(height: 52)
+                        .frame(maxWidth: .infinity)
+                }
+                .background(primaryColor)
+                .clipShape(RoundedRectangle(cornerRadius: 26))
+            }
         }
     }
     
@@ -544,4 +561,3 @@ extension Color {
         )
     }
 }
-

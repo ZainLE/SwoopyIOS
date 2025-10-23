@@ -8,7 +8,6 @@ struct MapPin: Identifiable, Hashable {
     static func == (lhs: MapPin, rhs: MapPin) -> Bool {
         lhs.id == rhs.id
     }
-    
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
     }
@@ -107,7 +106,7 @@ struct FullScreenMapView: View {
     
     private let fallback = CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686)
     private let appGreen = Color(red: 0/255, green: 81/255, blue: 63/255)
-    
+
     var body: some View {
         Map(position: $vm.camera, interactionModes: .all) {
             UserAnnotation()
@@ -118,7 +117,7 @@ struct FullScreenMapView: View {
                         .font(.title2)
                         .foregroundStyle(.red)
                 }
-            }
+    }
         }
         .ignoresSafeArea()
         .toolbar {

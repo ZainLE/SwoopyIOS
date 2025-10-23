@@ -1,19 +1,6 @@
 import SwiftUI
 import UIKit
 
-#if DEBUG
-// Fallback debug-only shim to avoid build errors when _CameraGuard isn't provided.
-// Replace/remove if a real implementation exists elsewhere.
-private enum _CameraGuard {
-    static func install() {
-        // No-op; used to enforce debug-only camera usage policies if available.
-        #if DEBUG
-        print("[_CameraGuard] Debug shim installed (no-op)")
-        #endif
-    }
-}
-#endif
-
 @main
 struct TrashPickerApp: App {
     init() {

@@ -43,7 +43,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				Support/DebugGuards.swift,
 			);
 			target = 8E7AB91A2E68ACE8002CC686 /* TrashPicker */;
 		};
@@ -54,7 +53,6 @@
 			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
 			buildPhase = 8E7AB9192E68ACE8002CC686 /* Resources */;
 			membershipExceptions = (
-				Support/DebugGuards.swift,
 				Views/AppleSignInbutton.swift,
 			);
 		};

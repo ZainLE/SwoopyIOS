@@ -1,11 +1,8 @@
 import SwiftUI
 
-// Feature flag: when true, use real incoming reservations endpoint
-private let USE_INCOMING_RESERVATIONS = false
-
 // MARK: - Notification Models (UI-only)
 
-enum NotificationKind {
+enum NotificationKind: Equatable {
     case requestPending
     case requestActive
     case pickedUp(expireAt: Date)
@@ -30,28 +27,24 @@ extension NotificationsView {
     }
 
     private func handleApprove(item: NotificationItem, share: Bool) async {
-        guard USE_INCOMING_RESERVATIONS else {
-            // Fallback: just log and convert locally
-            #if DEBUG
-            print("[NOTIFS] approve start id=\(item.id) share_contact=\(share)")
-            print("[NOTIFS] approve success id=\(item.id)")
-            #endif
-            // Convert to active locally
-            if case .content(var items) = vm.state, let idx = items.firstIndex(where: { $0.id == item.id }) {
-                items[idx] = NotificationItem(id: item.id, kind: .requestActive, title: item.title, imageURL: item.imageURL, avatarURL: item.avatarURL, reserverName: item.reserverName, requestedAt: item.requestedAt, postId: item.postId)
-                vm.state = .content(items)
-            }
-            showToast(share ? "Approved • Contact shared" : "Approved")
-            return
-        }
         let res = await vm.approve(reservationId: item.id, shareContact: share)
         switch res {
         case .success:
             if case .content(var items) = vm.state, let idx = items.firstIndex(where: { $0.id == item.id }) {
-                items[idx] = NotificationItem(id: item.id, kind: .requestActive, title: item.title, imageURL: item.imageURL, avatarURL: item.avatarURL, reserverName: item.reserverName, requestedAt: item.requestedAt, postId: item.postId)
+                items[idx] = NotificationItem(
+                    id: item.id,
+                    kind: .requestActive,
+                    mode: item.mode,
+                    title: item.title,
+                    imageURL: item.imageURL,
+                    avatarURL: item.avatarURL,
+                    reserverName: item.reserverName,
+                    requestedAt: item.requestedAt,
+                    postId: item.postId
+                )
                 vm.state = .content(items)
             }
-            showToast(share ? "Approved • Contact shared" : "Approved")
+            showToast("Approved")
             NotificationCenter.default.post(name: .notificationsBadgeDecrement, object: nil)
         case .alreadyProcessed:
             if case .content(var items) = vm.state {
@@ -60,13 +53,102 @@ extension NotificationsView {
             }
             showToast("Already processed.")
             NotificationCenter.default.post(name: .notificationsBadgeDecrement, object: nil)
+        case .notFound:
+            if case .content(var items) = vm.state {
+                items.removeAll { $0.id == item.id }
+                vm.state = .content(items)
+            }
+            showToast("Item not found.")
         case .unauthorized:
             showToast("Please sign in again to continue.")
         case .network:
             showToast("Can't reach the server right now. Please try again.")
+        case .phoneRequired(let message):
+            await MainActor.run {
+                let existing = svc.session?.user.userMetadata["phone"] as? String ?? ""
+                phoneInput = existing
+                phoneSheetError = nil
+                phoneSheetModel = PhoneSheetModel(item: item, shareContact: share, message: message)
+            }
         case .failure(let msg):
             showToast(msg)
         }
+    }
+
+    private func savePhoneAndRetry(_ sheet: PhoneSheetModel) async {
+        let trimmed = phoneInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            await MainActor.run {
+                phoneSheetError = "Phone number can't be empty."
+            }
+            return
+        }
+
+        await MainActor.run {
+            isSavingPhone = true
+            phoneSheetError = nil
+        }
+
+        do {
+            try await svc.updateProfile(firstName: nil, lastName: nil, phone: trimmed)
+            await MainActor.run {
+                isSavingPhone = false
+                phoneSheetModel = nil
+            }
+            await handleApprove(item: sheet.item, share: sheet.shareContact)
+        } catch {
+            let message = normalizedErrorMessage(error, fallback: "Couldn't update profile.")
+            await MainActor.run {
+                isSavingPhone = false
+                phoneSheetError = message
+            }
+        }
+    }
+
+    private func normalizedErrorMessage(_ error: Error, fallback: String) -> String {
+        if let http = error as? ApiHTTPError {
+            return friendlyMessage(statusCode: http.statusCode, backendMessage: http.message, fallback: fallback)
+        }
+
+        if let apiError = error as? ApiServiceError {
+            switch apiError {
+            case .unauthorized:
+                return "Please sign in again to continue."
+            case .notFound:
+                return "Item not found."
+            case .serverError(let msg):
+                return friendlyMessage(statusCode: nil, backendMessage: msg, fallback: fallback)
+            case .networkError:
+                return "Can't reach the server right now. Please try again."
+            default:
+                return fallback
+            }
+        }
+
+        return error.localizedDescription
+    }
+
+    private func friendlyMessage(statusCode: Int?, backendMessage: String?, fallback: String) -> String {
+        if let backendMessage, !backendMessage.isEmpty {
+            let lower = backendMessage.lowercased()
+            if lower.contains("phone_required_for_home_mode") {
+                return "Add a phone number to approve home pickups."
+            }
+            return backendMessage
+        }
+
+        if let statusCode {
+            switch statusCode {
+            case 403:
+                return "You're not allowed to perform this action."
+            case 404:
+                return "Item not found."
+            default:
+                break
+            }
+        }
+
+        return fallback
     }
 }
 
@@ -77,8 +159,9 @@ extension Notification.Name {
 }
 
 struct NotificationItem: Identifiable {
-    let id: String                 // reservation id or synthetic for picked-up
+    let id: String                 // reservation id
     let kind: NotificationKind
+    let mode: ItemMode
     let title: String              // post title
     let imageURL: URL?
     let avatarURL: URL?
@@ -107,11 +190,9 @@ final class NotificationsViewModel: ObservableObject {
     @Published var state: State = .loading
 
     private var api: ApiService?
-    private let useIncomingEndpoint: Bool
     private let dateProvider: DateProvider
 
-    init(useIncomingEndpoint: Bool, dateProvider: DateProvider) {
-        self.useIncomingEndpoint = useIncomingEndpoint
+    init(dateProvider: DateProvider) {
         self.dateProvider = dateProvider
     }
 
@@ -126,20 +207,29 @@ final class NotificationsViewModel: ObservableObject {
         #endif
         state = .loading
         do {
-            let (items, source) = try await fetchItems(api: api)
+            let items = try await fetchIncoming(api: api)
             #if DEBUG
-            print("[NOTIFS] fetch end count=\(items.count) source=\(source)")
+            print("[NOTIFS] fetch end count=\(items.count)")
             #endif
             self.state = .content(items)
         } catch {
             #if DEBUG
             print("[NOTIFS] fetch error=\(error.localizedDescription)")
             #endif
-            self.state = .error(error.localizedDescription)
+            let message = resolveError(error, fallback: "Couldn't load requests.")
+            self.state = .error(message)
         }
     }
 
-    enum ActionResult { case success, alreadyProcessed, unauthorized, network, failure(String) }
+    enum ActionResult {
+        case success
+        case alreadyProcessed
+        case unauthorized
+        case network
+        case phoneRequired(String)
+        case notFound
+        case failure(String)
+    }
 
     func approve(reservationId: String, shareContact: Bool) async -> ActionResult {
         #if DEBUG
@@ -147,28 +237,37 @@ final class NotificationsViewModel: ObservableObject {
         #endif
         guard let api else { return .failure("No API") }
 
-        // If not using incoming endpoint yet, just log
-        guard useIncomingEndpoint else {
-            #if DEBUG
-            print("[NOTIFS] approve success id=\(reservationId)")
-            #endif
-            return .success
-        }
-
         struct ApproveBody: Encodable { let share_contact: Bool }
-        struct ApproveResp: Decodable { let message: String? }
-
         do {
             let body = try JSONEncoder().encode(ApproveBody(share_contact: shareContact))
-            let _: ApproveResp = try await api.makeRequest(
+            let result = try await api.rawRequest(
                 "/reservations/\(reservationId)/approve",
                 method: .POST,
                 body: body
             )
+
             #if DEBUG
-            print("[NOTIFS] approve success id=\(reservationId)")
+            print("[NOTIFS] approve endpoint=/reservations/\(reservationId)/approve status=\(result.statusCode) message=\(result.message ?? "<none>")")
             #endif
-            return .success
+
+            switch result.statusCode {
+            case 200...299:
+                return .success
+            case 401:
+                return .unauthorized
+            case 404:
+                return .notFound
+            case 409:
+                return .alreadyProcessed
+            case 422:
+                let message = result.message ?? "Add a phone number to approve home pickups."
+                return .phoneRequired(message)
+            case 403:
+                return .failure("You're not allowed to perform this action.")
+            default:
+                let message = mapFriendlyMessage(statusCode: result.statusCode, backendMessage: result.message, fallback: "Couldn't approve the request.")
+                return .failure(message)
+            }
         } catch let e as ApiServiceError {
             #if DEBUG
             print("[NOTIFS] approve error id=\(reservationId) err=\(e.localizedDescription)")
@@ -177,14 +276,37 @@ final class NotificationsViewModel: ObservableObject {
             case .unauthorized:
                 return .unauthorized
             case .serverError(let msg):
-                if msg.localizedCaseInsensitiveContains("already processed") {
+                let lower = msg.lowercased()
+                if lower.contains("already processed") || lower.contains("not pending") {
                     return .alreadyProcessed
                 }
-                return .failure(msg)
+                if lower.contains("not found") {
+                    return .notFound
+                }
+                if lower.contains("phone_required_for_home_mode") {
+                    return .failure("Add a phone number in your profile to approve home pickups.")
+                }
+                let message = mapFriendlyMessage(statusCode: nil, backendMessage: msg, fallback: msg)
+                return .failure(message)
             case .networkError:
                 return .network
             default:
                 return .failure(e.localizedDescription)
+            }
+        } catch let httpError as ApiHTTPError {
+            #if DEBUG
+            print("[NOTIFS] approve http-error endpoint=/reservations/\(reservationId)/approve status=\(httpError.statusCode) message=\(httpError.message ?? "<none>")")
+            #endif
+            switch httpError.statusCode {
+            case 403:
+                return .failure("You're not allowed to perform this action.")
+            case 404:
+                return .notFound
+            case 422:
+                let message = httpError.message ?? "Add a phone number to approve home pickups."
+                return .phoneRequired(message)
+            default:
+                return .failure(httpError.message ?? "Couldn't approve the request.")
             }
         } catch {
             #if DEBUG
@@ -199,32 +321,61 @@ final class NotificationsViewModel: ObservableObject {
         print("[NOTIFS] skip start id=\(reservationId)")
         #endif
         guard let api else { return .failure("No API") }
-        // If not using incoming endpoint yet, just log
-        guard useIncomingEndpoint else {
-            #if DEBUG
-            print("[NOTIFS] skip success id=\(reservationId)")
-            #endif
-            return .success
-        }
-        struct CancelResp: Decodable { let message: String? }
         do {
-            let _: CancelResp = try await api.makeRequest(
+            let result = try await api.rawRequest(
                 "/reservations/\(reservationId)/cancel",
                 method: .POST
             )
             #if DEBUG
-            print("[NOTIFS] skip success id=\(reservationId)")
+            print("[NOTIFS] reject endpoint=/reservations/\(reservationId)/cancel status=\(result.statusCode) message=\(result.message ?? "<none>")")
             #endif
-            return .success
+
+            switch result.statusCode {
+            case 200...299:
+                return .success
+            case 401:
+                return .unauthorized
+            case 404:
+                return .notFound
+            case 409:
+                return .alreadyProcessed
+            case 403:
+                return .failure("You're not allowed to perform this action.")
+            default:
+                let message = mapFriendlyMessage(statusCode: result.statusCode, backendMessage: result.message, fallback: "Couldn't cancel the request.")
+                return .failure(message)
+            }
         } catch let e as ApiServiceError {
             #if DEBUG
             print("[NOTIFS] skip error id=\(reservationId) err=\(e.localizedDescription)")
             #endif
             switch e {
-            case .unauthorized: return .unauthorized
-            case .serverError(let msg): return .failure(msg)
+            case .unauthorized:
+                return .unauthorized
+            case .serverError(let msg):
+                let lower = msg.lowercased()
+                if lower.contains("already processed") || lower.contains("not pending") {
+                    return .alreadyProcessed
+                }
+                if lower.contains("not found") {
+                    return .notFound
+                }
+                let message = mapFriendlyMessage(statusCode: nil, backendMessage: msg, fallback: msg)
+                return .failure(message)
             case .networkError: return .network
             default: return .failure(e.localizedDescription)
+            }
+        } catch let httpError as ApiHTTPError {
+            #if DEBUG
+            print("[NOTIFS] skip http-error endpoint=/reservations/\(reservationId)/cancel status=\(httpError.statusCode) message=\(httpError.message ?? "<none>")")
+            #endif
+            switch httpError.statusCode {
+            case 403:
+                return .failure("You're not allowed to perform this action.")
+            case 404:
+                return .notFound
+            default:
+                return .failure(httpError.message ?? "Couldn't cancel the request.")
             }
         } catch {
             #if DEBUG
@@ -234,125 +385,104 @@ final class NotificationsViewModel: ObservableObject {
         }
     }
 
-    func ackPickedUp(id: String) {
-        if case .content(var items) = state {
-            items.removeAll { $0.id == id }
-            state = .content(items)
-        }
-    }
-
     // MARK: - Private
-
-    private func fetchItems(api: ApiService) async throws -> ([NotificationItem], String) {
-        if useIncomingEndpoint {
-            let items = try await fetchIncoming(api: api)
-            return (items, "incoming_endpoint")
-        } else {
-            let items = try await fetchFallback(api: api)
-            return (items, "fallback")
-        }
-    }
-
-    private func parseISO(_ s: String) -> Date? {
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let d = iso.date(from: s) { return d }
-        iso.formatOptions = [.withInternetDateTime]
-        return iso.date(from: s)
-    }
-
     private func fetchIncoming(api: ApiService) async throws -> [NotificationItem] {
-        struct ServerImage: Decodable { let url: URL; let order_index: Int }
-        struct ServerPost: Decodable { let id: String; let title: String; let images: [ServerImage]? }
-        struct ServerReserver: Decodable { let id: String; let first_name: String?; let avatar_url: URL?; let phone: String? }
-        struct ServerReservation: Decodable {
-            let id: String
-            let status: String
-            let requested_at: String
-            let reserver: ServerReserver?
-            let post: ServerPost
-        }
-        struct IncomingResponse: Decodable { let reservations: [ServerReservation] }
+        async let pendingTask = api.getIncomingRequests(status: .pending)
+        async let activeTask = api.getIncomingRequests(status: .active)
 
-        let pending: IncomingResponse = try await api.makeRequest("/my/incoming_reservations", queryParams: [URLQueryItem(name: "status", value: "pending")])
-        let active: IncomingResponse = try await api.makeRequest("/my/incoming_reservations", queryParams: [URLQueryItem(name: "status", value: "active")])
-        let all = pending.reservations + active.reservations
-        return all.map { r in
-            let requested = parseISO(r.requested_at)
+        let (pending, active) = try await (pendingTask, activeTask)
+        let combined = pending + active
+
+        // Deduplicate by reservation id, keeping the latest record
+        var latestById: [String: IncomingRequest] = [:]
+        for request in combined {
+            latestById[request.reservationId] = request
+        }
+
+        let sortedRequests = latestById.values.sorted { lhs, rhs in
+            let lhsDate = lhs.createdAtDate ?? Date.distantPast
+            let rhsDate = rhs.createdAtDate ?? Date.distantPast
+            return lhsDate > rhsDate
+        }
+
+        return sortedRequests.compactMap { request in
+            let status = request.status?.lowercased() ?? ""
+
+            if status == "canceled" { return nil }
+
             let kind: NotificationKind
-            switch r.status {
+            switch status {
             case "pending":
                 kind = .requestPending
             case "active":
                 kind = .requestActive
-            case "picked":
-                // No picked_up_at provided here yet; auto-dismiss after 12h from now
-                kind = .pickedUp(expireAt: dateProvider.now().addingTimeInterval(12 * 3600))
+            case "picked", "picked_up", "completed":
+                let expire = request.endAtDate ?? request.expiresAtDate ?? Date()
+                kind = .pickedUp(expireAt: expire)
             default:
-                kind = .requestActive
+                kind = .requestPending
             }
+
+            let mode = request.mode ?? .street
+
             return NotificationItem(
-                id: r.id,
+                id: request.reservationId,
                 kind: kind,
-                title: r.post.title,
-                imageURL: r.post.images?.sorted { $0.order_index < $1.order_index }.first?.url,
-                avatarURL: r.reserver?.avatar_url,
-                reserverName: r.reserver?.first_name,
-                requestedAt: requested,
-                postId: r.post.id
+                mode: mode,
+                title: request.resolvedTitle ?? "Untitled item",
+                imageURL: request.leadImageURL,
+                avatarURL: request.requester?.photoURL,
+                reserverName: request.requesterName,
+                requestedAt: request.createdAtDate,
+                postId: request.postId
             )
         }
     }
 
-    private func fetchFallback(api: ApiService) async throws -> [NotificationItem] {
-        struct ServerImage: Decodable { let url: URL; let order_index: Int }
-        struct ServerReserver: Decodable { let id: String; let first_name: String?; let phone: String? }
-        struct ActiveReservation: Decodable { let id: String; let status: String; let reserver: ServerReserver? }
-        struct ServerPost: Decodable {
-            let id: String
-            let title: String
-            let images: [ServerImage]?
-            let active_reservation: ActiveReservation?
-            let picked_up_at: String?
+    private func resolveError(_ error: Error, fallback: String) -> String {
+        if let http = error as? ApiHTTPError {
+            return mapFriendlyMessage(statusCode: http.statusCode, backendMessage: http.message, fallback: fallback)
         }
-        struct PostsResponse: Decodable { let posts: [ServerPost] }
 
-        let resp: PostsResponse = try await api.makeRequest("/my/posts")
-        var items: [NotificationItem] = []
-
-        for p in resp.posts {
-            if let ar = p.active_reservation {
-                let kind: NotificationKind = (ar.status == "pending") ? .requestPending : .requestActive
-                items.append(
-                    NotificationItem(
-                        id: ar.id,
-                        kind: kind,
-                        title: p.title,
-                        imageURL: p.images?.sorted { $0.order_index < $1.order_index }.first?.url,
-                        avatarURL: nil,
-                        reserverName: ar.reserver?.first_name,
-                        requestedAt: nil,
-                        postId: p.id
-                    )
-                )
-            }
-            if let picked = p.picked_up_at, let pickedAt = parseISO(picked) {
-                let expire = pickedAt.addingTimeInterval(12 * 3600)
-                items.append(
-                    NotificationItem(
-                        id: "picked_\(p.id)",
-                        kind: .pickedUp(expireAt: expire),
-                        title: p.title,
-                        imageURL: p.images?.sorted { $0.order_index < $1.order_index }.first?.url,
-                        avatarURL: nil,
-                        reserverName: nil,
-                        requestedAt: pickedAt,
-                        postId: p.id
-                    )
-                )
+        if let apiError = error as? ApiServiceError {
+            switch apiError {
+            case .unauthorized:
+                return "Please sign in again to continue."
+            case .notFound:
+                return "Item not found."
+            case .serverError(let message):
+                return mapFriendlyMessage(statusCode: nil, backendMessage: message, fallback: fallback)
+            case .networkError:
+                return "Can't reach the server right now. Please try again."
+            default:
+                break
             }
         }
-        return items
+
+        return error.localizedDescription
+    }
+
+    private func mapFriendlyMessage(statusCode: Int?, backendMessage: String?, fallback: String) -> String {
+        if let backendMessage, !backendMessage.isEmpty {
+            let lower = backendMessage.lowercased()
+            if lower.contains("phone_required_for_home_mode") {
+                return "Add a phone number to approve home pickups."
+            }
+            return backendMessage
+        }
+
+        if let statusCode {
+            switch statusCode {
+            case 403:
+                return "You're not allowed to perform this action."
+            case 404:
+                return "Item not found."
+            default:
+                break
+            }
+        }
+
+        return fallback
     }
 }
 
@@ -360,12 +490,23 @@ final class NotificationsViewModel: ObservableObject {
 
 struct NotificationsView: View {
     @EnvironmentObject var svc: SupabaseService
-    @StateObject private var vm = NotificationsViewModel(useIncomingEndpoint: USE_INCOMING_RESERVATIONS, dateProvider: DefaultDateProvider())
+    @StateObject private var vm = NotificationsViewModel(dateProvider: DefaultDateProvider())
     @State private var api: ApiService?
     @State private var approveTarget: NotificationItem? = nil
     @State private var showApproveAlert = false
     @State private var toastMessage: String? = nil
-    
+    @State private var phoneSheetModel: PhoneSheetModel?
+    @State private var phoneInput: String = ""
+    @State private var phoneSheetError: String? = nil
+    @State private var isSavingPhone = false
+
+    private struct PhoneSheetModel: Identifiable {
+        let id = UUID()
+        let item: NotificationItem
+        let shareContact: Bool
+        let message: String
+    }
+
     var body: some View {
         Group {
             switch vm.state {
@@ -378,6 +519,7 @@ struct NotificationsView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(.systemGroupedBackground))
+                
             case .error(let message):
                 VStack(spacing: 16) {
                     ContentUnavailableView(
@@ -393,6 +535,7 @@ struct NotificationsView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(.systemGroupedBackground))
+                
             case .content(let items):
                 if items.isEmpty {
                     List {
@@ -405,42 +548,60 @@ struct NotificationsView: View {
                 } else {
                     List {
                         ForEach(items) { item in
-                            NotificationCard(
-                                item: item,
-                                onApprove: {
-                                    // Only for pending + real endpoint
-                                    if case .requestPending = item.kind, USE_INCOMING_RESERVATIONS {
+                            if item.mode == .home && item.kind == .requestPending {
+                                NotificationCard(
+                                    item: item,
+                                    onApprove: {
                                         approveTarget = item
                                         showApproveAlert = true
-                                    }
-                                },
-                                onSkip: {
-                                    Task {
-                                        let res = await vm.skip(reservationId: item.id)
-                                        switch res {
-                                        case .success, .alreadyProcessed:
-                                            if case .content(var items) = vm.state {
-                                                items.removeAll { $0.id == item.id }
-                                                vm.state = .content(items)
+                                    },
+                                    onSkip: {
+                                        Task {
+                                            let res = await vm.skip(reservationId: item.id)
+                                            await MainActor.run {
+                                                switch res {
+                                                case .success:
+                                                    if case .content(var current) = vm.state {
+                                                        current.removeAll { $0.id == item.id }
+                                                        vm.state = .content(current)
+                                                    }
+                                                    showToast("Rejected")
+                                                    NotificationCenter.default.post(name: .notificationsBadgeDecrement, object: nil)
+                                                    
+                                                case .alreadyProcessed:
+                                                    if case .content(var current) = vm.state {
+                                                        current.removeAll { $0.id == item.id }
+                                                        vm.state = .content(current)
+                                                    }
+                                                    showToast("Already processed.")
+                                                    NotificationCenter.default.post(name: .notificationsBadgeDecrement, object: nil)
+                                                    
+                                                case .notFound:
+                                                    if case .content(var current) = vm.state {
+                                                        current.removeAll { $0.id == item.id }
+                                                        vm.state = .content(current)
+                                                    }
+                                                    showToast("Item not found.")
+
+                                                case .unauthorized:
+                                                    showToast("Please sign in again to continue.")
+                                                    
+                                                case .network:
+                                                    showToast("Can't reach the server right now. Please try again.")
+                                                    
+                                                case .failure(let msg):
+                                                    showToast(msg)
+
+                                                case .phoneRequired:
+                                                    showToast("Add a phone number to your profile.")
+                                                }
                                             }
-                                            showToast("Skipped")
-                                            NotificationCenter.default.post(name: .notificationsBadgeDecrement, object: nil)
-                                        case .unauthorized:
-                                            showToast("Please sign in again to continue.")
-                                        case .network:
-                                            showToast("Can't reach the server right now. Please try again.")
-                                        case .failure(let msg):
-                                            showToast(msg)
                                         }
                                     }
-                                }
-                            )
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                if case .pickedUp = item.kind {
-                                    Button(role: .destructive) {
-                                        vm.ackPickedUp(id: item.id)
-                                    } label: { Label("Dismiss", systemImage: "trash") }
-                                }
+                                )
+                            } else {
+                                // Street or non-pending items: informational only (no actions)
+                                NotificationCard(item: item)
                             }
                         }
                     }
@@ -464,9 +625,9 @@ struct NotificationsView: View {
             }
         }
         .onAppear {
-            #if DEBUG
+#if DEBUG
             print("[NAV] Profile → Notifications")
-            #endif
+#endif
         }
         .alert("Share your phone number with the requester?", isPresented: $showApproveAlert, presenting: approveTarget) { item in
             Button("Share", role: .none) {
@@ -477,126 +638,176 @@ struct NotificationsView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: { _ in
-            Text("You can share your phone to coordinate pickup.")
+            Text("We'll share your phone if available.")
+        }
+        .sheet(item: $phoneSheetModel) { sheet in
+            NavigationStack {
+                Form {
+                    Section {
+                        Text(sheet.message)
+                            .font(AppFont.sub)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Section("Phone number") {
+                        TextField("Phone number", text: $phoneInput)
+                            .keyboardType(.phonePad)
+                            .textInputAutocapitalization(.never)
+                    }
+
+                    if let phoneSheetError {
+                        Section {
+                            Text(phoneSheetError)
+                                .foregroundColor(.red)
+                                .font(AppFont.sub)
+                        }
+                    }
+                }
+                .navigationTitle("Add Phone")
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { phoneSheetModel = nil }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        if isSavingPhone {
+                            ProgressView()
+                        } else {
+                            Button("Save & Approve") {
+                                Task { await savePhoneAndRetry(sheet) }
+                            }
+                        }
+                    }
+                }
+            }
         }
         .overlay(alignment: .top) {
             if let msg = toastMessage { toastView(msg) }
         }
     }
-}
-
-// MARK: - NotificationCard
-
-private struct NotificationCard: View {
-    let item: NotificationItem
-    var onApprove: (() -> Void)? = nil
-    var onSkip: (() -> Void)? = nil
-    var onView: (() -> Void)? = nil
+    // MARK: - NotificationCard
     
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                // Thumbnail 56x56, 12pt radius
-                AsyncImage(url: item.imageURL) { phase in
-                    switch phase {
-                    case .success(let img): img.resizable().scaledToFill()
-                    default: Color.gray.opacity(0.15)
-                    }
-                }
-                .frame(width: 56, height: 56)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColor.stroke, lineWidth: 1))
-
-                // Reserver avatar 40x40 circle
-                AsyncImage(url: item.avatarURL) { phase in
-                    switch phase {
-                    case .success(let img): img.resizable().scaledToFill()
-                    default:
-                        ZStack {
-                            Circle().fill(Color.gray.opacity(0.15))
-                            Image(systemName: "person.fill").foregroundColor(AppColor.muted)
+    private struct NotificationCard: View {
+        let item: NotificationItem
+        var onApprove: (() -> Void)? = nil
+        var onSkip: (() -> Void)? = nil
+        var onView: (() -> Void)? = nil
+        
+        var body: some View {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 12) {
+                    // Thumbnail 56x56, 12pt radius
+                    AsyncImage(url: item.imageURL) { phase in
+                        switch phase {
+                        case .success(let img): img.resizable().scaledToFill()
+                        default: Color.gray.opacity(0.15)
                         }
                     }
+                    .frame(width: 56, height: 56)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColor.stroke, lineWidth: 1))
+                    
+                    // Reserver avatar 40x40 circle
+                    AsyncImage(url: item.avatarURL) { phase in
+                        switch phase {
+                        case .success(let img): img.resizable().scaledToFill()
+                        default:
+                            ZStack {
+                                Circle().fill(Color.gray.opacity(0.15))
+                                Image(systemName: "person.fill").foregroundColor(AppColor.muted)
+                            }
+                        }
+                    }
+                    .frame(width: 40, height: 40)
+                    .clipShape(Circle())
+                    .overlay(Circle().stroke(AppColor.stroke, lineWidth: 1))
+                    
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(item.title)
+                            .font(AppFont.h3)
+                            .foregroundColor(AppColor.text)
+                        
+                        subline
+                    }
+                    
+                    Spacer(minLength: 0)
                 }
-                .frame(width: 40, height: 40)
-                .clipShape(Circle())
-                .overlay(Circle().stroke(AppColor.stroke, lineWidth: 1))
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(item.title)
-                        .font(AppFont.h3)
-                        .foregroundColor(AppColor.text)
-
-                    subline
-                }
-
-                Spacer(minLength: 0)
+                
+                buttonsRow
             }
-
-            buttonsRow
+            .padding(12)
+            .background(Color(.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColor.stroke, lineWidth: 1))
+            .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 2)
         }
-        .padding(12)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColor.stroke, lineWidth: 1))
-        .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 2)
-    }
-    
-    @ViewBuilder
-    private var subline: some View {
-        switch item.kind {
-        case .requestPending:
-            Text("Waiting for approval")
-                .font(AppFont.sub)
-                .foregroundColor(Color(red: 0.77, green: 0.26, blue: 0.26)) // danger red per spec
-        case .requestActive:
-            Text("Reserved by \(item.reserverName ?? "someone")")
-                .font(AppFont.sub)
-                .foregroundColor(AppColor.muted)
-        case .pickedUp:
-            HStack(spacing: 6) {
+        
+        @ViewBuilder
+        private var subline: some View {
+            switch item.kind {
+            case .requestPending:
+                if item.mode == .street {
+                    Text("Street pickup request pending")
+                        .font(AppFont.sub)
+                        .foregroundColor(AppColor.muted)
+                } else {
+                    Text("Waiting for approval")
+                        .font(AppFont.sub)
+                        .foregroundColor(Color(red: 0.77, green: 0.26, blue: 0.26))
+                }
+            case .requestActive:
+                if item.mode == .street {
+                    Text("Street pickup scheduled")
+                        .font(AppFont.sub)
+                        .foregroundColor(AppColor.muted)
+                } else {
+                    Text("Reserved by \(item.reserverName ?? "someone")")
+                        .font(AppFont.sub)
+                        .foregroundColor(AppColor.muted)
+                }
+            case .pickedUp:
                 Text("Picked up")
-                if let d = item.requestedAt {
-                    Text(d, style: .relative)
-                }
+                    .font(AppFont.sub)
+                    .foregroundColor(AppColor.muted)
             }
-            .font(AppFont.sub)
-            .foregroundColor(AppColor.muted)
         }
-    }
-    
-    private var isPending: Bool {
-        if case .requestPending = item.kind { return true }
-        return false
+        
+        @ViewBuilder
+        private var buttonsRow: some View {
+            switch item.kind {
+            case .requestPending:
+                if item.mode == .home {
+                    HStack(spacing: 12) {
+                        if let onApprove {
+                            Button("Accept") { onApprove() }
+                                .buttonStyle(.borderedProminent)
+                                .tint(AppColor.brandGreen)
+                        }
+                        if let onSkip {
+                            Button("Reject") { onSkip() }
+                                .buttonStyle(.bordered)
+                                .tint(AppColor.brandGreen)
+                        }
+                    }
+                } else {
+                    HStack { Spacer() }
+                }
+            case .requestActive:
+                if item.mode == .home {
+                    HStack {
+                        if let onView {
+                            Button("View") { onView() }
+                                .buttonStyle(.bordered)
+                                .tint(AppColor.muted)
+                        }
+                        Spacer()
+                    }
+                } else {
+                    HStack { Spacer() }
+                }
+            case .pickedUp:
+                HStack { Spacer() }
+            }
+        }
     }
 
-    @ViewBuilder
-    private var buttonsRow: some View {
-        switch item.kind {
-        case .requestPending:
-            HStack(spacing: 12) {
-                Button("Accept") { onApprove?() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(AppColor.brandGreen)
-                Button("Skip") { onSkip?() }
-                    .buttonStyle(.bordered)
-                    .tint(AppColor.brandGreen)
-            }
-        case .requestActive:
-            HStack {
-                Button("View") { onView?() }
-                    .buttonStyle(.bordered)
-                    .tint(AppColor.muted)
-                Spacer()
-            }
-        case .pickedUp:
-            HStack {
-                Button("Hide") { onSkip?() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(AppColor.muted)
-                Spacer()
-            }
-        }
-    }
 }
