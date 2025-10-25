@@ -555,6 +555,7 @@ enum ApiServiceError: Error, LocalizedError {
     case decodingError(Error)
     case unknownError
     case noAuthToken
+    case decode(String)
     
     var errorDescription: String? {
         switch self {
@@ -570,6 +571,8 @@ enum ApiServiceError: Error, LocalizedError {
             return "Network error: \(error.localizedDescription)"
         case .decodingError(let error):
             return "Data parsing error: \(error.localizedDescription)"
+        case .decode(let message):
+            return "Decode error: \(message)"
         case .unknownError:
             return "An unknown error occurred"
         case .noAuthToken:
@@ -591,6 +594,10 @@ struct RawHTTPResult {
     let statusCode: Int
     let data: Data
     let message: String?
+}
+
+struct DeleteAccountResponse: Decodable {
+    let message: String
 }
 
 enum ReserveError: LocalizedError {
@@ -938,6 +945,32 @@ class ApiService: ObservableObject {
         return ["status": response.status, "timestamp": response.timestamp]
     }
 
+    // MARK: - Account
+
+    func deleteAccount() async throws -> DeleteAccountResponse {
+        let headers = try await authHeaders()
+        var request = try buildRequest(path: "/delete_account", method: .DELETE, headers: headers)
+        request.timeoutInterval = 25 // Allow ample time for backend cleanup
+
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+
+        switch http.statusCode {
+        case 200...299:
+            do {
+                let decoder = JSONDecoder()
+                return try decoder.decode(DeleteAccountResponse.self, from: data)
+            } catch {
+                throw ApiServiceError.decodingError(error)
+            }
+        default:
+            let message = extractErrorMessage(from: data)
+            throw ApiHTTPError(statusCode: http.statusCode, message: message)
+        }
+    }
+
     // MARK: - Incoming Requests
 
     enum IncomingRequestStatus: String { case pending, active }
@@ -1143,31 +1176,47 @@ class ApiService: ObservableObject {
                 userReservation: serverPost.user_reservation
             )
         }
-        
         return posts
     }
 
     // MARK: - Reservations (My) — tolerant to backend keys
     func getMyReservations() async throws -> [Reservation] {
-        struct ServerImage: Decodable { let url: URL; let order_index: Int }
+        struct ServerImage: Decodable {
+            let urlString: String?
+            let orderIndex: Int?
+
+            enum CodingKeys: String, CodingKey {
+                case urlString = "url"
+                case orderIndex = "order_index"
+            }
+        }
+
         struct ServerPost: Decodable {
-            let id: String
+            let id: String?
             let title: String?
             let description: String?
             let category: String?
             let condition: String?
             let mode: String?
-            let owner_id: String?
-            let images: [ServerImage]?
-            let exact_location: TolerantLocation?
-            let approx_location: TolerantLocation?
-            let distance: StringOrDouble?
+            let ownerId: String?
             let owner: Profile?
+            let images: [ServerImage]?
+            let exactLocation: TolerantLocation?
+            let approxLocation: TolerantLocation?
+            let distance: StringOrDouble?
+
+            enum CodingKeys: String, CodingKey {
+                case id, title, description, category, condition, mode, images, owner, distance
+                case ownerId = "owner_id"
+                case exactLocation = "exact_location"
+                case approxLocation = "approx_location"
+            }
         }
+
         struct ServerReservation: Decodable {
             let id: String
             let item_id: String
-            let reserver: String
+            let reserver: String?
             let status: String
             let requested_at: String
             let approved_at: String?
@@ -1176,34 +1225,64 @@ class ApiService: ObservableObject {
             let picked_up_at: String?
             let picked_at: String?
             let canceled_at: String?
-            let post: ServerPost
+            let post: ServerPost?
+            let usedLegacyPostKey: Bool
 
             enum CodingKeys: String, CodingKey {
                 case id, item_id, reserver, status, requested_at, approved_at, start_at, end_at, canceled_at
                 case picked_up_at, picked_at
                 case post, posts
             }
+
             init(from d: Decoder) throws {
                 let c = try d.container(keyedBy: CodingKeys.self)
                 id = try c.decode(String.self, forKey: .id)
                 item_id = try c.decode(String.self, forKey: .item_id)
-                reserver = try c.decode(String.self, forKey: .reserver)
+                reserver = try c.decodeIfPresent(String.self, forKey: .reserver)
                 status = try c.decode(String.self, forKey: .status)
                 requested_at = try c.decode(String.self, forKey: .requested_at)
-                approved_at = try? c.decode(String.self, forKey: .approved_at)
-                start_at = try? c.decode(String.self, forKey: .start_at)
-                end_at = try? c.decode(String.self, forKey: .end_at)
-                picked_up_at = try? c.decode(String.self, forKey: .picked_up_at)
-                picked_at = try? c.decode(String.self, forKey: .picked_at)
-                canceled_at = try? c.decode(String.self, forKey: .canceled_at)
-                if let p = try? c.decode(ServerPost.self, forKey: .post) {
-                    post = p
+                approved_at = try c.decodeIfPresent(String.self, forKey: .approved_at)
+                start_at = try c.decodeIfPresent(String.self, forKey: .start_at)
+                end_at = try c.decodeIfPresent(String.self, forKey: .end_at)
+                picked_up_at = try c.decodeIfPresent(String.self, forKey: .picked_up_at)
+                picked_at = try c.decodeIfPresent(String.self, forKey: .picked_at)
+                canceled_at = try c.decodeIfPresent(String.self, forKey: .canceled_at)
+
+                if let post = try c.decodeIfPresent(ServerPost.self, forKey: .post) {
+                    self.post = post
+                    usedLegacyPostKey = false
+                } else if let legacyPost = try c.decodeIfPresent(ServerPost.self, forKey: .posts) {
+                    self.post = legacyPost
+                    usedLegacyPostKey = true
                 } else {
-                    post = try c.decode(ServerPost.self, forKey: .posts)
+                    self.post = nil
+                    usedLegacyPostKey = false
                 }
             }
         }
-        struct ReservationsResponse: Decodable { let reservations: [ServerReservation] }
+        struct ReservationsResponse: Decodable {
+            let reservations: [ServerReservation]
+
+            enum CodingKeys: String, CodingKey {
+                case reservations
+                case posts // Temporary fallback - TODO: remove once backend stabilized
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+
+                if let reservations = try container.decodeIfPresent([ServerReservation].self, forKey: .reservations) {
+                    self.reservations = reservations
+                } else if let fallback = try container.decodeIfPresent([ServerReservation].self, forKey: .posts) {
+                    #if DEBUG
+                    print("[RESERVATIONS] Fallback to legacy 'posts' payload. Remove after rollout.")
+                    #endif
+                    self.reservations = fallback
+                } else {
+                    self.reservations = []
+                }
+            }
+        }
 
         let headers = try await authHeaders()
         let req = try buildRequest(path: "/my/reservations", method: .GET, headers: headers)
@@ -1213,23 +1292,62 @@ class ApiService: ObservableObject {
             throw ApiServiceError.serverError("HTTP status error for /my/reservations: \((resp as? HTTPURLResponse)?.statusCode ?? -1) body=\(body)")
         }
 
-        let decoded = try JSONDecoder().decode(ReservationsResponse.self, from: data)
-        return decoded.reservations.compactMap { r in
-            guard let modeValue = r.post.mode else { return nil }
+        let decoder = JSONDecoder()
+        let decoded: ReservationsResponse
+        do {
+            decoded = try decoder.decode(ReservationsResponse.self, from: data)
+        } catch {
+            let snippet = String(data: data.prefix(300), encoding: .utf8) ?? ""
+            #if DEBUG
+            print("[RESERVATIONS] Decode error: \(error). Snippet: \(snippet)")
+            #endif
+            throw ApiServiceError.decode(error.localizedDescription)
+        }
 
-            let mode = ItemMode(rawValue: modeValue) ?? .street
-            let condition = ItemCondition(rawValue: r.post.condition ?? "good") ?? .good
-            let category = r.post.category ?? "misc"
-            let ownerId = r.post.owner_id ?? ""
+        let mapped: [Reservation] = decoded.reservations.compactMap { r -> Reservation? in
+            guard let serverPost = r.post else {
+                #if DEBUG
+                print("[RESERVATIONS] Skipping reservation \(r.id) due to missing post payload.")
+                #endif
+                return nil
+            }
 
-            let images = (r.post.images ?? []).map { PostImage(url: $0.url, orderIndex: $0.order_index) }
-            let exactLoc = r.post.exact_location?.coordinate.map { Location(lng: "\($0.longitude)", lat: "\($0.latitude)") }
-            let approxLoc = r.post.approx_location?.coordinate.map { Location(lng: "\($0.longitude)", lat: "\($0.latitude)") }
+            if r.usedLegacyPostKey {
+                #if DEBUG
+                print("[RESERVATIONS] Reservation \(r.id) used legacy 'posts' key.")
+                #endif
+            }
+
+            let condition = ItemCondition(rawValue: serverPost.condition ?? "") ?? .good
+            let mode = ItemMode(rawValue: serverPost.mode ?? "") ?? .street
+
+            let images: [PostImage] = (serverPost.images ?? []).compactMap { img -> PostImage? in
+                guard let raw = img.urlString?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      let url = URL(string: raw), !raw.isEmpty else { return nil }
+                return PostImage(url: url, orderIndex: img.orderIndex ?? 0)
+            }
+            .sorted { $0.orderIndex < $1.orderIndex }
+            let exactLoc: Location? = {
+                if let loc = serverPost.exactLocation, let coord = loc.coordinate {
+                    return Location(lng: "\(coord.longitude)", lat: "\(coord.latitude)")
+                }
+                return nil
+            }()
+            let approxLoc: Location? = {
+                if let loc = serverPost.approxLocation, let coord = loc.coordinate {
+                    return Location(lng: "\(coord.longitude)", lat: "\(coord.latitude)")
+                }
+                return nil
+            }()
+            let title = (serverPost.title?.isEmpty ?? true) ? "Untitled item" : (serverPost.title ?? "Untitled item")
+            let category = (serverPost.category?.isEmpty ?? true) ? "misc" : (serverPost.category ?? "misc")
+            let ownerId = (serverPost.owner?.id ?? serverPost.ownerId ?? r.item_id)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
 
             let post = Post(
-                id: r.post.id,
-                title: r.post.title ?? "Untitled",
-                description: r.post.description,
+                id: serverPost.id ?? r.item_id,
+                title: title,
+                description: serverPost.description,
                 category: category,
                 condition: condition,
                 mode: mode,
@@ -1239,15 +1357,15 @@ class ApiService: ObservableObject {
                 exactLocation: exactLoc,
                 approxLocation: approxLoc,
                 images: images,
-                distance: r.post.distance?.value,
-                owner: r.post.owner,
+                distance: serverPost.distance?.value,
+                owner: serverPost.owner,
                 userReservation: nil
             )
 
             return Reservation(
                 id: r.id,
                 itemId: r.item_id,
-                reserver: r.reserver,
+                reserver: r.reserver ?? "",
                 status: r.status,
                 requestedAt: r.requested_at,
                 approvedAt: r.approved_at,
@@ -1258,6 +1376,7 @@ class ApiService: ObservableObject {
                 post: post
             )
         }
+        return mapped
     }
 
     
@@ -1346,12 +1465,98 @@ class ApiService: ObservableObject {
     }
     
     func getMyPosts() async throws -> [Post] {
-        struct PostsResponse: Codable {
-            let posts: [Post]
+        struct ServerImage: Decodable {
+            let url: String?
+            let order_index: Int?
         }
-        
-        let response: PostsResponse = try await makeRequest("/my/posts")
-        return response.posts
+        struct ServerReservationSummary: Decodable {
+            let id: String?
+            let status: String?
+            let requested_at: String?
+        }
+        struct ServerPost: Decodable {
+            let id: String
+            let title: String?
+            let description: String?
+            let category: String?
+            let condition: String?
+            let mode: String?
+            let owner_id: String?
+            let created_at: RFC1123OrISODate?
+            let expires_at: RFC1123OrISODate?
+            let exact_location: TolerantLocation?
+            let approx_location: TolerantLocation?
+            let images: [ServerImage]?
+            let active_reservation: ServerReservationSummary?
+        }
+        struct PostsResponse: Decodable {
+            let posts: [ServerPost]?
+        }
+
+        let headers = try await authHeaders()
+        let request = try buildRequest(path: "/my/posts", method: .GET, headers: headers)
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw ApiServiceError.serverError("HTTP status error for /my/posts: \((response as? HTTPURLResponse)?.statusCode ?? -1) body=\(body)")
+        }
+
+        let payload = try JSONDecoder().decode(PostsResponse.self, from: data)
+        let posts = payload.posts ?? []
+
+        return posts.map { server in
+            let condition = ItemCondition(rawValue: server.condition ?? "") ?? .good
+            let mode = ItemMode(rawValue: server.mode ?? "") ?? .street
+
+            let images: [PostImage] = (server.images ?? []).compactMap { img in
+                guard let raw = img.url, let url = URL(string: raw) else { return nil }
+                return PostImage(url: url, orderIndex: img.order_index ?? 0)
+            }
+
+            let exactLocation: Location? = {
+                guard let loc = server.exact_location, let coord = loc.coordinate else { return nil }
+                return Location(lng: "\(coord.longitude)", lat: "\(coord.latitude)")
+            }()
+
+            let approxLocation: Location? = {
+                guard let loc = server.approx_location, let coord = loc.coordinate else { return nil }
+                return Location(lng: "\(coord.longitude)", lat: "\(coord.latitude)")
+            }()
+
+            let createdAt = server.created_at?.value
+            let expiresAt = server.expires_at?.value
+
+            let summary: ReservationSummary? = {
+                guard
+                    let raw = server.active_reservation,
+                    let id = raw.id,
+                    let requested = raw.requested_at
+                else { return nil }
+                let status = raw.status ?? "pending"
+                return ReservationSummary(id: id, status: status, requestedAt: requested)
+            }()
+
+            let safeTitle = (server.title?.isEmpty ?? true) ? "Untitled item" : (server.title ?? "Untitled item")
+            let safeCategory = (server.category?.isEmpty ?? true) ? "misc" : (server.category ?? "misc")
+
+            return Post(
+                id: server.id,
+                title: safeTitle,
+                description: server.description,
+                category: safeCategory,
+                condition: condition,
+                mode: mode,
+                ownerId: server.owner_id ?? "",
+                createdAt: createdAt,
+                expiresAt: expiresAt,
+                exactLocation: exactLocation,
+                approxLocation: approxLocation,
+                images: images,
+                distance: nil,
+                owner: nil,
+                userReservation: summary
+            )
+        }
     }
     
     func approveReservation(_ reservationId: String) async throws {
@@ -1497,3 +1702,4 @@ extension Reservation {
         }
     }
 }
+

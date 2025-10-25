@@ -162,10 +162,10 @@ struct ProfileView: View {
     @EnvironmentObject var svc: SupabaseService
     @StateObject private var viewModel: ProfileVM
     @State private var showingDeleteConfirmation = false
-    @State private var showingFinalDeleteConfirmation = false
     @State private var isDeleting = false
     @State private var showingSignOutError = false
     @State private var showingDeleteError = false
+    @State private var showingDeleteSuccess = false
     @State private var errorMessage = ""
     @State private var showingAccountDetails = false
     @State private var notificationsCount = 0
@@ -369,69 +369,75 @@ struct ProfileView: View {
                 await viewModel.load()
                 notificationsCount = svc.pending.count
             }
-            .confirmationDialog(
-                "Delete Account",
-                isPresented: $showingDeleteConfirmation,
-                titleVisibility: .visible
-            ) {
-                Button("Delete Account", role: .destructive) {
-                    showingFinalDeleteConfirmation = true
-                }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("Delete your account and all data?")
+        }
+        .sheet(isPresented: $showingAccountDetails) {
+            AccountDetailsView()
+                .environmentObject(svc)
+        }
+        .confirmationDialog(
+            "Delete your account?",
+            isPresented: $showingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                Task { await deleteAccount() }
             }
-            .confirmationDialog(
-                "Final Confirmation",
-                isPresented: $showingFinalDeleteConfirmation,
-                titleVisibility: .visible
-            ) {
-                Button("Yes, delete", role: .destructive) {
-                    Task { await deleteAccount() }
-                }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("This action cannot be undone. All your data will be permanently deleted.")
-            }
-            .alert("Sign Out Error", isPresented: $showingSignOutError) {
-                Button("OK") { }
-            } message: {
-                Text("Couldn't sign out. Try again.")
-            }
-            .alert("Delete Account Error", isPresented: $showingDeleteError) {
-                Button("OK") { }
-            } message: {
-                Text(errorMessage)
-            }
-            .sheet(isPresented: $showingAccountDetails) {
-                AccountDetailsView()
-                    .environmentObject(svc)
-            }
-            .onReceive(svc.$myReservations) { reservations in
-                viewModel.reservationsCount = reservations.count
-            }
-            .onReceive(svc.$myUploads) { uploads in
-                viewModel.uploadsCount = uploads.count
-            }
-            .onReceive(svc.$pending) { items in
-                notificationsCount = items.count
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .notificationsBadgeDecrement)) { _ in
-                notificationsCount = max(notificationsCount - 1, 0)
-            }
-            .onAppear {
-                // Load cached data immediately (instant, no network)
-                Task {
-                    await viewModel.load()
-                    notificationsCount = svc.pending.count
-                }
-                // Start background refresh (respects cooldown)
-                viewModel.startProfileRefresh()
-            }
-            .onDisappear {
-                viewModel.stopProfileRefresh()
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This permanently removes your profile, posts, reservations, and notifications.")
+        }
+        .alert("Your account was deleted.", isPresented: $showingDeleteSuccess) {
+            Button("OK") {
+                showingDeleteSuccess = false
+                Task { await svc.finalizeAccountDeletion() }
             }
         }
+        .alert("Sign Out Error", isPresented: $showingSignOutError) {
+            Button("OK") { }
+        } message: {
+            Text("Couldn't sign out. Try again.")
+        }
+        .alert("Account Deletion", isPresented: $showingDeleteError) {
+            Button("OK") { }
+        } message: {
+            Text(errorMessage)
+        }
+        .onReceive(svc.$myReservations) { reservations in
+            viewModel.reservationsCount = reservations.count
+        }
+        .onReceive(svc.$myUploads) { uploads in
+            viewModel.uploadsCount = uploads.count
+        }
+        .onReceive(svc.$pending) { items in
+            notificationsCount = items.count
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .notificationsBadgeDecrement)) { _ in
+            notificationsCount = max(notificationsCount - 1, 0)
+        }
+        .onAppear {
+            // Load cached data immediately (instant, no network)
+            Task {
+                await viewModel.load()
+                notificationsCount = svc.pending.count
+            }
+            // Start background refresh (respects cooldown)
+            viewModel.startProfileRefresh()
+        }
+        .onDisappear {
+            viewModel.stopProfileRefresh()
+        }
+        .overlay {
+            if isDeleting {
+                ZStack {
+                    Color.black.opacity(0.35).ignoresSafeArea()
+                    ProgressView("Deleting your account…")
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 20)
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                }
+            }
+        }
+        .allowsHitTesting(!isDeleting)
     }
     
     
@@ -450,14 +456,38 @@ struct ProfileView: View {
     
     @MainActor private func deleteAccount() async {
         isDeleting = true
+        showingDeleteError = false
+        let fallbackMessage = "Couldn't delete your account right now. Please try again."
+        #if DEBUG
+        print("[METRIC] delete_account_confirmed")
+        #endif
         do {
-            try await svc.deleteAccount()
-            // On success, the service handles sign out and cleanup
+            _ = try await svc.deleteAccount()
+            errorMessage = ""
+            isDeleting = false
+            showingDeleteSuccess = true
+            #if DEBUG
+            print("[METRIC] delete_account_success")
+            #endif
         } catch {
-            errorMessage = error.localizedDescription
+            isDeleting = false
+            showingDeleteSuccess = false
+
+            if error.isCancellationLike {
+                errorMessage = fallbackMessage
+            } else if let simple = error as? SimpleError {
+                errorMessage = simple.localizedDescription ?? fallbackMessage
+            } else {
+                let nsError = error as NSError
+                let derived = nsError.localizedDescription
+                errorMessage = derived.isEmpty || derived == "(null)" ? fallbackMessage : derived
+            }
+
             showingDeleteError = true
+            #if DEBUG
+            print("[METRIC] delete_account_failed error=\(errorMessage)")
+            #endif
         }
-        isDeleting = false
     }
 }
 

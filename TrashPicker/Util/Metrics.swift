@@ -32,4 +32,7 @@ enum Metrics {
     static func avgFeedMs(_ ms: Int) {
         print("[METRIC] avgFeedMs=\(ms)")
     }
+    static func reservationAction(screen: String, role: String, postId: String, reservationId: String, mode: ItemMode, statusBefore: String, statusAfter: String) {
+        print("[METRIC] reservationAction screen=\(screen) role=\(role) postId=\(postId) reservationId=\(reservationId) mode=\(mode.rawValue) statusBefore=\(statusBefore) statusAfter=\(statusAfter)")
+    }
 }

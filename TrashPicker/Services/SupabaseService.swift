@@ -41,6 +41,7 @@ final class SupabaseService: NSObject, ObservableObject {
     // Shared single-flight gate for feed/map fetches
     private let feedGate = FeedSingleFlight()
     private var feedReqCounter: Int = 0
+    private var pendingDeletionUserId: String?
     
     // User profile computed properties
     var displayName: String {
@@ -431,10 +432,57 @@ final class SupabaseService: NSObject, ObservableObject {
     
     /// Delete user account and all associated data
     @MainActor
-    func deleteAccount() async throws {
-        // Domain account deletion is not handled via Supabase RPC in the app layer.
-        // If needed, expose a Flask endpoint and call it via ApiService.
-        throw SimpleError(message: "Account deletion not supported from client.")
+    func deleteAccount() async throws -> DeleteAccountResponse {
+        guard let currentSession = session else {
+            throw SimpleError(message: "No active session")
+        }
+
+        let api = ApiService(supabaseService: self)
+        let userId = currentSession.user.id.uuidString
+
+        do {
+            #if DEBUG
+            print("[ACCOUNT] delete start user=\(userId)")
+            #endif
+
+            let response: DeleteAccountResponse = try await withTimeout(seconds: 30) {
+                try await api.deleteAccount()
+            }
+
+            #if DEBUG
+            print("[ACCOUNT] delete success message=\(response.message)")
+            #endif
+
+            pendingDeletionUserId = userId
+            return response
+        } catch {
+            pendingDeletionUserId = nil
+
+            if error.isCancellationLike {
+                throw error
+            }
+
+            if let apiError = error as? ApiHTTPError {
+                let message = apiError.message?.isEmpty == false
+                    ? apiError.message!
+                    : "Couldn't delete your account right now. Please try again."
+                throw SimpleError(message: message)
+            }
+
+            if let simple = error as? SimpleError {
+                throw simple
+            }
+
+            throw SimpleError(message: "Couldn't delete your account right now. Please try again.")
+        }
+    }
+
+    @MainActor
+    func finalizeAccountDeletion() async {
+        guard let userId = pendingDeletionUserId else { return }
+        wipeLocalAccountState(for: userId)
+        pendingDeletionUserId = nil
+        await signOut()
     }
     
     @MainActor
@@ -606,6 +654,15 @@ final class SupabaseService: NSObject, ObservableObject {
         myUploads = []
         myReservations = []
         pending = []
+    }
+
+    private func wipeLocalAccountState(for userId: String) {
+        feed = []
+        cachedFeed = []
+        feedIsOffline = false
+        resetLists()
+        feedCacheStore.clear()
+        DismissStore.shared.clear(for: userId)
     }
     
     private func mapPostToDTO(_ post: Post, reservation: Reservation?) -> TrashDTO {
@@ -1108,4 +1165,3 @@ extension SupabaseService {
         return token.isEmpty == false
     }
 }
-

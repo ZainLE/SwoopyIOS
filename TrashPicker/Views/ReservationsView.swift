@@ -983,6 +983,7 @@ struct ReservationRow: Identifiable {
     // identity
     let id: String
     let postId: String
+    let ownerId: String
 
     // post basics
     let title: String
@@ -1022,6 +1023,13 @@ struct ReservationRow: Identifiable {
     }
 }
 
+private enum ReservationDateParser {
+    static func parse(_ raw: String?) -> Date? {
+        guard let raw else { return nil }
+        return Time.parseISO(raw)
+    }
+}
+
 // Nice helpers you can use directly in the View:
 extension ReservationRow {
     var statusText: String {
@@ -1041,6 +1049,7 @@ extension ReservationRow {
 
         id = r.id
         postId = p.id
+        ownerId = p.ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
         title = p.title
         description = p.description
         condition = p.condition
@@ -1053,11 +1062,10 @@ extension ReservationRow {
 
         // status + dates
         status = ReservationStatus(rawValue: r.status) ?? .pending
-        let iso = ISO8601DateFormatter()
-        requestedAt = iso.date(from: r.requestedAt) ?? Date()
-        approvedAt = r.approvedAt.flatMap { iso.date(from: $0) }
-        endAt = r.endAt.flatMap { iso.date(from: $0) }
-        pickedAt = r.pickedAt.flatMap { iso.date(from: $0) }
+        requestedAt = ReservationDateParser.parse(r.requestedAt) ?? Date()
+        approvedAt = ReservationDateParser.parse(r.approvedAt)
+        endAt = ReservationDateParser.parse(r.endAt)
+        pickedAt = ReservationDateParser.parse(r.pickedAt)
 
         // street coordinate (using Location.coordinate extension)
         exactCoordinate = p.exactLocation?.coordinate
@@ -1084,6 +1092,7 @@ struct ReservationsView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showError = false
+    @State private var showPastReservations = false
     
     // Overlay State
     @State private var selectedReservation: ReservationRow?
@@ -1107,8 +1116,9 @@ struct ReservationsView: View {
                 try await api.getMyReservations()
             }
             
+            let rows = apiReservations.map(ReservationRow.init)
             await MainActor.run {
-                reservations = apiReservations.map(ReservationRow.init)
+                reservations = filterReservationsForDisplay(rows)
                 isLoading = false
             }
         } catch {
@@ -1127,23 +1137,57 @@ struct ReservationsView: View {
     }
     
     // MARK: - Computed Properties
-    private var displayedReservations: [ReservationRow] {
-        let order: [ReservationStatus: Int] = [
-            .active: 0,
-            .pending: 1,
-            .picked: 2
-        ]
+    private var pendingReservations: [ReservationRow] {
+        sortByRecency(
+            reservations.filter { $0.status == .pending && !$0.isExpired }
+        )
+    }
 
-        return reservations
-            .filter { ![.canceled, .expired].contains($0.status) }
-            .sorted { lhs, rhs in
-                let lhsOrder = order[lhs.status] ?? 99
-                let rhsOrder = order[rhs.status] ?? 99
-                if lhsOrder == rhsOrder {
-                    return lhs.requestedAt > rhs.requestedAt
+    private var activeReservations: [ReservationRow] {
+        sortByRecency(
+            reservations.filter { reservation in
+                guard reservation.status == .active else { return false }
+                if reservation.mode == .street {
+                    return !reservation.isExpired
                 }
-                return lhsOrder < rhsOrder
+                return true
             }
+        )
+    }
+
+    private var pastReservations: [ReservationRow] {
+        sortByRecency(
+            reservations.filter { reservation in
+                switch reservation.status {
+                case .picked, .canceled, .expired:
+                    return true
+                case .active:
+                    return reservation.mode == .street && reservation.isExpired
+                case .pending:
+                    return reservation.isExpired
+                }
+            }
+        )
+    }
+
+    private var hasAnyReservations: Bool {
+        !pendingReservations.isEmpty || !activeReservations.isEmpty || !pastReservations.isEmpty
+    }
+
+    private func sortByRecency(_ rows: [ReservationRow]) -> [ReservationRow] {
+        rows.sorted { $0.requestedAt > $1.requestedAt }
+    }
+
+    private func filterReservationsForDisplay(_ rows: [ReservationRow]) -> [ReservationRow] {
+        guard let myId = svc.userId else { return rows }
+        let myIdLowercased = myId.uuidString.lowercased()
+
+        return rows.filter { row in
+            if let ownerUUID = UUID(uuidString: row.ownerId) {
+                return ownerUUID != myId
+            }
+            return row.ownerId.lowercased() != myIdLowercased
+        }
     }
 
     var body: some View {
@@ -1207,7 +1251,7 @@ struct ReservationsView: View {
                 loadingView
             } else if showError {
                 errorView
-            } else if displayedReservations.isEmpty {
+            } else if !hasAnyReservations {
                 emptyStateView
             } else {
                 reservationsListView
@@ -1295,14 +1339,22 @@ struct ReservationsView: View {
     @ViewBuilder
     private var reservationsListView: some View {
         ScrollView {
-            LazyVStack(spacing: 12) {
-                ForEach(displayedReservations) { reservation in
-                    reservationCardView(for: reservation)
-                        .id(reservation.id)
+            VStack(spacing: 28) {
+                if !pendingReservations.isEmpty {
+                    reservationsSection(title: "Pending confirmation", reservations: pendingReservations)
+                }
+
+                if !activeReservations.isEmpty {
+                    reservationsSection(title: "Ready for pickup", reservations: activeReservations)
+                }
+
+                if !pastReservations.isEmpty {
+                    pastReservationsSection
                 }
             }
+            .padding(.top, 16)
+            .padding(.bottom, 24)
             .padding(.horizontal, AppTheme.Spacing.chromeSide)
-            .padding(.vertical, 12)
         }
         .refreshable {
             await loadReservations()
@@ -1324,6 +1376,78 @@ struct ReservationsView: View {
             onDirections: { onDirections(reservation: reservation) },
             onContact: { onContact(reservation: reservation) }
         )
+    }
+
+    @ViewBuilder
+    private func reservationsSection(title: String, reservations: [ReservationRow]) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            sectionHeader(title: title, count: reservations.count)
+
+            ForEach(reservations) { reservation in
+                reservationCardView(for: reservation)
+                    .id(reservation.id)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pastReservationsSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showPastReservations.toggle()
+                }
+            } label: {
+                HStack {
+                    Text("Past reservations")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.primary)
+
+                    Spacer()
+
+                    Text("\(pastReservations.count)")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color(.systemGray6))
+                        .clipShape(Capsule())
+
+                    Image(systemName: showPastReservations ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if showPastReservations {
+                VStack(spacing: 16) {
+                    ForEach(pastReservations) { reservation in
+                        reservationCardView(for: reservation)
+                            .id(reservation.id)
+                    }
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sectionHeader(title: String, count: Int) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundColor(.primary)
+            Spacer()
+            Text("\(count)")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Color(.systemGray6))
+                .clipShape(Capsule())
+        }
     }
 
     @ViewBuilder
@@ -1483,6 +1607,15 @@ struct ReservationsView: View {
             }
             
             // Remove from list on success
+            Metrics.reservationAction(
+                screen: "Reservations",
+                role: "reserver",
+                postId: reservation.postId,
+                reservationId: reservation.id,
+                mode: reservation.mode,
+                statusBefore: reservation.status.rawValue,
+                statusAfter: "canceled"
+            )
             reservations.removeAll { $0.id == reservationId }
             showToastMessage("Reservation canceled")
         } catch let apiError as ApiServiceError {
@@ -1490,8 +1623,17 @@ struct ReservationsView: View {
             case .unauthorized:
                 showToastMessage("Please sign in again to continue.")
             case .notFound:
-                showToastMessage("Item not found.")
-                await loadReservations()
+                Metrics.reservationAction(
+                    screen: "Reservations",
+                    role: "reserver",
+                    postId: reservation.postId,
+                    reservationId: reservation.id,
+                    mode: reservation.mode,
+                    statusBefore: reservation.status.rawValue,
+                    statusAfter: "already_canceled"
+                )
+                reservations.removeAll { $0.id == reservationId }
+                showToastMessage("Reservation already canceled")
             case .serverError(let message):
                 let friendly = friendlyMessage(statusCode: nil, backendMessage: message, fallback: "Couldn't cancel reservation. Please try again.")
                 showToastMessage(friendly)
@@ -1575,7 +1717,7 @@ struct ReservationsView: View {
     private func handlePrimaryAction(for reservation: ReservationRow) {
         switch (reservation.mode, reservation.status) {
         case (.street, .active):
-            onPickup(reservationId: reservation.id)
+            onDirections(reservation: reservation)
             selectedReservation = nil
         case (.home, .pending):
             onContact(reservation: reservation)
@@ -1870,7 +2012,7 @@ private struct ReservationCard: View {
     private var buttonsRow: some View {
         switch (reservation.mode, reservation.status) {
         case (.street, .active):
-            // Street → Left-aligned buttons: "Directions", "Picked up", "Cancel"
+            // Street → Directions + Cancel
             HStack(spacing: 12) {
                 Button(action: onDirections) {
                     Text("Directions")
@@ -1883,19 +2025,7 @@ private struct ReservationCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 29))
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
-                
-                Button(action: onPickUp) {
-                    Text("Picked up")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(height: AppSize.buttonHeight)
-                        .frame(maxWidth: .infinity)
-                }
-                .background(AppTheme.ColorToken.primary)
-                .clipShape(RoundedRectangle(cornerRadius: 29))
-                .disabled(isLoading)
-                .opacity(isLoading ? 0.6 : 1.0)
-                
+
                 Button(action: onCancel) {
                     Text("Cancel")
                         .font(.system(size: 16, weight: .semibold))
@@ -1911,8 +2041,6 @@ private struct ReservationCard: View {
                 )
                 .disabled(isLoading)
                 .opacity(isLoading ? 0.6 : 1.0)
-                
-                Spacer() // Push buttons to the left (aligned with image)
             }
             
         case (.home, .pending):

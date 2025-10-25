@@ -14,4 +14,8 @@ final class DismissStore {
     func save(_ set: Set<String>, for userId: String) {
         UserDefaults.standard.set(Array(set), forKey: key(for: userId))
     }
+
+    func clear(for userId: String) {
+        UserDefaults.standard.removeObject(forKey: key(for: userId))
+    }
 }

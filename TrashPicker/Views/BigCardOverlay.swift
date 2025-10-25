@@ -55,7 +55,7 @@ struct BigCardOverlay: View {
         case feed
         
         enum ReservationButtonSet {
-            case streetActive // Pick up, Cancel, Directions
+            case streetActive // Directions, Cancel
             case homePending  // Contact (disabled), Cancel
             case homeActive   // Contact, Cancel
             case completed    // No actions, success message
@@ -387,15 +387,17 @@ extension BigCardOverlay {
         switch buttonSet {
         case .streetActive:
             HStack(spacing: 12) {
-                Button(action: onPrimaryAction) {
-                    Text("Pick up")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(height: 52)
-                        .frame(maxWidth: .infinity)
+                if let tertiaryAction = onTertiaryAction {
+                    Button(action: tertiaryAction) {
+                        Text("Directions")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(primaryColor)
+                            .frame(height: 52)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .background(accentColor)
+                    .clipShape(RoundedRectangle(cornerRadius: 26))
                 }
-                .background(primaryColor)
-                .clipShape(RoundedRectangle(cornerRadius: 26))
                 
                 Button(action: onSecondaryAction) {
                     Text("Cancel")
@@ -409,18 +411,6 @@ extension BigCardOverlay {
                     RoundedRectangle(cornerRadius: 26)
                         .stroke(primaryColor, lineWidth: 2)
                 )
-                
-                if let tertiaryAction = onTertiaryAction {
-                    Button(action: tertiaryAction) {
-                        Text("Directions")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(primaryColor)
-                            .frame(height: 52)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .background(accentColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 26))
-                }
             }
             
         case .homePending:

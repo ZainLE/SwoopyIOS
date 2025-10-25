@@ -111,5 +111,18 @@ final class FeedCacheStore {
         guard let saved = lastSavedAt else { return nil }
         return Int(Date().timeIntervalSince(saved) * 1000)
     }
-}
 
+    func clear() {
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            // Ignore missing file errors; log others for debugging
+            #if DEBUG
+            if (error as NSError).code != NSFileNoSuchFileError {
+                print("[FEED cache] clear error=\(error.localizedDescription)")
+            }
+            #endif
+        }
+        lastSavedAt = nil
+    }
+}
