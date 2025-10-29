@@ -350,10 +350,6 @@ struct SwipeDeckView: View {
             ProgressView()
                 .scaleEffect(1.2)
                 .tint(AppTheme.ColorToken.primary)
-            
-            Text("Loading nearby items...")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -1092,10 +1088,26 @@ extension SwipeDeckView {
         @State private var fetchTask: Task<Void, Never>?
         @StateObject private var recenterHelper = MapRecenterHelper()
 
-        @State private var region: MKCoordinateRegion = MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
-            span: .init(latitudeDelta: 0.05, longitudeDelta: 0.05)
-        )
+        @State private var region: MKCoordinateRegion = {
+            // Try to get cached user location first
+            if let userCoord = LocationService.shared.lastKnownCoordinate {
+                #if DEBUG
+                print("[MAP] init region from cached user location: \(userCoord.latitude), \(userCoord.longitude)")
+                #endif
+                return MKCoordinateRegion(
+                    center: userCoord,
+                    span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                )
+            }
+            // Fallback to Barcelona only if no cached location
+            #if DEBUG
+            print("[MAP] init region from fallback (Barcelona)")
+            #endif
+            return MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
+                span: .init(latitudeDelta: 0.05, longitudeDelta: 0.05)
+            )
+        }()
         @State private var didCenterFromDefault = false
         @State private var forceMapUpdate = false
 
@@ -1241,8 +1253,8 @@ extension SwipeDeckView {
 
         @ViewBuilder
         private var bannerOverlay: some View {
-            if let mapError {
-                VStack {
+            VStack {
+                if let mapError {
                     Text(mapError)
                         .font(.footnote)
                         .foregroundStyle(.white)
@@ -1251,9 +1263,9 @@ extension SwipeDeckView {
                         .background(Color.black.opacity(0.75))
                         .clipShape(Capsule())
                         .padding(.top, 64)
-                    Spacer()
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
-                .transition(.move(edge: .top).combined(with: .opacity))
+                Spacer()
             }
         }
 
@@ -1499,7 +1511,15 @@ extension SwipeDeckView {
             dbg("MAP", "lifecycle onAppear starting_location")
             if api == nil { api = ApiService(supabaseService: svc) }
             loc.startContinuous()
-            didCenterFromDefault = true  // Already set in @State init
+            
+            // Check if we started with user location or fallback
+            if let userCoord = LocationService.shared.lastKnownCoordinate {
+                didCenterFromDefault = true
+                dbg("MAP", "started centered on user: \(userCoord.latitude), \(userCoord.longitude)")
+            } else {
+                didCenterFromDefault = false
+                dbg("MAP", "started with fallback, waiting for location fix")
+            }
 
             Task { await fetchPosts() }
         }
@@ -1507,11 +1527,14 @@ extension SwipeDeckView {
         private func handleLocationChange(_: CLLocation?, newLocation: CLLocation?) {
             guard let newLocation else { return }
             if !didCenterFromDefault {
+                dbg("MAP", "first location fix received, centering: \(newLocation.coordinate.latitude), \(newLocation.coordinate.longitude)")
                 region = MKCoordinateRegion(
                     center: newLocation.coordinate,
                     span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)
                 )
                 didCenterFromDefault = true
+                // Fetch pins for new region
+                Task { await fetchPosts() }
             }
         }
 
@@ -1616,6 +1639,7 @@ extension SwipeDeckView {
             }
 
             do {
+                dbg("MAP", "fetching posts for region center: \(center.latitude), \(center.longitude)")
                 let query = FeedQuery(
                     lng: center.longitude,
                     lat: center.latitude,
@@ -1636,6 +1660,7 @@ extension SwipeDeckView {
                         posts = result
                         mapError = nil
                         pruneSelectionIfNeeded()
+                        dbg("MAP", "loaded \(result.count) posts")
                         return
                     } catch {
                         latestError = error
@@ -1658,25 +1683,29 @@ extension SwipeDeckView {
                     throw TimeoutError.timedOut
                 }
             } catch {
-                dbg("API", "Failed to fetch map posts: \(error.localizedDescription)")
-                let message = "Couldn't load items. Showing last results."
-                mapError = message
+                dbg("MAP", "Failed to fetch posts: \(error.localizedDescription)")
+                // Only show error if we have no posts to display
+                if posts.isEmpty {
+                    mapError = "Couldn't load items."
+                } else {
+                    mapError = "Couldn't refresh. Showing last results."
+                }
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 4_000_000_000)
-                    if mapError == message {
-                        mapError = nil
-                    }
+                    mapError = nil
                 }
             }
         }
 
         private func recenterOnUser() {
+            dbg("MAP", "recenter button tapped")
             forceMapUpdate = true
 
             recenterHelper.recenter(
                 region: &region,
                 locationService: loc,
                 onPermissionDenied: { message in
+                    dbg("MAP", "recenter denied: \(message)")
                     mapError = message
                     Task { @MainActor in
                         try? await Task.sleep(nanoseconds: 3_000_000_000)
@@ -1687,8 +1716,11 @@ extension SwipeDeckView {
                 },
                 completion: {
                     Task { @MainActor in
+                        dbg("MAP", "recenter complete, refreshing pins")
                         try? await Task.sleep(nanoseconds: 100_000_000)
                         forceMapUpdate = false
+                        // Refresh pins for new region
+                        await fetchPosts()
                     }
                 }
             )

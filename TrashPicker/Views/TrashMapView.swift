@@ -218,4 +218,3 @@ struct FullScreenMapView: View {
         }
     }
 }
-

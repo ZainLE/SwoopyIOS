@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct SplashView: View {
+struct SplashView2: View {
     var body: some View {
         ZStack {
             Color(.systemBackground).ignoresSafeArea()
@@ -16,5 +16,5 @@ struct SplashView: View {
 }
 
 #Preview {
-    SplashView()
+    SplashView2()
 }

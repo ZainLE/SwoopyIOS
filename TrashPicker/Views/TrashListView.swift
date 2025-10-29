@@ -84,3 +84,50 @@ private struct Thumbnail: View {
         }
     }
 }
+
+#Preview {
+    TrashListPreview()
+}
+
+private struct TrashListPreview: View {
+    @StateObject private var loc: LocationManager
+    private let svc = SupabaseService.shared
+
+    init() {
+        _loc = StateObject(wrappedValue: {
+            let manager = LocationManager()
+            manager.authorization = .authorizedWhenInUse
+            manager.userLocation = CLLocation(latitude: 41.3874, longitude: 2.1686)
+            return manager
+        }())
+
+        let sample = TrashDTO(
+            id: UUID(),
+            title: "Solid Oak Table",
+            description: "Sturdy dining table ready for pickup.",
+            category: "Furniture",
+            condition: "good",
+            mode: "street",
+            city: "Barcelona",
+            lat: 41.388,
+            lon: 2.17,
+            approxLat: nil,
+            approxLon: nil,
+            photoURLs: [],
+            createdAt: Date(),
+            expiresAt: Date().addingTimeInterval(7200),
+            status: "available",
+            reservedUntil: nil,
+            reservedBy: nil,
+            uploader: UUID(),
+            pickedUpAt: nil
+        )
+        svc.feed = [sample]
+    }
+
+    var body: some View {
+        TrashListView()
+            .environmentObject(svc)
+            .environmentObject(loc)
+    }
+}

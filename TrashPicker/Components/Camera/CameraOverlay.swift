@@ -194,3 +194,5 @@ struct CameraPreviewView: UIViewRepresentable {
         }
     }
 }
+
+// TODO: Preview not added — relies on live camera capture pipeline unavailable in SwiftUI previews

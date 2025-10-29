@@ -192,3 +192,9 @@ private extension CGFloat {
     func max(_ v: CGFloat) -> CGFloat { Swift.max(self, v) }
 }
 
+#Preview {
+    SystemGlassTabsWithFab()
+        .environmentObject(SupabaseService.shared)
+        .environmentObject(LocationManager())
+        .environmentObject(UploadDraftStore())
+}

@@ -28,15 +28,6 @@ final class MapRecenterHelper: ObservableObject {
     private var lastRecenterTime: Date?
     private var permissionBannerCallback: ((String) -> Void)?
     
-    // MARK: - Public API
-    
-    /// Recenter the map to user's current location with consistent zoom (MapCameraPosition API)
-    /// - Parameters:
-    ///   - camera: Binding to the map camera position
-    ///   - locationManager: Location manager providing user location and authorization
-    ///   - onPermissionDenied: Optional callback to show permission banner
-    ///   - completion: Optional callback when recenter completes or fails
-    /// - Returns: New camera position if successful, nil otherwise
     @discardableResult
     func recenter(
         camera: inout MapCameraPosition,
@@ -80,12 +71,6 @@ final class MapRecenterHelper: ObservableObject {
         return newPosition
     }
     
-    /// Recenter the map to user's current location with consistent zoom (MKCoordinateRegion API)
-    /// - Parameters:
-    ///   - region: Binding to the map region
-    ///   - locationManager: Location manager providing user location and authorization
-    ///   - onPermissionDenied: Optional callback to show permission banner
-    ///   - completion: Optional callback when recenter completes or fails
     func recenter(
         region: inout MKCoordinateRegion,
         locationManager: LocationManager,
@@ -125,12 +110,7 @@ final class MapRecenterHelper: ObservableObject {
         completion?()
     }
     
-    /// Recenter the map to user's current location (for LocationService + MKCoordinateRegion)
-    /// - Parameters:
-    ///   - region: Binding to the map region
-    ///   - locationService: LocationService providing user location
-    ///   - onPermissionDenied: Optional callback to show permission banner
-    ///   - completion: Optional callback when recenter completes or fails
+
     func recenter(
         region: inout MKCoordinateRegion,
         locationService: LocationService,
@@ -166,14 +146,10 @@ final class MapRecenterHelper: ObservableObject {
         // Calculate clamped distance for consistent zoom
         let distance = min(max(Self.targetDistance, Self.minDistance), Self.maxDistance)
         
-        // Convert distance to span for city-level view
-        // At equator: 1 degree latitude ≈ 111km
-        // For 1000m: span ≈ 0.009 degrees
+
         let spanDelta = (distance / 111000.0) * 1.0
         
-        // CRITICAL: Use .region() for instant, deterministic positioning
-        // .camera() can trigger long flight animations for huge deltas
-        // .region() with fixed span is more reliable for instant jumps
+    
         let newPosition = MapCameraPosition.region(
             MKCoordinateRegion(
                 center: coordinate,
@@ -183,9 +159,7 @@ final class MapRecenterHelper: ObservableObject {
                 )
             )
         )
-        
-        // Direct assignment - no transaction wrapping needed
-        // The calling view should wrap this in withTransaction if needed
+
         camera = newPosition
         
         // Track recenter time for suppression (network only, not camera)
@@ -202,9 +176,7 @@ final class MapRecenterHelper: ObservableObject {
         // Calculate clamped distance for consistent zoom
         let distance = min(max(Self.targetDistance, Self.minDistance), Self.maxDistance)
         
-        // Convert distance to span (approximate conversion)
-        // At equator: 1 degree latitude ≈ 111km
-        // For 1000m target distance, we want roughly 0.009 degree span for city-level view
+
         let spanDelta = (distance / 111000.0) * 1.0
         
         // Direct assignment - calling view should wrap in withTransaction if needed
@@ -239,7 +211,6 @@ final class MapRecenterHelper: ObservableObject {
 // MARK: - Convenience Extensions
 
 extension MapCameraPosition {
-    /// Create a camera position with distance-based zoom using region (more reliable for instant jumps)
     static func userLocation(_ coordinate: CLLocationCoordinate2D, distance: CLLocationDistance = 1000) -> MapCameraPosition {
         // Convert distance to span
         let spanDelta = (distance / 111000.0) * 1.0

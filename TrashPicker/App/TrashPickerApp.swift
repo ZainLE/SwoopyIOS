@@ -48,52 +48,45 @@ private struct RootGateView: View {
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var api: ApiService
     @StateObject private var boot = BootCoordinator.shared
-    @State private var showSplash = true
+    @Environment(\.scenePhase) private var scenePhase
+    
+    private enum BootPhase {
+        case splash
+        case app
+    }
+    
+    private static let introDuration: TimeInterval = 2.2
+    private static let showIntroOnColdLaunch = true
+    
+    @State private var bootPhase: BootPhase
     @State private var hasLoggedInteractive = false
-    @State private var splashTask: Task<Void, Never>?
-    @State private var hasScheduledSplash = false // Guard to prevent re-showing splash
+    @State private var hasBootSequenceStarted = false
+    @State private var introTask: Task<Void, Never>?
+    @State private var introStartedAt: Date?
+    
+    init() {
+        _bootPhase = State(initialValue: Self.showIntroOnColdLaunch ? .splash : .app)
+    }
 
     var body: some View {
         ZStack {
-            content
-                .onAppear {
-                    markFirstInteractiveIfNeeded()
-                }
-
-            if showSplash {
-                ZStack {
-                    Color(.systemBackground).ignoresSafeArea()
-                    Image("SwoopyLogo")
-                        .resizable().scaledToFit()
-                        .frame(width: 140, height: 140)
-                }
-                .allowsHitTesting(false)
-                .transition(.opacity)
+            if bootPhase == .app {
+                appShell
+                    .transition(.opacity)
+                    .zIndex(0)
+            }
+            
+            if bootPhase == .splash {
+                splashShell
+                    .transition(.opacity)
+                    .zIndex(1)
             }
         }
-        .animation(.easeOut(duration: 0.2), value: showSplash)
+        .animation(.easeInOut(duration: 0.35), value: bootPhase)
         .onAppear {
-            // Guard: only run boot sequence once per process (prevent re-triggering on modal dismiss)
-            guard !hasScheduledSplash else {
-                #if DEBUG
-                print("[BOOT] onAppear skipped (already booted)")
-                #endif
-                return
-            }
-            hasScheduledSplash = true
-            
-            #if DEBUG
-            print("[BOOT] onAppear executing (first launch)")
-            #endif
-            
-            // Boot metrics: mark first frame and start stage orchestration
-            BootCoordinator.shared.markFirstFrame()
-            BootCoordinator.shared.start(svc: svc, api: api)
+            startBootSequenceIfNeeded()
+            startIntroIfNeeded()
             markFirstInteractiveIfNeeded()
-            scheduleSplashDismiss()
-            if svc.phase == .signedIn {
-                AppBoot.markShellToSignedIn()
-            }
         }
         .onChange(of: svc.phase) { _, newPhase in
             if newPhase != .checking {
@@ -103,68 +96,116 @@ private struct RootGateView: View {
                 AppBoot.markShellToSignedIn()
             }
         }
-        .onDisappear {
-            splashTask?.cancel()
-        }
-        .overlay(alignment: .top) {
-            if let msg = boot.bannerMessage {
-                Text(msg)
-                    .font(.footnote)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.top, 12)
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                startIntroIfNeeded()
             }
+        }
+        .onDisappear {
+            introTask?.cancel()
+            introTask = nil
         }
     }
 
     private var shouldShowAuth: Bool {
-        // Only show auth if explicitly signed out AND session check completed
-        // During .checking, show RootView with empty/skeleton state
         svc.phase == .signedOut && svc.didCheckSession
     }
 
     @ViewBuilder
     private var content: some View {
-        // ALWAYS render RootView unless explicitly signed out
-        // This ensures shell is interactive immediately, even during .checking phase
         if shouldShowAuth {
             AuthView()
         } else {
-            // Show RootView for both .checking and .signedIn phases
-            // Feed will show empty/skeleton state while loading
             RootView()
         }
     }
-
-    private func scheduleSplashDismiss() {
-        splashTask?.cancel()
-        showSplash = true
-        let graceStart = Date()
-        splashTask = Task {
-            #if DEBUG
-            // DEBUG: 300ms visual splash for development
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            #else
-            // RELEASE: Dismiss splash immediately, no auth grace hold
-            try? await Task.sleep(nanoseconds: 100_000_000)
-            #endif
-            let ms = Int(Date().timeIntervalSince(graceStart) * 1000)
-            await MainActor.run {
-                withAnimation {
-                    showSplash = false
-                }
-                #if DEBUG
-                print("[AUTH] authGraceHoldMs=\(ms)")
-                #endif
-            }
-        }
-    }
-
+    
     private func markFirstInteractiveIfNeeded() {
         guard hasLoggedInteractive == false else { return }
         hasLoggedInteractive = true
         AppBoot.markFirstInteractive()
     }
+    
+    private func startBootSequenceIfNeeded() {
+        guard hasBootSequenceStarted == false else { return }
+        hasBootSequenceStarted = true
+        
+        #if DEBUG
+        print("[BOOT] onAppear executing (first launch)")
+        #endif
+        
+        BootCoordinator.shared.markFirstFrame()
+        BootCoordinator.shared.start(svc: svc, api: api)
+        if svc.phase == .signedIn {
+            AppBoot.markShellToSignedIn()
+        }
+    }
+    
+    private func startIntroIfNeeded() {
+        guard Self.showIntroOnColdLaunch else {
+            bootPhase = .app
+            return
+        }
+        guard bootPhase == .splash else { return }
+        guard introTask == nil else { return }
+        
+        let start = Date()
+        introStartedAt = start
+        print("[ANIM] intro_start")
+        
+        introTask = Task {
+            let delay = UInt64(Self.introDuration * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: delay)
+            await MainActor.run {
+                completeIntroIfNeeded()
+            }
+        }
+    }
+    
+    @MainActor
+    private func completeIntroIfNeeded() {
+        guard bootPhase == .splash else { return }
+        introTask?.cancel()
+        introTask = nil
+        let elapsedMs = Int(Date().timeIntervalSince(introStartedAt ?? Date()) * 1000)
+        print("[ANIM] intro_end t=\(elapsedMs)ms")
+        Haptics.play(.tabReselect)
+        withAnimation(.easeInOut(duration: 0.45)) {
+            bootPhase = .app
+        }
+    }
+    
+    // TrashPickerApp.swift (snippet)
+    private var splashShell: some View {
+        SplashView(
+            logo: "SwoopyLogo",
+            images: [
+                "mappin.and.ellipse",
+                "shippingbox",
+                "leaf.fill",
+                "sparkles",
+                "person.2.fill",
+                "house.fill",
+                "figure.walk",
+                "checkmark.seal.fill"
+            ]
+        )
+        
+        .accessibilityHidden(true)          // ← enough to keep VO quiet
+        .background(Color(.systemBackground).ignoresSafeArea())
+    }
+    
+    private var appShell: some View {
+        content
+            .overlay(alignment: .top) {
+                if let msg = boot.bannerMessage {
+                    Text(msg)
+                        .font(.footnote)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(.top, 12)
+                }
+            }
+    }
 }
-

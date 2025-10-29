@@ -120,3 +120,11 @@ struct CapsuleField: View {
   }
 }
 
+#Preview {
+  VStack(spacing: 16) {
+    CircleToggle(isOn: .constant(true), label: "Provide Description")
+    CapsuleField(text: .constant("Sample notes about the find."), placeholder: "Add details")
+  }
+  .padding()
+  .background(AppColor.surface)
+}

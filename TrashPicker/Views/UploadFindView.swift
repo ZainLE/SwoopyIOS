@@ -1340,4 +1340,3 @@ private extension Array {
 
 // Keep old references working
 typealias AddTrashFlow = AddTrashView
-

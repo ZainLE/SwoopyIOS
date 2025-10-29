@@ -1160,4 +1160,3 @@ struct NotificationsView: View {
         }
     }
 }
-

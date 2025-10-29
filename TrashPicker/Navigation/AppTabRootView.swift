@@ -16,3 +16,12 @@ struct AppTabRootView: View {
         }
     }
 }
+
+#Preview {
+    AppTabRootView(tab: .feed)
+        .environment(AppRouter())
+        .environmentObject(SupabaseService.shared)
+        .environmentObject(CKTrashService())
+        .environmentObject(UploadDraftStore())
+        .environmentObject(LocationManager())
+}

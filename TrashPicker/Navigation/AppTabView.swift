@@ -123,3 +123,11 @@ struct AppTabView: View {
         showCamera = true
     }
 }
+
+#Preview {
+    AppTabView()
+        .environment(AppRouter())
+        .environmentObject(SupabaseService.shared)
+        .environmentObject(LocationManager())
+        .environmentObject(UploadDraftStore())
+}

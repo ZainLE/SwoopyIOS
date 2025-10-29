@@ -536,4 +536,8 @@ struct AuthView: View {
     }
 }
 
-
+#Preview {
+    AuthView()
+        .environmentObject(SupabaseService.shared)
+        .environmentObject(ApiService(supabaseService: SupabaseService.shared))
+}

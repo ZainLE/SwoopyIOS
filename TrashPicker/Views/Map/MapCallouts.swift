@@ -154,3 +154,72 @@ private struct PinAnchor: Shape {
         return path
     }
 }
+
+#Preview {
+    MapCalloutsPreview()
+}
+
+private struct MapCalloutsPreview: View {
+    private let annotation = StreetPinAnnotation(
+        id: UUID(),
+        rawId: UUID().uuidString,
+        coordinate: CLLocationCoordinate2D(latitude: 41.388, longitude: 2.17),
+        title: "Vintage Lamp",
+        thumbnailURL: nil,
+        distanceMeters: 250
+    )
+
+    private let samplePost: Post = {
+        let profile = Profile(
+            id: UUID().uuidString,
+            firstName: "Alex",
+            lastName: "Rivera",
+            city: "Barcelona",
+            avatarUrl: nil,
+            givenCount: 12,
+            pickedCount: 4,
+            phone: "+34 600 111 222"
+        )
+
+        let images = [
+            PostImage(url: URL(string: "https://picsum.photos/400")!, orderIndex: 0)
+        ]
+
+        return Post(
+            id: UUID().uuidString,
+            title: "Vintage Lamp",
+            description: "Warm bedside lamp in great condition.",
+            category: "Decor",
+            condition: .good,
+            mode: .street,
+            ownerId: profile.id,
+            createdAt: Date(),
+            expiresAt: Date().addingTimeInterval(3600),
+            exactLocation: Location(lng: "2.17", lat: "41.388"),
+            approxLocation: nil,
+            images: images,
+            distance: 0.25,
+            owner: profile,
+            userReservation: nil
+        )
+    }()
+
+    var body: some View {
+        VStack(spacing: 32) {
+            StreetPinTeaser(
+                annotation: annotation,
+                distanceText: "250 m away",
+                onExpand: {}
+            )
+
+            MapAttachedCard(
+                post: samplePost,
+                isReserving: false,
+                onReserve: {},
+                onPass: {}
+            )
+        }
+        .padding()
+        .background(Color(.systemGroupedBackground))
+    }
+}

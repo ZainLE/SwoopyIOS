@@ -88,4 +88,8 @@ struct PhotoCapture: View {
     }
 }
 
+#Preview {
+    PhotoCapture(image: .constant(nil))
+}
+
 #endif // LEGACY_CAMERA

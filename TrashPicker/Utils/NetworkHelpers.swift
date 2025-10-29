@@ -3,12 +3,7 @@ import Foundation
 import SwiftUI
 #endif
 
-/// Unified retry helper for all API calls
-/// Policies:
-/// - Cancellations (including TimeoutError): do not retry, propagate immediately
-/// - 401: refresh and retry once; on failure -> sign out (no flash) and throw AuthError.sessionExpired
-/// - 403: show specific banner and throw
-/// - NSURLErrorTimedOut/5xx: retry up to 2 with backoff + jitter; on final failure, surface passive banner and throw
+
 @MainActor
 func fetchWithRetry<T>(
     svc: SupabaseService,
@@ -56,11 +51,8 @@ func fetchWithRetry<T>(
                 throw error
             }
 
-            // Network timeout (NSURLErrorTimedOut) or 5xx -> retry up to maxRetries
-            // Note: Our TimeoutError is already caught above and won't retry
             if isNetworkTimeout(ns) || is5xx(ns) {
                 if attempt < maxRetries {
-                    // Exponential-ish backoff with jitter: 150ms, 300ms
                     let base = 150 * Int(pow(2.0, Double(attempt)))
                     let jitter = Int.random(in: 0...150)
                     let delayMs = base + jitter
