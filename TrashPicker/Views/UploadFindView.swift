@@ -246,6 +246,12 @@ struct UploadFindView: View {
             sectionLabel("Pickup Location", required: true)
             PickupModeSegmentedPicker(selection: $vm.mode)
             mapCard
+            if vm.mode == .home {
+                Text("Home listing: We use your location only to show nearby users the approximate distance. Your address stays private.")
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.ColorToken.muted)
+                    .multilineTextAlignment(.leading)
+            }
             
             if showValidation && !vm.hasChosenModeOrLocation {
                 validationHint("Please confirm your pickup mode.")

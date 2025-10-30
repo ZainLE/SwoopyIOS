@@ -1564,6 +1564,7 @@ extension SwipeDeckView {
                     }
                 
                 BigCardOverlay(
+                    postID: post.id,
                     images: imageURLs(for: post),
                     primaryInfo: primaryInfo(for: post, distanceText: context.distanceText),
                     statusInfo: statusInfo(for: post),

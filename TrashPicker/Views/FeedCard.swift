@@ -500,6 +500,7 @@ struct FeedCard: View {
             
             // Big card overlay
             BigCardOverlay(
+                postID: itemId,
                 images: itemImageURLs.map { $0.absoluteString },
                 primaryInfo: feedPrimaryInfo,
                 statusInfo: timeAgoString.isEmpty ? "" : "Posted \(timeAgoString)",

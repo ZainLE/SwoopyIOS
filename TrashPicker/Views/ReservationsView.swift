@@ -250,6 +250,7 @@ struct ReservationsView: View {
         .fullScreenCover(item: $selectedReservation, onDismiss: { selectedReservation = nil }) { reservation in
             NavigationStack {
                 BigCardOverlay(
+                    postID: reservation.id,
                     images: reservation.primaryImageURL != nil ? [reservation.primaryImageURL!.absoluteString] : [],
                     primaryInfo: primaryInfoText(for: reservation),
                     statusInfo: statusText(for: reservation),
@@ -1178,4 +1179,3 @@ private struct ReservationCard: View {
         return "\(hours)h \(minutes)m"
     }
 }
-

@@ -13,6 +13,7 @@ import CoreLocation
 
 struct BigCardOverlay: View {
     // Content data
+    let postID: String?
     let images: [String]
     let primaryInfo: String
     let statusInfo: String
@@ -31,11 +32,12 @@ struct BigCardOverlay: View {
     let onPrimaryAction: () -> Void
     let onSecondaryAction: () -> Void
     let onTertiaryAction: (() -> Void)?
-    
+
     // State
     @State private var currentImageIndex = 0
     @State private var dragOffset: CGSize = .zero
     @Namespace private var imageTransition
+    @StateObject private var locationViewModel: LocationDescriptionViewModel
     
     // Design tokens
     private let overlayScale: CGFloat = 0.90
@@ -62,6 +64,45 @@ struct BigCardOverlay: View {
         }
     }
     
+    init(
+        postID: String?,
+        images: [String],
+        primaryInfo: String,
+        statusInfo: String,
+        statusColor: Color,
+        description: String?,
+        mode: LocationMode,
+        exactLocation: CLLocationCoordinate2D?,
+        ownerName: String,
+        ownerAvatarUrl: URL?,
+        memberSince: Date?,
+        pickupsCount: Int?,
+        variant: Variant,
+        onDismiss: @escaping () -> Void,
+        onPrimaryAction: @escaping () -> Void,
+        onSecondaryAction: @escaping () -> Void,
+        onTertiaryAction: (() -> Void)?
+    ) {
+        self.postID = postID
+        self.images = images
+        self.primaryInfo = primaryInfo
+        self.statusInfo = statusInfo
+        self.statusColor = statusColor
+        self.description = description
+        self.mode = mode
+        self.exactLocation = exactLocation
+        self.ownerName = ownerName
+        self.ownerAvatarUrl = ownerAvatarUrl
+        self.memberSince = memberSince
+        self.pickupsCount = pickupsCount
+        self.variant = variant
+        self.onDismiss = onDismiss
+        self.onPrimaryAction = onPrimaryAction
+        self.onSecondaryAction = onSecondaryAction
+        self.onTertiaryAction = onTertiaryAction
+        _locationViewModel = StateObject(wrappedValue: LocationDescriptionViewModel(postID: postID, coordinate: exactLocation, mode: mode))
+    }
+
     var body: some View {
         GeometryReader { outerGeometry in
             let cardWidth = min(outerGeometry.size.width * 0.92, 600)
@@ -132,7 +173,9 @@ struct BigCardOverlay: View {
                         }
                     }
             )
-            // No close button - dismiss by tapping outside
+            .overlay(alignment: .topTrailing) {
+                closeButton
+            }
         }
     }
 }
@@ -259,36 +302,34 @@ extension BigCardOverlay {
     
     @ViewBuilder
     private var locationSection: some View {
-        // Only show for STREET mode
-        if mode == .street {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Location")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.primary)
-                
-                if let coordinate = exactLocation {
-                    VStack(alignment: .leading, spacing: 8) {
-                        // Real map preview
-                        Map(position: .constant(.region(MKCoordinateRegion(
-                            center: coordinate,
-                            span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)
-                        )))) {
-                            Annotation("", coordinate: coordinate) {
-                                Image(systemName: "mappin.circle.fill")
-                                    .font(.system(size: 24))
-                                    .foregroundColor(.red)
-                            }
-                        }
-                        .frame(height: 140)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .allowsHitTesting(false)
-                        
-                        Text("Lat: \(coordinate.latitude, specifier: "%.4f"), Lng: \(coordinate.longitude, specifier: "%.4f")")
-                            .font(.system(size: 12))
-                            .foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            Text(mode == .street ? "Location" : "Pickup Area")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.primary)
+
+            if let coordinate = exactLocation {
+                let span = MKCoordinateSpan(latitudeDelta: mode == .street ? 0.005 : 0.015,
+                                            longitudeDelta: mode == .street ? 0.005 : 0.015)
+                Map(position: .constant(.region(MKCoordinateRegion(center: coordinate, span: span)))) {
+                    if #available(iOS 17.0, *) {
+                        MapCircle(center: coordinate, radius: mode == .street ? 35 : 120)
+                            .foregroundStyle(primaryColor.opacity(0.12))
+                    }
+                    Annotation("", coordinate: coordinate) {
+                        Image(systemName: "mappin.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(primaryColor)
                     }
                 }
+                .frame(height: 140)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .allowsHitTesting(false)
             }
+
+            Text(locationViewModel.friendlyText)
+                .font(.footnote)
+                .foregroundStyle(AppTheme.ColorToken.muted)
+                .multilineTextAlignment(.leading)
         }
     }
     
@@ -549,5 +590,88 @@ extension Color {
             blue:  Double(b) / 255,
             opacity: Double(a) / 255
         )
+    }
+}
+
+// MARK: - Close Button
+
+private extension BigCardOverlay {
+    var closeButton: some View {
+        Button(action: onDismiss) {
+            Image(systemName: "xmark")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundColor(primaryColor)
+                .frame(width: 44, height: 44)
+                .background(.ultraThinMaterial, in: Circle())
+                .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 3)
+        }
+        .padding(.top, 9)
+        .padding(.trailing, 16)
+        .accessibilityLabel("Close")
+    }
+}
+
+// MARK: - LocationDescriptionViewModel
+
+private final class LocationDescriptionViewModel: ObservableObject {
+    @Published var friendlyText: String
+
+    private static var cache: [String: String] = [:]
+
+    init(postID: String?, coordinate: CLLocationCoordinate2D?, mode: BigCardOverlay.LocationMode) {
+        if let postID, let cached = Self.cache[postID] {
+            friendlyText = cached
+            return
+        }
+
+        guard let coordinate else {
+            friendlyText = mode == .home ? "Approximate location" : "Nearby"
+            return
+        }
+
+        friendlyText = "Locating…"
+
+        Task.detached { [weak self] in
+            let description = await Self.reverseGeocode(coordinate: coordinate, mode: mode)
+            await MainActor.run {
+                if let postID {
+                    Self.cache[postID] = description
+                }
+                self?.friendlyText = description
+            }
+        }
+    }
+
+    private static func reverseGeocode(coordinate: CLLocationCoordinate2D, mode: BigCardOverlay.LocationMode) async -> String {
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        let geocoder = CLGeocoder()
+
+        do {
+            let placemarks = try await geocoder.reverseGeocodeLocation(location, preferredLocale: Locale.current)
+            if let placemark = placemarks.first {
+                var components: [String] = []
+                if let neighborhood = placemark.subLocality, !neighborhood.isEmpty {
+                    components.append(neighborhood)
+                }
+                if mode == .street {
+                    if let street = placemark.thoroughfare, !street.isEmpty {
+                        components.append(street)
+                    }
+                }
+                if let city = placemark.locality, !city.isEmpty, !components.contains(city) {
+                    components.append(city)
+                }
+                if components.isEmpty, let region = placemark.administrativeArea, !region.isEmpty {
+                    components.append(region)
+                }
+                if !components.isEmpty {
+                    return components.joined(separator: ", ")
+                }
+            }
+        } catch {
+            // Ignore errors, fallback below
+        }
+
+        return mode == .home ? "Near you" : "Nearby"
     }
 }
