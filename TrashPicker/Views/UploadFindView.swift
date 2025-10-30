@@ -47,7 +47,7 @@ struct UploadFindView: View {
     @State private var isSubmitting = false
     @State private var showToast = false
     @State private var toastText = ""
-    @State private var descHeight: CGFloat = 56
+    @FocusState private var descriptionFocused: Bool
 
     // Layout constants
     private let sidePadding: CGFloat = 20
@@ -58,16 +58,37 @@ struct UploadFindView: View {
         !draftStore.photos.isEmpty && vm.condition != nil && vm.mode != nil && vm.currentCoordinate != nil
     }
 
+    private var borderColorForDescription: Color {
+        AppTheme.ColorToken.brandDark.opacity(0.20)
+    }
+    private var counterColor: Color {
+        AppTheme.ColorToken.muted
+    }
+
     var body: some View {
         content
             .background(Color(.systemBackground))
             .scrollDismissesKeyboard(.immediately)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { toolbarContent }
-            .onAppear { handleOnAppear() }
-            .onChange(of: loc.userLocation) { _, newValue in
-                vm.bootstrapLocation(newValue?.coordinate)
+        .toolbar { toolbarContent }
+        .toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("Done") {
+                    descriptionFocused = false
+                }
+                .font(.subheadline.weight(.semibold))
             }
+        }
+        .onAppear { handleOnAppear() }
+        .onChange(of: loc.userLocation) { newValue in
+            vm.bootstrapLocation(newValue?.coordinate)
+        }
+        .onChange(of: vm.wantsDescription) { wants in
+            if !wants {
+                descriptionFocused = false
+            }
+        }
             .fullScreenCover(isPresented: $showCamera) {
                 CameraOverlay(
                     onCaptured: { image in
@@ -91,10 +112,10 @@ struct UploadFindView: View {
                 matching: .images,
                 preferredItemEncoding: .current
             )
-            .onChange(of: selectedPhotoItem) { _, newValue in
+            .onChange(of: selectedPhotoItem) { newValue in
                 handlePhotoPickerChange(newValue)
             }
-            .onChange(of: isPhotoPickerPresented) { _, isPresented in
+            .onChange(of: isPhotoPickerPresented) { isPresented in
                 if !isPresented { activePhotoIndex = nil }
             }
     }
@@ -166,12 +187,9 @@ struct UploadFindView: View {
             .padding(.top, 16)
 
             if vm.wantsDescription {
-                if vm.descriptionText.count > 100 {
-                    validationHint("Description can't be more than 100 characters.")
-                } else {
-                    helper("Write up to 100 characters (optional).")
-                }
-                VStack(spacing: 8) {
+                helper("Write up to 100 characters (optional).")
+                    .foregroundStyle(AppTheme.ColorToken.muted)
+                VStack(spacing: 6) {
                     ZStack(alignment: .topLeading) {
                         // Placeholder
                         if vm.descriptionText.isEmpty {
@@ -181,13 +199,15 @@ struct UploadFindView: View {
                                 .allowsHitTesting(false)
                         }
 
-                        // Multiline auto-growing editor
+                        // Multiline editor
                         TextEditor(text: $vm.descriptionText)
                             .textInputAutocapitalization(.sentences)
-                            .frame(minHeight: 56, maxHeight: min(descHeight, 150))
+                            .frame(height: 140)
                             .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
                             .scrollIndicators(.visible)
-                            .scrollDisabled(descHeight < 150)
+                            .focused($descriptionFocused)
+                            .submitLabel(.done)
+                            .onSubmit { descriptionFocused = false }
                     }
                     .background(
                         RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -195,45 +215,31 @@ struct UploadFindView: View {
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .stroke(AppTheme.ColorToken.brandDark.opacity(0.20), lineWidth: 1)
+                            .stroke(borderColorForDescription, lineWidth: 1)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                    .animation(.easeInOut(duration: 0.15), value: descHeight)
-                    .onChange(of: vm.descriptionText) { _ in /* trigger height measure */ }
-                    // Hidden measurer to compute dynamic height
-                    Text(vm.descriptionText.isEmpty ? " " : vm.descriptionText)
-                        .font(.body)
-                        .lineLimit(nil)
-                        .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            GeometryReader { proxy in
-                                Color.clear
-                                    .onAppear { descHeight = max(56, min(proxy.size.height + 24, 150)) }
-                                    .onChange(of: vm.descriptionText) { _ in
-                                        descHeight = max(56, min(proxy.size.height + 24, 150))
-                                    }
-                            }
-                        )
-                        .hidden()
-
+                    .onChange(of: vm.descriptionText) { newValue in
+                        if newValue.last == "\n" {
+                            vm.descriptionText = String(newValue.dropLast())
+                            descriptionFocused = false
+                            return
+                        }
+                        let clamped = String(newValue.prefix(100))
+                        if clamped != newValue {
+                            vm.descriptionText = clamped
+                        }
+                    }
                     HStack {
                         Spacer()
-                        Button("Done") {
-                            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                        }
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundColor(vm.descriptionText.count > 100 ? .gray : AppTheme.ColorToken.brandDark)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background((vm.descriptionText.count > 100 ? Color.gray.opacity(0.2) : AppTheme.ColorToken.brandDark.opacity(0.1)))
-                        .clipShape(Capsule())
-                        .disabled(vm.descriptionText.count > 100)
+                        Text("\(vm.descriptionText.count)/100")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(counterColor)
                     }
                 }
             }
         }
     }
+
 
     private var pickupSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1029,7 +1035,7 @@ private struct InlineUploadMap: View {
                 // Removed UserAnnotation() - no user location circle
             }
             .transaction { $0.disablesAnimations = true }
-            .onChange(of: camera, initial: false) { _, newCamera in
+            .onChange(of: camera, initial: false) { oldCamera, newCamera in
                 if let region = newCamera.region {
                     selectedCoord = region.center
                     onCoordinateChange?(region.center)
