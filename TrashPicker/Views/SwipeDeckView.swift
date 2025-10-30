@@ -901,7 +901,7 @@ extension SwipeDeckView {
                 Text("You're all caught up")
                     .font(.title3.weight(.semibold))
                 
-                Text("No nearby trash right now.\nGot something to give away?")
+                Text("No nearby items right now.\nGot something to give away?")
                     .font(.subheadline)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)

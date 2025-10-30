@@ -3,6 +3,7 @@ import Foundation
 import MapKit
 import PhotosUI
 import CoreLocation
+import UIKit
 
 // MARK: - UploadFindView
 
@@ -34,9 +35,9 @@ struct UploadFindView: View {
         }
     }
     
-    @State private var showActionForTile: Int? = nil     // which tile (0..2)
+    @State private var activePhotoIndex: Int? = nil     // which tile (0..2)
     @State private var showCamera = false
-    @State private var showPicker = false
+    @State private var isPhotoPickerPresented = false
     @State private var showValidation = false
     @State private var validationText = ""
     @State private var selectedPhotoItem: PhotosPickerItem?
@@ -58,6 +59,47 @@ struct UploadFindView: View {
     }
 
     var body: some View {
+        content
+            .background(Color(.systemBackground))
+            .scrollDismissesKeyboard(.immediately)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { toolbarContent }
+            .onAppear { handleOnAppear() }
+            .onChange(of: loc.userLocation) { _, newValue in
+                vm.bootstrapLocation(newValue?.coordinate)
+            }
+            .fullScreenCover(isPresented: $showCamera) {
+                CameraOverlay(
+                    onCaptured: { image in
+                        applyPickedImage(image)
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showCamera = false
+                        }
+                    },
+                    onCancel: {
+                        activePhotoIndex = nil
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showCamera = false
+                        }
+                    }
+                )
+                .ignoresSafeArea()
+            }
+            .photosPicker(
+                isPresented: $isPhotoPickerPresented,
+                selection: $selectedPhotoItem,
+                matching: .images,
+                preferredItemEncoding: .current
+            )
+            .onChange(of: selectedPhotoItem) { _, newValue in
+                handlePhotoPickerChange(newValue)
+            }
+            .onChange(of: isPhotoPickerPresented) { _, isPresented in
+                if !isPresented { activePhotoIndex = nil }
+            }
+    }
+
+    private var content: some View {
         ScrollView {
             VStack(spacing: 16) {
                 Spacer(minLength: 16)
@@ -71,37 +113,22 @@ struct UploadFindView: View {
             .padding(.horizontal, sidePadding)
             .padding(.bottom, 24)
         }
-        .background(Color(.systemBackground))
-        .scrollDismissesKeyboard(.immediately)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { toolbarContent }
-        .onAppear { handleOnAppear() }
-        .onChange(of: loc.userLocation) { _, newValue in
-            vm.bootstrapLocation(newValue?.coordinate)
-        }
-        .fullScreenCover(isPresented: $showCamera) {
-            CameraOverlay(
-                onCaptured: { image in
-                    if let index = showActionForTile, draftStore.photos.indices.contains(index) {
-                        draftStore.replacePhoto(at: index, with: image)
-                    } else if draftStore.canAddPhoto {
-                        draftStore.insertPrimary(image)
-                    }
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showCamera = false
-                    }
-                },
-                onCancel: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showCamera = false
-                    }
-                }
-            )
-            .ignoresSafeArea()
-        }
-        .sheet(isPresented: $showPicker) { photoPickerView }
     }
 
+    @MainActor
+    private func handlePhotoPickerChange(_ item: PhotosPickerItem?) {
+        guard let item else { return }
+        Task {
+            if let data = try? await item.loadTransferable(type: Data.self),
+               let image = UIImage(data: data) {
+                await applyPickedImage(image)
+            }
+            await MainActor.run {
+                selectedPhotoItem = nil
+                isPhotoPickerPresented = false
+            }
+        }
+    }
     // MARK: - Subviews
 
     private var photoSection: some View {
@@ -380,31 +407,6 @@ struct UploadFindView: View {
         }
     }
 
-    private var photoPickerView: some View {
-        PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-            Text("Choose Photo")
-                .font(.headline)
-                .padding()
-        }
-        .onChange(of: selectedPhotoItem) {
-            Task {
-                if let newItem = selectedPhotoItem,
-                   let data = try? await newItem.loadTransferable(type: Data.self),
-                   let image = UIImage(data: data) {
-                    await MainActor.run {
-                        if let index = showActionForTile, draftStore.photos.indices.contains(index) {
-                            draftStore.replacePhoto(at: index, with: image)
-                        } else if draftStore.canAddPhoto {
-                            draftStore.insertPrimary(image)
-                        }
-                        selectedPhotoItem = nil
-                        showPicker = false
-                    }
-                }
-            }
-        }
-    }
-    
     // MARK: - Submit Logic
     
     @MainActor
@@ -566,51 +568,61 @@ struct UploadFindView: View {
                 let img = draftStore.photo(at: idx)
                 PhotoTile(image: img, width: 110, height: 164) {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    showActionForTile = idx
-                    showPhotoActions(for: idx, hasImage: (img != nil))
+                    showPhotoActions(for: idx, hasImage: img != nil)
                 }
             }
             Spacer()
         }
     }
 
+    private func openLibrary(for index: Int) {
+        if !draftStore.photos.indices.contains(index) && !draftStore.canAddPhoto {
+            return
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        activePhotoIndex = index
+        selectedPhotoItem = nil
+        isPhotoPickerPresented = true
+    }
+
+    private func openCamera(for index: Int) {
+        if !draftStore.photos.indices.contains(index) && !draftStore.canAddPhoto {
+            return
+        }
+        Task { @MainActor in
+            let ok = await CameraSessionManager.shared.ensurePermission()
+            if ok {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                CameraSessionManager.shared.configureIfNeeded()
+                activePhotoIndex = index
+                showCamera = true
+            }
+        }
+    }
+
     private func showPhotoActions(for index: Int, hasImage: Bool) {
         let takePhotoTitle = hasImage ? "Retake Photo" : "Take Photo"
-        
+
         let alert = UIAlertController(title: "Photo Options", message: nil, preferredStyle: .actionSheet)
-        
+
         alert.addAction(UIAlertAction(title: takePhotoTitle, style: .default) { _ in
-            Task { @MainActor in
-                let ok = await CameraSessionManager.shared.ensurePermission()
-                if ok {
-                    CameraSessionManager.shared.configureIfNeeded()
-                    self.showActionForTile = index
-                    self.showCamera = true
-                }
-            }
+            openCamera(for: index)
         })
-        
+
         alert.addAction(UIAlertAction(title: "Choose from Library", style: .default) { _ in
-            DispatchQueue.main.async {
-                self.showActionForTile = index
-                self.showPicker = true
-            }
+            openLibrary(for: index)
         })
-        
+
         if hasImage {
-            alert.addAction(UIAlertAction(title: "Remove", style: .destructive) { _ in
-                DispatchQueue.main.async {
-                    self.draftStore.removePhoto(at: index)
-                }
+            alert.addAction(UIAlertAction(title: "Remove Photo", style: .destructive) { _ in
+                activePhotoIndex = nil
+                draftStore.removePhoto(at: index)
             })
         }
-        
+
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        
-        // Set app color
         alert.view.tintColor = UIColor(AppTheme.ColorToken.primary)
-        
-        // Present the alert with better error handling
+
         DispatchQueue.main.async {
             guard let windowScene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
                   let window = windowScene.windows.first(where: { $0.isKeyWindow }),
@@ -623,6 +635,16 @@ struct UploadFindView: View {
             }
             topController.present(alert, animated: true)
         }
+    }
+
+    @MainActor
+    private func applyPickedImage(_ image: UIImage) {
+        if let index = activePhotoIndex, draftStore.photos.indices.contains(index) {
+            draftStore.replacePhoto(at: index, with: image)
+        } else if draftStore.canAddPhoto {
+            draftStore.insertPrimary(image)
+        }
+        activePhotoIndex = nil
     }
 
     private var mapCard: some View {
