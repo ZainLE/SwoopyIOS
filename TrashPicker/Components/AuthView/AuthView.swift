@@ -1,6 +1,5 @@
 import SwiftUI
 import UIKit
-import AuthenticationServices
 
 private enum AuthMode { case signIn, signUp }
 private enum LoadingKind { case email, apple, google }
@@ -27,56 +26,52 @@ struct AuthView: View {
     @FocusState private var focus: Field?
     @State private var hasAgreedToTerms = false
     @State private var pulseTermsWarning = false
+    @State private var passwordInteracted = false
+    @State private var confirmInteracted = false
+    @State private var validationAttempted = false
+    @State private var lastFocusedField: Field? = nil
     
     private var trimmedEmail: String { email.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedPass:  String { password.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedConf:  String { confirm.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var formValid: Bool {
-        switch mode {
-        case .signIn: return trimmedEmail.contains("@") && trimmedPass.count >= 6
-        case .signUp: return trimmedEmail.contains("@") && trimmedPass.count >= 6 && trimmedPass == trimmedConf
-        }
-    }
-    
     // MARK: - Legal Links Footer
-    @ViewBuilder private var legalLinksFooter: some View {
-        // one centered line; no left alignment drift
+    @ViewBuilder private var signUpLegalFooter: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            
-            // ☐ small checkbox; baseline-aligned & tap target 28x28
             let checkSize: CGFloat = 14
             Button {
                 hasAgreedToTerms.toggle()
                 if hasAgreedToTerms { pulseTermsWarning = false }
             } label: {
-                Image(systemName: hasAgreedToTerms ? "checkmark.square.fill" : "square")
+                Image(systemName: hasAgreedToTerms ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: checkSize, weight: .semibold))
                     .foregroundColor(hasAgreedToTerms ? Color(AppColor.cta) : .secondary)
-                    .frame(width: 28, height: 28)               // friendly hit target
-                    // Nudge so the glyph visually shares the text baseline
+                    .frame(width: 28, height: 28)
                     .alignmentGuide(.firstTextBaseline) { d in d[.bottom] - 8 }
-                    .offset(y: 10)
+                    .offset(y: 6)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(hasAgreedToTerms ? "Agreed to terms" : "Agree to terms")
-            .accessibilityHint("Required before signing in")
+            .accessibilityHint("Required before creating an account")
             
-            // "Read the privacy policy, terms and conditions"
-            HStack(spacing: 0) {
-                Text("Read the ")
+            HStack(spacing: 4) {
+                Text("Read the")
                     .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : .secondary)
-                Text("privacy policy")
-                    .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : Color(AppColor.cta))
-                    .onTapGesture { openPrivacyPolicy() }
-                Text(", ")
+                Button(action: openPrivacyPolicy) {
+                    Text("privacy policy")
+                        .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : Color(AppColor.cta))
+                }
+                .buttonStyle(.plain)
+                Text("and")
                     .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : .secondary)
-                Text("terms and conditions")
-                    .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : Color(AppColor.cta))
-                    .onTapGesture { openTerms() }
+                Button(action: openTerms) {
+                    Text("terms & conditions")
+                        .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : Color(AppColor.cta))
+                }
+                .buttonStyle(.plain)
             }
-            .font(.footnote)
         }
-        .frame(maxWidth: .infinity, alignment: .center) // truly centered
+        .font(.footnote)
+        .frame(maxWidth: .infinity, alignment: .center)
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
         .animation(.easeInOut(duration: 0.2), value: pulseTermsWarning)
@@ -88,8 +83,24 @@ struct AuthView: View {
         return s.contains("@") && s.contains(".") && s.count >= 6
     }
     
-    // MARK: - Terms Helper
+    private func recalcSubmit() {
+        let e = trimmedEmail
+        let p = trimmedPass
+        let c = trimmedConf
+        
+        switch mode {
+        case .signIn:
+            canSubmit = !e.isEmpty && !p.isEmpty
+        case .signUp:
+            canSubmit = isValidEmail(e) && p.count >= 6 && p == c
+        }
+    }
+    
     private func requireTerms(_ action: @escaping () -> Void) {
+        guard mode == .signUp else {
+            action()
+            return
+        }
         if hasAgreedToTerms {
             action()
         } else {
@@ -101,17 +112,39 @@ struct AuthView: View {
         }
     }
     
-    private func recalcSubmit() {
-        let e = trimmedEmail
-        let p = trimmedPass
-        let c = trimmedConf
-        
-        switch mode {
-        case .signIn:
-            canSubmit = isValidEmail(e) && p.count >= 6
-        case .signUp:
-            canSubmit = isValidEmail(e) && p.count >= 6 && p == c
+    private var passwordValidationMessage: String? {
+        guard mode == .signUp else { return nil }
+        if trimmedPass.isEmpty { return "Password is required" }
+        if trimmedPass.count < 6 { return "Minimum 6 characters required" }
+        return nil
+    }
+    
+    private var confirmValidationMessage: String? {
+        guard mode == .signUp else { return nil }
+        if trimmedConf.isEmpty { return "Confirm your password" }
+        if trimmedConf != trimmedPass { return "Passwords don't match" }
+        return nil
+    }
+    
+    private var shouldShowPasswordError: Bool {
+        guard let message = passwordValidationMessage else { return false }
+        return mode == .signUp && (passwordInteracted || validationAttempted) && !message.isEmpty
+    }
+    
+    private var shouldShowConfirmError: Bool {
+        guard let message = confirmValidationMessage else { return false }
+        return mode == .signUp && (confirmInteracted || validationAttempted) && !message.isEmpty
+    }
+    
+    private func firstInvalidSignUpField() -> (Field, String)? {
+        guard mode == .signUp else { return nil }
+        if let message = passwordValidationMessage {
+            return (.password, message)
         }
+        if let message = confirmValidationMessage {
+            return (.confirm, message)
+        }
+        return nil
     }
     
     var body: some View {
@@ -130,20 +163,48 @@ struct AuthView: View {
             .padding(.bottom, 20)
         }
         .tint(Color(AppColor.darkGreen))
-        .onChange(of: email) { recalcSubmit() }
-        .onChange(of: password) { recalcSubmit() }
-        .onChange(of: confirm) { recalcSubmit() }
+        .onChange(of: email) { _ in recalcSubmit() }
+        .onChange(of: password) { _ in
+            if mode == .signUp { passwordInteracted = true }
+            recalcSubmit()
+        }
+        .onChange(of: confirm) { _ in
+            if mode == .signUp { confirmInteracted = true }
+            recalcSubmit()
+        }
         .onChange(of: mode) {
             // reset cross-mode state, then recalc
             email = ""; password = ""; confirm = ""
             errorMessage = nil; focus = nil
             loading = nil
+            hasAgreedToTerms = false
+            pulseTermsWarning = false
+            passwordInteracted = false
+            confirmInteracted = false
+            validationAttempted = false
+            lastFocusedField = nil
+            reveal = false
             recalcSubmit()
+        }
+        .onChange(of: focus) { newValue in
+            let previous = lastFocusedField
+            lastFocusedField = newValue
+            guard mode == .signUp else { return }
+            if previous == .password, newValue != .password {
+                passwordInteracted = true
+            }
+            if previous == .confirm, newValue != .confirm {
+                confirmInteracted = true
+            }
         }
         .onAppear { recalcSubmit(); BootCoordinator.shared.start(svc: svc, api: api) }
         .onTapGesture { focus = nil }
         .background(Color(AppColor.surface))
-        .safeAreaInset(edge: .bottom) { legalLinksFooter }
+        .safeAreaInset(edge: .bottom) {
+            if mode == .signUp {
+                signUpLegalFooter
+            }
+        }
     }
     
     // MARK: - Sections (split for compiler sanity)
@@ -152,7 +213,7 @@ struct AuthView: View {
         Image("SwoopyLogo")
             .resizable()
             .scaledToFit()
-            .frame(height: 48)
+            .frame(height: 38)
             .padding(.top, 20)
     }
     
@@ -196,14 +257,6 @@ struct AuthView: View {
             
             if mode == .signUp {
                 confirmField
-                
-                // Inline validation accent (brandGreen glass)
-                if !trimmedConf.isEmpty && trimmedConf != trimmedPass {
-                    Text("Passwords don't match")
-                        .font(.caption)
-                        .foregroundStyle(Color(AppColor.darkGreen))
-                        .padding(.top, 2)
-                }
             }
             
             Button(action: {
@@ -216,12 +269,12 @@ struct AuthView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding()
-                .background((canSubmit && hasAgreedToTerms) ? Color(AppColor.darkGreen) : Color.gray.opacity(0.3))
+                .background((canSubmit && (mode != .signUp || hasAgreedToTerms)) ? Color(AppColor.darkGreen) : Color.gray.opacity(0.3))
                 .foregroundColor(.white)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
             .disabled(!canSubmit || loading != nil)
-            .opacity(hasAgreedToTerms ? 1.0 : 0.45)
+            .opacity(mode == .signUp && !hasAgreedToTerms ? 0.45 : 1.0)
             .padding(.top, 8)
         }
         .frame(maxWidth: 360)
@@ -229,43 +282,83 @@ struct AuthView: View {
     }
     
     @ViewBuilder private var passwordField: some View {
-        HStack {
-            Group {
-                if reveal {
-                    TextField("Password (min 6)", text: $password)
-                        .textContentType(.password)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                } else {
-                    SecureField("Password (min 6)", text: $password)
-                        .textContentType(.password)
+        let errorMessage = shouldShowPasswordError ? passwordValidationMessage : nil
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Group {
+                    if reveal {
+                        TextField("Password", text: $password)
+                            .textContentType(.password)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .focused($focus, equals: .password)
+                    } else {
+                        SecureField("Password", text: $password)
+                            .textContentType(.password)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .focused($focus, equals: .password)
+                    }
+                }
+                Button { reveal.toggle() } label: {
+                    Image(systemName: reveal ? "eye.slash" : "eye")
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel(reveal ? "Hide password" : "Show password")
                 }
             }
-            Button { reveal.toggle() } label: {
-                Image(systemName: reveal ? "eye.slash" : "eye")
-                    .foregroundStyle(.secondary)
+            .padding()
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(errorMessage == nil ? Color(AppColor.stroke) : Color(AppTheme.ColorToken.danger), lineWidth: 1)
+            )
+            .animation(.easeInOut(duration: 0.25), value: errorMessage != nil)
+            .submitLabel(mode == .signUp ? .next : .go)
+            .onSubmit {
+                if mode == .signUp { focus = .confirm }
+                else { submitEmail() }
             }
-        }
-        .padding()
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColor.stroke, lineWidth: 1))
-        .focused($focus, equals: .password)
-        .submitLabel(mode == .signUp ? .next : .go)
-        .onSubmit {
-            if mode == .signUp { focus = .confirm }
-            else { submitEmail() }
+            .accessibilityLabel("Password")
+            .accessibilityHint(errorMessage ?? "Enter your password")
+            .accessibilityValue(errorMessage ?? "")
+            
+            if let message = errorMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(Color(AppTheme.ColorToken.danger))
+                    .accessibilityHidden(true)
+            }
         }
     }
     
     @ViewBuilder private var confirmField: some View {
-        SecureField("Confirm password", text: $confirm)
-            .textContentType(.password)
-            .padding()
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColor.stroke, lineWidth: 1))
-            .focused($focus, equals: .confirm)
-            .submitLabel(.go)
-            .onSubmit { submitEmail() }
+        let errorMessage = shouldShowConfirmError ? confirmValidationMessage : nil
+        VStack(alignment: .leading, spacing: 4) {
+            SecureField("Confirm password", text: $confirm)
+                .textContentType(.password)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .padding()
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(errorMessage == nil ? Color(AppColor.stroke) : Color(AppTheme.ColorToken.danger), lineWidth: 1)
+                )
+                .animation(.easeInOut(duration: 0.25), value: errorMessage != nil)
+                .focused($focus, equals: .confirm)
+                .submitLabel(.go)
+                .onSubmit { submitEmail() }
+                .accessibilityLabel("Confirm password")
+                .accessibilityHint(errorMessage ?? "Re-enter your password")
+                .accessibilityValue(errorMessage ?? "")
+            
+            if let message = errorMessage {
+                Text(message)
+                    .font(.caption)
+                    .foregroundColor(Color(AppTheme.ColorToken.danger))
+                    .accessibilityHidden(true)
+            }
+        }
     }
     
     
@@ -298,10 +391,10 @@ struct AuthView: View {
                     }
                 }
             ),
-            hasAgreedToTerms: $hasAgreedToTerms,
-            pulseTermsWarning: $pulseTermsWarning,
-            onApple: { signInWithApple() },
-            onGoogle: { signInWithGoogle() }
+            requiresAgreement: mode == .signUp,
+            hasAgreedToTerms: hasAgreedToTerms,
+            onApple: { requireTerms { signInWithApple() } },
+            onGoogle: { requireTerms { signInWithGoogle() } }
         )
         .padding(.horizontal, 24)
     }
@@ -309,7 +402,31 @@ struct AuthView: View {
     
     private func submitEmail() {
         guard loading == nil else { return }
+        
+        if mode == .signUp && !hasAgreedToTerms {
+            requireTerms {}
+            return
+        }
+        
+        if mode == .signUp {
+            passwordInteracted = true
+            confirmInteracted = true
+            validationAttempted = true
+        }
+        
         recalcSubmit()
+        
+        if mode == .signUp, !canSubmit {
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            if let (field, message) = firstInvalidSignUpField() {
+                focus = field
+                if UIAccessibility.isVoiceOverRunning {
+                    UIAccessibility.post(notification: .announcement, argument: message)
+                }
+            }
+            return
+        }
+        
         guard canSubmit else { return }   // ← prevents "muted but tappable" edge cases
         errorMessage = nil; focus = nil
         loading = .email
@@ -371,67 +488,35 @@ struct AuthView: View {
     private struct AuthButtons: View {
         enum Loading { case none, apple, google }
         @Binding var loading: Loading
-        @Binding var hasAgreedToTerms: Bool
-        @Binding var pulseTermsWarning: Bool
+        let requiresAgreement: Bool
+        let hasAgreedToTerms: Bool
         let onApple: () -> Void
         let onGoogle: () -> Void
         
-        private func requireTerms(_ action: @escaping () -> Void) {
-            if hasAgreedToTerms {
-                action()
-            } else {
-                withAnimation(.easeInOut(duration: 0.2)) { pulseTermsWarning = true }
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    withAnimation(.easeInOut(duration: 0.2)) { pulseTermsWarning = false }
-                }
-            }
-        }
-        
         var body: some View {
             VStack(spacing: 12) {
-                // Official Apple Sign In Button (App Store compliant)
-                SignInWithAppleButton(
-                    .signIn,
-                    onRequest: { _ in },
-                    onCompletion: { _ in }
-                )
-                .signInWithAppleButtonStyle(.black)
+                CustomAppleSignInButton {
+                    guard loading == .none else { return }
+                    onApple()
+                }
                 .frame(width: kAuthButtonWidth, height: kAuthButtonHeight)
                 .clipShape(RoundedRectangle(cornerRadius: kAuthCornerRadius, style: .continuous))
-                .overlay(
-                    Group {
-                        if loading == .apple {
-                            ProgressView()
-                                .scaleEffect(1.0)
-                                .tint(.white)
-                        }
+                .overlay {
+                    if loading == .apple {
+                        ProgressView()
+                            .scaleEffect(1.0)
+                            .tint(.white)
                     }
-                )
-                .opacity(hasAgreedToTerms ? 1.0 : 0.45)
-                .disabled(loading != .none)
-                .allowsHitTesting(true)
-                .onTapGesture {
-                    guard loading == .none else { return }
-                    requireTerms { onApple() }
                 }
-                .overlay(
-                    Group {
-                        if !hasAgreedToTerms {
-                            Color.clear.contentShape(Rectangle())
-                                .onTapGesture { requireTerms({}) }
-                        }
-                    }
-                )
+                .opacity(opacityForAgreement)
+                .disabled(loading != .none)
                 .accessibilityLabel("Sign in with Apple")
                 
-                // Google button (matches size/shape)
                 Button {
                     guard loading == .none else { return }
-                    requireTerms { onGoogle() }
+                    onGoogle()
                 } label: {
                     ZStack {
-                        // Hidden label while loading (prevents ghost text)
                         HStack(spacing: 8) {
                             if UIImage(named: "googlelogo") != nil {
                                 Image("googlelogo")
@@ -460,19 +545,15 @@ struct AuthView: View {
                     )
                     .clipShape(RoundedRectangle(cornerRadius: kAuthCornerRadius, style: .continuous))
                 }
+                .opacity(opacityForAgreement)
                 .disabled(loading != .none)
-                .opacity(hasAgreedToTerms ? 1.0 : 0.45)
-                .overlay(
-                    Group {
-                        if !hasAgreedToTerms {
-                            Color.clear.contentShape(Rectangle())
-                                .onTapGesture { requireTerms({}) }
-                        }
-                    }
-                )
-                .allowsHitTesting(true)
                 .accessibilityLabel("Sign in with Google")
             }
+        }
+        
+        private var opacityForAgreement: Double {
+            guard requiresAgreement else { return 1.0 }
+            return hasAgreedToTerms ? 1.0 : 0.45
         }
     }
     

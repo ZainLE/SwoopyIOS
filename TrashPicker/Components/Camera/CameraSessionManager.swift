@@ -196,6 +196,21 @@ final class CameraSessionManager: NSObject, ObservableObject {
         return previewLayer
     }
     
+    /// Pause the live camera preview without tearing down configuration
+    func pausePreview() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            if self.session.isRunning {
+                self.session.stopRunning()
+            }
+        }
+    }
+    
+    /// Resume the camera preview after a temporary pause
+    func resumePreview() {
+        start()
+    }
+    
     // MARK: - Private Configuration
     
     private func configureSession() {
@@ -353,4 +368,3 @@ extension CameraSessionManager: AVCapturePhotoCaptureDelegate {
         return processed
     }
 }
-

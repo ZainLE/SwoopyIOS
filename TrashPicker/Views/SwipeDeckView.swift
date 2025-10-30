@@ -1118,6 +1118,8 @@ extension SwipeDeckView {
         @State private var cardSize: CGSize = .zero
         @State private var refreshSuppressionUntil: Date?
         @State private var reserveInFlight = false
+        @State private var presentedContext: PresentedPostContext?
+        @State private var shouldRestoreTeaserOnDismiss = false
         @State private var shouldCollapseAfterGesture = false
         @State private var gestureCollapseTargetID: UUID?
         @State private var isUserPanning = false
@@ -1153,6 +1155,13 @@ extension SwipeDeckView {
             case gesture
             case tapOutside
             case dismiss
+        }
+        
+        private struct PresentedPostContext: Identifiable {
+            let post: Post
+            let distanceText: String?
+            
+            var id: String { post.id }
         }
 
         var body: some View {
@@ -1206,6 +1215,16 @@ extension SwipeDeckView {
             .onChange(of: loc.lastFix, handleLocationChange)
             .onChange(of: RegionSignature(region: region)) { _, _ in
                 debouncedFetchPosts()
+            }
+            .fullScreenCover(item: $presentedContext, onDismiss: {
+                Task { @MainActor in
+                    if shouldRestoreTeaserOnDismiss {
+                        restoreTeaserAfterOverlay()
+                    }
+                    shouldRestoreTeaserOnDismiss = false
+                }
+            }) { context in
+                mapDetailOverlay(for: context)
             }
         }
 
@@ -1299,18 +1318,24 @@ extension SwipeDeckView {
                 case .teaser:
                     let size = teaserSize.validOrDefault(fallback: CGSize(width: 190, height: 96))
                     let placement = placement(for: size, anchor: anchor, in: geo)
-                    StreetPinTeaser(
-                        annotation: annotation,
-                        distanceText: distanceText(for: annotation),
-                        onExpand: expandSelected,
-                        arrowOffset: placement.arrowX,
-                        arrowYOffset: placement.arrowY
-                    )
-                    .onSizeChange { newSize in
-                        teaserSize = newSize
+                    if let post = posts.first(where: { $0.id == annotation.rawId }) {
+                        StreetPinTeaser(
+                            annotation: annotation,
+                            distanceText: distanceText(for: annotation),
+                            onExpand: {
+                                Task { @MainActor in
+                                    presentFullOverlay(post: post, annotation: annotation)
+                                }
+                            },
+                            arrowOffset: placement.arrowX,
+                            arrowYOffset: placement.arrowY
+                        )
+                        .onSizeChange { newSize in
+                            teaserSize = newSize
+                        }
+                        .position(placement.position)
+                        .transition(.scale(scale: 0.9).combined(with: .opacity))
                     }
-                    .position(placement.position)
-                    .transition(.scale(scale: 0.9).combined(with: .opacity))
                 case .expanded:
                     if let post = posts.first(where: { $0.id == annotation.rawId }) {
                         let expandedScale: CGFloat = 0.5
@@ -1364,21 +1389,6 @@ extension SwipeDeckView {
             gestureCollapseTargetID = nil
             announceCalloutChange(.teaser)
             logCallout("[CALLOUT] show teaser id=\(id.uuidString) reason=\(reason)")
-        }
-
-        @MainActor
-        private func expandSelected() {
-            guard let id = selectedPostID else { return }
-            if calloutPhase != .expanded {
-                withCalloutSpring {
-                    calloutPhase = .expanded
-                }
-                announceCalloutChange(.expanded)
-                logCallout("[CALLOUT] expand id=\(id.uuidString)")
-            }
-            suppressRefresh(for: refreshSuppressionSeconds)
-            shouldCollapseAfterGesture = false
-            gestureCollapseTargetID = nil
         }
 
         @MainActor
@@ -1493,6 +1503,124 @@ extension SwipeDeckView {
                 return "\(rounded) m away"
             }
             return String(format: "%.1f km away", meters / 1_000)
+        }
+        
+        @MainActor
+        private func presentFullOverlay(post: Post, annotation: StreetPinAnnotation) {
+            let distance = distanceText(for: annotation)
+            presentedContext = PresentedPostContext(post: post, distanceText: distance)
+            shouldRestoreTeaserOnDismiss = true
+            announceCalloutChange(.expanded)
+            logCallout("[CALLOUT] expand stage=detail id=\(annotation.id.uuidString)")
+            dbg("MAP", "teaser_view_to_full post={\(post.id)}")
+            suppressRefresh(for: refreshSuppressionSeconds)
+            shouldCollapseAfterGesture = false
+            gestureCollapseTargetID = nil
+        }
+        
+        @MainActor
+        private func restoreTeaserAfterOverlay() {
+            guard let id = selectedPostID else { return }
+            if calloutPhase != .teaser {
+                withCalloutSpring {
+                    calloutPhase = .teaser
+                }
+                announceCalloutChange(.teaser)
+            }
+            logCallout("[CALLOUT] detail dismissed id=\(id.uuidString)")
+        }
+        
+        @MainActor
+        private func dismissDetailToTeaser() {
+            if presentedContext != nil {
+                presentedContext = nil
+            }
+        }
+        
+        @MainActor
+        private func startReserveFlow(for post: Post) {
+            presentedContext = nil
+            shouldRestoreTeaserOnDismiss = false
+            Task { await handleReserve(post: post) }
+        }
+        
+        @MainActor
+        private func dismissDetailAndPass() {
+            presentedContext = nil
+            shouldRestoreTeaserOnDismiss = false
+            collapseAll(reason: .dismiss)
+        }
+        
+        @ViewBuilder
+        private func mapDetailOverlay(for context: PresentedPostContext) -> some View {
+            let post = context.post
+            ZStack {
+                Color.black.opacity(0.25)
+                    .background(.ultraThinMaterial)
+                    .ignoresSafeArea()
+                    .blur(radius: 10)
+                    .onTapGesture {
+                        Task { @MainActor in dismissDetailToTeaser() }
+                    }
+                
+                BigCardOverlay(
+                    images: imageURLs(for: post),
+                    primaryInfo: primaryInfo(for: post, distanceText: context.distanceText),
+                    statusInfo: statusInfo(for: post),
+                    statusColor: Color(hex: "#00513F"),
+                    description: post.description,
+                    mode: locationMode(for: post),
+                    exactLocation: locationCoordinate(for: post),
+                    ownerName: ownerName(for: post),
+                    ownerAvatarUrl: post.owner?.avatarUrl,
+                    memberSince: post.createdAt,
+                    pickupsCount: post.owner?.pickedCount,
+                    variant: .feed,
+                    onDismiss: {
+                        Task { @MainActor in dismissDetailToTeaser() }
+                    },
+                    onPrimaryAction: {
+                        Task { @MainActor in startReserveFlow(for: post) }
+                    },
+                    onSecondaryAction: {
+                        Task { @MainActor in dismissDetailAndPass() }
+                    },
+                    onTertiaryAction: nil
+                )
+            }
+        }
+        
+        private func imageURLs(for post: Post) -> [String] {
+            post.images.sorted { $0.orderIndex < $1.orderIndex }.map { $0.url.absoluteString }
+        }
+        
+        private func primaryInfo(for post: Post, distanceText: String?) -> String {
+            if post.mode == .home { return "From home (address hidden)" }
+            if let distanceText, !distanceText.isEmpty { return distanceText }
+            if let distance = post.distance {
+                return String(format: "%.1f km away", distance)
+            }
+            return "Available nearby"
+        }
+        
+        private func statusInfo(for post: Post) -> String {
+            guard let created = post.createdAt else { return "" }
+            let formatter = RelativeDateTimeFormatter()
+            formatter.unitsStyle = .abbreviated
+            let relative = formatter.localizedString(for: created, relativeTo: Date())
+            return relative.isEmpty ? "" : "Posted \(relative)"
+        }
+        
+        private func locationMode(for post: Post) -> BigCardOverlay.LocationMode {
+            post.mode == .home ? .home : .street
+        }
+        
+        private func locationCoordinate(for post: Post) -> CLLocationCoordinate2D? {
+            post.exactLocation?.coordinate ?? post.approxLocation?.coordinate
+        }
+        
+        private func ownerName(for post: Post) -> String {
+            post.owner?.fullName ?? "Anonymous User"
         }
 
         private func suppressRefresh(for duration: Double) {

@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import UIKit
+import PhotosUI
 
 struct CameraOverlay: View {
     @ObservedObject private var camera = CameraSessionManager.shared
@@ -10,6 +11,9 @@ struct CameraOverlay: View {
     let onCancel: () -> Void
     
     @State private var isCapturing = false
+    @State private var showPhotoPicker = false
+    @State private var pickerItem: PhotosPickerItem?
+    @State private var isProcessingPickerItem = false
     
     var body: some View {
         ZStack {
@@ -50,26 +54,15 @@ struct CameraOverlay: View {
                     Spacer()
                     
                     // Bottom bar
-                    HStack {
-                        Spacer()
+                    ZStack {
+                        captureButton
                         
-                        // Capture button
-                        Button(action: handleCapture) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.white)
-                                    .frame(width: 70, height: 70)
-                                
-                                Circle()
-                                    .stroke(Color.white, lineWidth: 3)
-                                    .frame(width: 80, height: 80)
-                            }
+                        HStack {
+                            uploadButton
+                            Spacer()
                         }
-                        .disabled(isCapturing)
-                        .opacity(isCapturing ? 0.5 : 1.0)
-                        
-                        Spacer()
                     }
+                    .padding(.horizontal, 32)
                     .padding(.bottom, 40)
                 }
             }
@@ -81,6 +74,53 @@ struct CameraOverlay: View {
             // Keep session running for faster reopen
             // To stop: Task { await camera.stop() }
         }
+        .photosPicker(
+            isPresented: $showPhotoPicker,
+            selection: $pickerItem,
+            matching: .images
+        )
+        .onChange(of: pickerItem) { _, newValue in
+            guard let newValue else { return }
+            isProcessingPickerItem = true
+            Task {
+                await processPickerItem(newValue)
+            }
+        }
+        .onChange(of: showPhotoPicker) { _, isPresented in
+            if !isPresented, !isProcessingPickerItem {
+                camera.resumePreview()
+            }
+        }
+    }
+    
+    
+    private var captureButton: some View {
+        Button(action: handleCapture) {
+            ZStack {
+                Circle()
+                 .fill(Color.white)
+                  .frame(width: 70, height: 70)
+                                
+                   Circle()
+                    .stroke(Color.white, lineWidth: 3)
+                     .frame(width: 80, height: 80)
+                            }
+                        }
+             .disabled(isCapturing)
+             .opacity(isCapturing ? 0.5 : 1.0)
+    }
+    private var uploadButton: some View {
+        Button(action: handleUploadFromGallery) {
+            Image(systemName: "square.and.arrow.up")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(AppTheme.ColorToken.primary)
+                .frame(width: 52, height: 52)
+                .background(Color.white.opacity(0.98))
+                .clipShape(Circle())
+                .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
+        }
+        .disabled(isCapturing)
+        .accessibilityLabel("Upload photo from gallery")
     }
     
     private var permissionDeniedView: some View {
@@ -88,7 +128,6 @@ struct CameraOverlay: View {
             Image(systemName: "camera.fill")
                 .font(.system(size: 60))
                 .foregroundColor(.white.opacity(0.6))
-            
             Text("Camera Access Required")
                 .font(.title2)
                 .fontWeight(.semibold)
@@ -144,6 +183,13 @@ struct CameraOverlay: View {
         }
     }
     
+    private func handleUploadFromGallery() {
+        guard !isCapturing else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        camera.pausePreview()
+        showPhotoPicker = true
+    }
+    
     private func handleCancel() {
         onCancel()
     }
@@ -151,6 +197,31 @@ struct CameraOverlay: View {
     private func openSettings() {
         guard let settingsUrl = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(settingsUrl)
+    }
+    
+    private func processPickerItem(_ item: PhotosPickerItem) async {
+        defer {
+            Task { @MainActor in
+                pickerItem = nil
+                isProcessingPickerItem = false
+                if !showPhotoPicker {
+                    camera.resumePreview()
+                }
+            }
+        }
+        
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: data) else {
+                return
+            }
+            
+            await MainActor.run {
+                onCaptured(image)
+            }
+        } catch {
+            // Ignore errors; resume handled in defer
+        }
     }
 }
 
