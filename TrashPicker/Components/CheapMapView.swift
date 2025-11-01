@@ -347,33 +347,19 @@ private final class StreetPostAnnotationView: MKAnnotationView {
     }
 
     private static let pinImage: UIImage = {
-        let size = CGSize(width: 30, height: 38)
-        let circleDiameter: CGFloat = 24
-        let circleRect = CGRect(x: (size.width - circleDiameter) / 2, y: 0, width: circleDiameter, height: circleDiameter)
-        let tailPath = UIBezierPath()
-        let tailTopY = circleRect.maxY - 2
-        tailPath.move(to: CGPoint(x: size.width / 2, y: size.height))
-        tailPath.addLine(to: CGPoint(x: circleRect.maxX - 4, y: tailTopY))
-        tailPath.addLine(to: CGPoint(x: circleRect.minX + 4, y: tailTopY))
-        tailPath.close()
-
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let image = renderer.image { _ in
-            let brand = UIColor(AppTheme.ColorToken.brandDark)
-            brand.setFill()
-            UIBezierPath(ovalIn: circleRect).fill()
-            tailPath.fill()
-
-            if let glyph = UIImage(systemName: "paperplane.fill")?
-                .withTintColor(.white, renderingMode: .alwaysOriginal) {
-                let targetSize = CGSize(width: 14, height: 14)
-                let glyphOrigin = CGPoint(
-                    x: circleRect.midX - targetSize.width / 2,
-                    y: circleRect.midY - targetSize.height / 2
-                )
-                glyph.draw(in: CGRect(origin: glyphOrigin, size: targetSize))
-            }
+        // Load your custom vector PDF pin from the asset catalog
+        guard let image = UIImage(named: "MapPin") else {
+            fatalError("MapPin asset not found in Assets.xcassets")
         }
-        return image
+
+        // Optional: scale it slightly smaller if it looks oversized on the map
+        let targetSize = CGSize(width: image.size.width * 0.80, height: image.size.height * 0.80)
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+
+        let scaledImage = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+
+        return scaledImage.withRenderingMode(.alwaysOriginal)
     }()
 }

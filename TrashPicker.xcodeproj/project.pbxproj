@@ -454,7 +454,9 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TrashPicker/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Swoopy;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Allow camera to take photos of items you're giving away.";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.lifestyle";
+				INFOPLIST_KEY_NSCameraUsageDescription = "We need camera access to let you take photos of items you want to share with the community.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Allow location to show nearby items and approximate pickup spots.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Allow saving the photos you upload to your library.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Allow selecting photos of items to give away.";
@@ -491,7 +493,9 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TrashPicker/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Swoopy;
-				INFOPLIST_KEY_NSCameraUsageDescription = "Allow camera to take photos of items you're giving away.";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.lifestyle";
+				INFOPLIST_KEY_NSCameraUsageDescription = "We need camera access to let you take photos of items you want to share with the community.";
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Allow location to show nearby items and approximate pickup spots.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Allow saving the photos you upload to your library.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Allow selecting photos of items to give away.";

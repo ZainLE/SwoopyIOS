@@ -385,7 +385,7 @@ struct SwipeDeckView: View {
         VStack(spacing: 16) {
             Image(systemName: "person.crop.circle.badge.exclamationmark")
                 .font(.system(size: 48))
-                .foregroundColor(.red)
+                .foregroundColor(AppTheme.ColorToken.danger)
             
             Text(errorMessage ?? "Can't reach the server right now. Please try again.")
                 .font(.system(size: 16, weight: .medium))

@@ -366,6 +366,35 @@ final class SupabaseService: NSObject, ObservableObject {
             throw error
         }
     }
+
+    /// Update the authenticated user's password
+    @MainActor
+    func updatePassword(currentPassword: String, newPassword: String) async throws {
+        guard let email = session?.user.email else {
+            throw SimpleError(message: "No email associated with this account")
+        }
+
+        do {
+            _ = try await client.auth.signIn(email: email, password: currentPassword)
+        } catch {
+            throw SimpleError(message: "Current password is incorrect.")
+        }
+
+        do {
+            _ = try await client.auth.update(user: UserAttributes(password: newPassword))
+        } catch {
+            throw SimpleError(message: "Couldn't update your password. Please try again.")
+        }
+    }
+
+    /// Send a password reset email to the current user
+    @MainActor
+    func sendPasswordResetEmail() async throws {
+        guard let email = session?.user.email else {
+            throw SimpleError(message: "No email associated with this account")
+        }
+        try await client.auth.resetPasswordForEmail(email, redirectTo: SupabaseService.callbackURL)
+    }
     
     /// Direct SDK update to profiles table (fallback)
     private func updateProfileDirect(_ patch: ProfilePatch) async throws {

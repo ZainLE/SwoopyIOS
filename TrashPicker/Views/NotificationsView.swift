@@ -1115,7 +1115,7 @@ struct NotificationsView: View {
                     if let detailError, !detailError.isEmpty {
                         Text(detailError)
                             .font(AppFont.sub)
-                            .foregroundColor(.red)
+                            .foregroundColor(AppTheme.ColorToken.danger)
                     }
 
                     VStack(spacing: 12) {

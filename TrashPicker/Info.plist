@@ -13,8 +13,6 @@
 			</array>
 		</dict>
 	</array>
-	<key>NSCameraUsageDescription</key>
-	<string>We need camera access to let you take photos of items you want to share with the community.</string>
 	<key>SupabaseAnonKey</key>
 	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzU5NjE1MjAwLCJleHAiOjE5MTczODE2MDB9.mSliAqP3d591IW4i8INqPxKQ_aYIHDNAiU3eBRkqNx4</string>
 	<key>SupabaseUrl</key>

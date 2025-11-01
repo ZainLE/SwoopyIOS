@@ -26,7 +26,7 @@ enum AppTheme {
         static let brandLime = Color(hex: "B4DD4E")
         
         // New colors from random tokens
-        static let danger = Color(hex: "C44242")  // #C44242 (e.g., for errors or warnings)
+        static let danger = Color(hex: "B62403")  // #B62403 (e.g., for errors or warnings)
         static let success = Color(hex: "6AA54A")  // #6AA54A (e.g., for confirmations)
     }
     
@@ -135,4 +135,3 @@ enum AppRadius {
     static let button: CGFloat = 26
     static let thumb: CGFloat = 12
 }
-

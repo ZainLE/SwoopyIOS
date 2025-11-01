@@ -26,7 +26,7 @@ struct BlockUserSheet: View {
                 // Icon
                 Image(systemName: "hand.raised.circle.fill")
                     .font(.system(size: 60))
-                    .foregroundColor(.red.opacity(0.8))
+                    .foregroundColor(AppTheme.ColorToken.danger.opacity(0.8))
                     .padding(.top, 32)
                 
                 // Title and description
@@ -89,7 +89,7 @@ struct BlockUserSheet: View {
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: 50)
-                        .background(Color.red)
+                        .background(AppTheme.ColorToken.danger)
                         .foregroundColor(.white)
                         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.button))
                     }
@@ -154,4 +154,3 @@ struct BlockUserSheet: View {
     BlockUserSheet(userId: "test-user-id", userName: "John Doe")
         .environmentObject(ApiService(supabaseService: SupabaseService.shared))
 }
-
