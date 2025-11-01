@@ -10,6 +10,8 @@ import PhotosUI
 import UIKit
 import LocalAuthentication
 
+private let deleteButtonCornerRadius: CGFloat = 99
+
 struct AccountDetailsView: View {
     @EnvironmentObject var svc: SupabaseService
     @Environment(\.dismiss) private var dismiss
@@ -22,14 +24,12 @@ struct AccountDetailsView: View {
     @State private var showingError = false
     @State private var errorMessage = ""
     @State private var successToast = false
-    @State private var showingDeleteDialog = false
-    @State private var showingDeleteSheet = false
-    @State private var deleteConfirmationText = ""
+    @State private var showDeleteConfirmation = false
     @State private var isDeletingAccount = false
-    @State private var didCompleteDeletion = false
     @State private var didLogDeleteCancel = false
-    @State private var canUseBiometrics = false
+    @State private var canAuthenticateWithDevice = false
     @State private var biometricType: LABiometryType = .none
+    @State private var deleteSheetHeight: CGFloat = 0
     
     // Track initial values to detect changes
     @State private var initialFullName = ""
@@ -49,7 +49,7 @@ struct AccountDetailsView: View {
     @State private var passwordSuccess: String?
     @State private var isUpdatingPassword = false
     
-    @FocusState private var deleteFieldFocused: Bool
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     
     var body: some View {
         NavigationStack {
@@ -102,33 +102,59 @@ struct AccountDetailsView: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
+            .overlayPreferenceValue(DeleteButtonAnchorKey.self) { anchor in
+                GeometryReader { proxy in
+                    if let anchor, showDeleteConfirmation, !isRegularWidth {
+                        let rect = proxy[anchor]
+                        let measuredHeight = deleteSheetHeight > 0 ? deleteSheetHeight : 220
+                        ZStack {
+                            Color.black.opacity(0.001)
+                                .ignoresSafeArea()
+                                .onTapGesture { cancelDeleteFlow() }
+                            DeleteAccountSheet(
+                                message: "This permanently deletes your profile, posts, and reservations.",
+                                confirmTitle: biometricButtonTitle,
+                                cancelTitle: "Cancel",
+                                confirmIconName: biometricIconName,
+                                cornerRadius: deleteButtonCornerRadius,
+                                isDeleting: isDeletingAccount,
+                                canConfirm: canAuthenticateWithDevice && !isDeletingAccount,
+                                onConfirm: confirmDeleteWithBiometrics,
+                                onCancel: cancelDeleteFlow
+                            )
+                            .frame(maxWidth: min(proxy.size.width - 32, 360))
+                            .background(
+                                GeometryReader { sheetProxy in
+                                    Color.clear
+                                        .onAppear {
+                                            let height = sheetProxy.size.height
+                                            if abs(deleteSheetHeight - height) > 0.5 {
+                                                deleteSheetHeight = height
+                                            }
+                                        }
+                                        .onChange(of: sheetProxy.size.height) { newHeight in
+                                            if abs(deleteSheetHeight - newHeight) > 0.5 {
+                                                deleteSheetHeight = newHeight
+                                            }
+                                        }
+                                }
+                            )
+                            .position(
+                                x: rect.midX,
+                                y: min(
+                                    rect.maxY + measuredHeight / 2 + 12,
+                                    proxy.size.height - measuredHeight / 2 - proxy.safeAreaInsets.bottom - 16
+                                )
+                            )
+                            .transition(.opacity.combined(with: .scale))
+                        }
+                    }
+                }
+            }
         }
         .task {
             await loadCurrentProfile()
             updateBiometricAvailability()
-        }
-        .confirmationDialog(
-            "Delete your account?",
-            isPresented: $showingDeleteDialog,
-            titleVisibility: .visible
-        ) {
-            Button("Delete", role: .destructive) {
-                deleteConfirmationText = ""
-                didCompleteDeletion = false
-                didLogDeleteCancel = false
-                showingDeleteSheet = true
-            }
-            Button("Cancel", role: .cancel) {
-                logDeleteCanceled()
-            }
-        } message: {
-            Text("This permanently removes your profile, posts, reservations, and notifications.")
-        }
-        .sheet(isPresented: $showingDeleteSheet) {
-            deleteConfirmationSheet
-                .presentationDetents([.medium])
-                .presentationDragIndicator(.visible)
-                .interactiveDismissDisabled(isDeletingAccount)
         }
         .alert("Error", isPresented: $showingError) {
             Button("OK") { }
@@ -139,11 +165,6 @@ struct AccountDetailsView: View {
             guard let newPhoto else { return }
             Task(priority: TaskPriority.userInitiated) {
                 await loadSelectedPhoto(newPhoto)
-            }
-        }
-        .onChange(of: showingDeleteSheet) { isPresented in
-            if !isPresented && !didCompleteDeletion && !isDeletingAccount {
-                logDeleteCanceled()
             }
         }
         .onChange(of: oldPassword) { _ in
@@ -333,7 +354,8 @@ struct AccountDetailsView: View {
     }
     
     private var deleteAccountButton: some View {
-        Button(action: handleDeleteTapped) {
+        let isRegular = isRegularWidth
+        return Button(action: handleDeleteTapped) {
             HStack {
                 Spacer()
                 if isDeletingAccount {
@@ -349,12 +371,43 @@ struct AccountDetailsView: View {
             }
             .padding(.vertical, 14)
             .background(AppTheme.ColorToken.danger)
-            .clipShape(RoundedRectangle(cornerRadius: 99))
+            .clipShape(RoundedRectangle(cornerRadius: deleteButtonCornerRadius))
         }
         .buttonStyle(.plain)
         .disabled(isLoading || isDeletingAccount)
         .opacity(isLoading ? 0.7 : 1.0)
         .accessibilityLabel("Delete account")
+        .background(
+            GeometryReader { _ in
+                Color.clear
+                    .anchorPreference(key: DeleteButtonAnchorKey.self, value: .bounds) { anchor in anchor }
+            }
+        )
+        .popover(
+            isPresented: Binding(
+                get: { showDeleteConfirmation && isRegular },
+                set: { newValue in
+                    if !newValue {
+                        cancelDeleteFlow()
+                    }
+                }
+            ),
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .top
+        ) {
+            DeleteAccountSheet(
+                message: "This permanently deletes your profile, posts, and reservations.",
+                confirmTitle: biometricButtonTitle,
+                cancelTitle: "Cancel",
+                confirmIconName: biometricIconName,
+                cornerRadius: deleteButtonCornerRadius,
+                isDeleting: isDeletingAccount,
+                canConfirm: canAuthenticateWithDevice && !isDeletingAccount,
+                onConfirm: confirmDeleteWithBiometrics,
+                onCancel: cancelDeleteFlow
+            )
+            .frame(maxWidth: 360)
+        }
     }
     
     @ViewBuilder
@@ -367,87 +420,6 @@ struct AccountDetailsView: View {
         }
     }
     
-    private var deleteConfirmationSheet: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(#"To permanently delete your account, type "DELETE"."#)
-                    .font(AppFont.body)
-                    .foregroundColor(AppColor.text)
-                    .fixedSize(horizontal: false, vertical: true)
-                
-                TextField("Type DELETE", text: $deleteConfirmationText)
-                    .font(AppFont.body)
-                    .textInputAutocapitalization(.characters)
-                    .disableAutocorrection(true)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(Color(.systemGray6))
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .focused($deleteFieldFocused)
-                    .accessibilityLabel("Confirm account deletion")
-                
-                Text("This permanently deletes your profile, posts, and reservations.")
-                    .font(AppFont.caption)
-                    .foregroundColor(AppColor.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-                
-                if canUseBiometrics {
-                    Button(action: attemptBiometricConfirmation) {
-                        HStack {
-                            Spacer()
-                            Text(biometricButtonTitle)
-                                .font(AppFont.body.weight(.semibold))
-                                .foregroundColor(AppColor.brandGreen)
-                            Spacer()
-                        }
-                        .padding(.vertical, 12)
-                        .background(AppColor.brandGreen.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isDeletingAccount)
-                }
-                
-                Button(action: confirmDeleteByTyping) {
-                    HStack {
-                        Spacer()
-                        if isDeletingAccount {
-                            ProgressView()
-                                .tint(.white)
-                        } else {
-                            Text("Delete Account")
-                                .font(AppFont.body.weight(.semibold))
-                                .foregroundColor(.white)
-                        }
-                        Spacer()
-                    }
-                    .padding(.vertical, 14)
-                    .background((deleteConfirmationInputIsInvalid || isDeletingAccount) ? AppTheme.ColorToken.danger.opacity(0.6) : AppTheme.ColorToken.danger)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .buttonStyle(.plain)
-                .disabled(isDeletingAccount || deleteConfirmationInputIsInvalid)
-                .accessibilityLabel("Delete account")
-            }
-            .padding(20)
-            .background(Color(.systemGroupedBackground))
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        handleDeleteCancel()
-                    }
-                    .disabled(isDeletingAccount)
-                }
-            }
-            .onAppear {
-                deleteFieldFocused = true
-            }
-            .onDisappear {
-                deleteFieldFocused = false
-            }
-        }
-    }
-
     
     // MARK: - Computed Properties
     
@@ -458,10 +430,6 @@ struct AccountDetailsView: View {
         return formatter.string(from: date)
     }
     
-    private var deleteConfirmationInputIsInvalid: Bool {
-        deleteConfirmationText.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() != "DELETE"
-    }
-    
     private var biometricButtonTitle: String {
         switch biometricType {
         case .faceID:
@@ -469,8 +437,23 @@ struct AccountDetailsView: View {
         case .touchID:
             return "Confirm with Touch ID"
         default:
-            return "Confirm with Biometrics"
+            return "Confirm with Passcode"
         }
+    }
+
+    private var biometricIconName: String {
+        switch biometricType {
+        case .faceID:
+            return "faceid"
+        case .touchID:
+            return "touchid"
+        default:
+            return "key.fill"
+        }
+    }
+    
+    private var isRegularWidth: Bool {
+        horizontalSizeClass == .regular
     }
     
     private var isFormValid: Bool {
@@ -549,59 +532,30 @@ struct AccountDetailsView: View {
         guard !isDeletingAccount, !isLoading else { return }
         playHaptic(.light)
         logDeleteTapped()
-        deleteConfirmationText = ""
-        didCompleteDeletion = false
         didLogDeleteCancel = false
-        showingDeleteDialog = true
+        deleteSheetHeight = 0
+        showDeleteConfirmation = true
     }
     
-    private func confirmDeleteByTyping() {
-        guard !deleteConfirmationInputIsInvalid, !isDeletingAccount else { return }
-        playHaptic(.heavy)
-        Task { await performDelete() }
-    }
-    
-    private func attemptBiometricConfirmation() {
-        guard canUseBiometrics, !isDeletingAccount else { return }
-        
-        let context = LAContext()
-        context.localizedCancelTitle = "Cancel"
-        var error: NSError?
-        
-        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
-            canUseBiometrics = false
-            biometricType = .none
-            return
-        }
-        biometricType = context.biometryType
-        
-        let reason = "Confirm deleting your TrashPicker account."
-        context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: reason) { success, evaluateError in
-            DispatchQueue.main.async {
-                if success {
-                    self.playHaptic(.heavy)
-                    Task { await self.performDelete() }
-                } else if let evaluateError {
-                    let nsError = evaluateError as NSError
-                    guard let code = LAError.Code(rawValue: nsError.code) else { return }
-                    
-                    switch code {
-                    case .userCancel, .appCancel, .systemCancel, .userFallback:
-                        break
-                    default:
-                        let biometricName = self.biometricType == .touchID ? "Touch ID" : "Face ID"
-                        self.errorMessage = "\(biometricName) could not verify you. Try again or type DELETE."
-                        self.showingError = true
-                    }
+    private func confirmDeleteWithBiometrics() {
+        guard canAuthenticateWithDevice, !isDeletingAccount else { return }
+        Task {
+            do {
+                try await BiometricAuth.authenticate(reason: "Confirm deleting your TrashPicker account.")
+                await MainActor.run {
+                    playHaptic(.heavy)
                 }
+                await performDelete()
+            } catch {
+                handleAuthenticationError(error)
             }
         }
     }
     
-    private func handleDeleteCancel() {
-        guard !isDeletingAccount else { return }
-        deleteConfirmationText = ""
-        showingDeleteSheet = false
+    private func cancelDeleteFlow() {
+        guard showDeleteConfirmation, !isDeletingAccount else { return }
+        showDeleteConfirmation = false
+        deleteSheetHeight = 0
         logDeleteCanceled()
     }
     
@@ -619,14 +573,10 @@ struct AccountDetailsView: View {
         
         do {
             _ = try await svc.deleteAccount()
-            didCompleteDeletion = true
-            deleteConfirmationText = ""
-            showingDeleteSheet = false
+            showDeleteConfirmation = false
+            deleteSheetHeight = 0
             await svc.finalizeAccountDeletion()
         } catch {
-            didCompleteDeletion = false
-            deleteConfirmationText = ""
-            
             if error.isCancellationLike {
                 errorMessage = fallbackMessage
             } else if let simple = error as? SimpleError {
@@ -641,12 +591,31 @@ struct AccountDetailsView: View {
         }
     }
     
+    private func handleAuthenticationError(_ error: Error) {
+        if let laError = error as? LAError {
+            switch laError.code {
+            case .userCancel, .appCancel, .systemCancel, .userFallback:
+                return
+            case .biometryLockout, .biometryNotEnrolled, .biometryNotAvailable:
+                canAuthenticateWithDevice = false
+                biometricType = .none
+                fallthrough
+            default:
+                errorMessage = laError.localizedDescription.isEmpty ? "Face ID could not verify you. Try again." : laError.localizedDescription
+                showingError = true
+            }
+        } else {
+            errorMessage = "Face ID could not verify you. Try again."
+            showingError = true
+        }
+    }
+    
     private func updateBiometricAvailability() {
         let context = LAContext()
         var error: NSError?
-        let available = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
-        canUseBiometrics = available
-        biometricType = available ? context.biometryType : .none
+        let available = context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error)
+        canAuthenticateWithDevice = available
+        biometricType = BiometricAuth.availableBiometryType()
     }
     
     private func logDeleteTapped() {
@@ -780,5 +749,13 @@ struct AccountDetailsView: View {
             errorMessage = "Couldn't load that photo. Please try another."
             showingError = true
         }
+    }
+}
+
+private struct DeleteButtonAnchorKey: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>? = nil
+    
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
     }
 }
