@@ -12,6 +12,7 @@ import CoreLocation
 // MARK: - BigCardOverlay
 
 struct BigCardOverlay: View {
+    @EnvironmentObject private var api: ApiService
     // Content data
     let postID: String?
     let images: [String]
@@ -38,7 +39,10 @@ struct BigCardOverlay: View {
     @State private var dragOffset: CGSize = .zero
     @Namespace private var imageTransition
     @StateObject private var locationViewModel: LocationDescriptionViewModel
-    
+    @State private var isReportPostSheetPresented = false
+    @State private var isReportPostSuccessVisible = false
+    @State private var reportSuccessTask: Task<Void, Never>? = nil
+
     // Design tokens
     private let overlayScale: CGFloat = 0.90
     private let primaryColor = Color(hex: "00513F")
@@ -46,12 +50,19 @@ struct BigCardOverlay: View {
     private let mutedColor = Color(hex: "656565")
     private let dangerColor = Color(hex: "C44242")
     private let successColor = Color(hex: "6AA54A")
+    private let reportToastDuration: UInt64 = 2_500_000_000
+
+    private let reportPostReasons: [ReportPostReason] = [
+        ReportPostReason(id: "spam", title: "Spam or misleading", category: .spam),
+        ReportPostReason(id: "illegal", title: "Illegal or unsafe", category: .illegal),
+        ReportPostReason(id: "inappropriate", title: "Inappropriate content", category: .inappropriate)
+    ]
     
     enum LocationMode {
         case street
         case home
     }
-    
+
     enum Variant {
         case reservations(ReservationButtonSet)
         case feed
@@ -134,6 +145,9 @@ struct BigCardOverlay: View {
                                 // Location or Shared By
                                 locationSection
                                 sharedBySection
+                                if case .feed = variant {
+                                    reportPostSection(buttonWidth: (cardWidth - 48 - 12) / 2)
+                                }
                             }
                             .padding(.horizontal, 24)
                             .padding(.top, 16)
@@ -176,6 +190,40 @@ struct BigCardOverlay: View {
             .overlay(alignment: .topTrailing) {
                 closeButton
             }
+            .overlay {
+                if isReportPostSuccessVisible {
+                    ZStack {
+                        Color(.systemBackground)
+                            .ignoresSafeArea()
+                        ReportPostToast(
+                            title: "Thanks for looking out for others 💚",
+                            message: "Your report helps keep Swoopy safe and respectful for everyone.",
+                            onDismiss: { dismissReportSuccess(triggerDismissal: true) }
+                        )
+                        .padding(.horizontal, 24)
+                    }
+                    .transition(.opacity.combined(with: .scale))
+                }
+            }
+            .sheet(isPresented: $isReportPostSheetPresented) {
+                ReportPostReasonSheet(
+                    reasons: reportPostReasons,
+                    actionColor: AppColor.brandGreen,
+                    onSelect: { reason in
+                        handleReportReasonSelection(reason)
+                    },
+                    onCancel: {
+                        Haptics.play(.tabSelect)
+                        isReportPostSheetPresented = false
+                    }
+                )
+                .presentationDetents([.fraction(0.45)])
+                .presentationDragIndicator(.hidden)
+            }
+        }
+        .onDisappear {
+            reportSuccessTask?.cancel()
+            reportSuccessTask = nil
         }
     }
 }
@@ -410,6 +458,39 @@ extension BigCardOverlay {
             }
         }
     }
+
+    private func reportPostSection(buttonWidth: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Report Post?")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.primary)
+            Text("Your safety matters. If this post seems spam, illegal, or inappropriate, please report it.")
+                .font(.system(size: 13, weight: .regular))
+                .foregroundColor(mutedColor)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Button {
+                    Haptics.play(.primaryAction)
+                    isReportPostSheetPresented = true
+                } label: {
+                    Text("Make a report")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(height: 44)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.plain)
+                .background(dangerColor)
+                .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+                .frame(width: buttonWidth)
+                .disabled(isReportPostSheetPresented || postID == nil)
+                .opacity((isReportPostSheetPresented || postID == nil) ? 0.75 : 1.0)
+
+                Spacer(minLength: 0)
+            }
+        }
+    }
     
     // MARK: - Buttons Section
     
@@ -562,7 +643,164 @@ extension BigCardOverlay {
         formatter.dateFormat = "MMM yyyy"
         return formatter.string(from: date)
     }
+
+    private func handleReportReasonSelection(_ reason: ReportPostReason) {
+        isReportPostSheetPresented = false
+        Haptics.play(.tabSelect)
+        submitReport(for: reason)
+        presentReportSuccessOverlay()
+    }
+
+    private func submitReport(for reason: ReportPostReason) {
+        guard let postID else { return }
+        Task {
+            let payload = ReportPayload(postId: postID, reportedUserId: nil, category: reason.category, notes: nil)
+            do {
+                try await api.reportPost(payload)
+            } catch {
+                #if DEBUG
+                print("[REPORT] post_report_error=\(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
+
+    private func presentReportSuccessOverlay() {
+        reportSuccessTask?.cancel()
+        reportSuccessTask = nil
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+            isReportPostSuccessVisible = true
+        }
+        Haptics.play(.success)
+        reportSuccessTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: reportToastDuration)
+            } catch {
+                return
+            }
+            await MainActor.run {
+                dismissReportSuccess(triggerDismissal: true)
+            }
+        }
+    }
+
+    private func dismissReportSuccess(triggerDismissal: Bool = false) {
+        reportSuccessTask?.cancel()
+        reportSuccessTask = nil
+        guard isReportPostSuccessVisible else {
+            if triggerDismissal { onSecondaryAction() }
+            return
+        }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            isReportPostSuccessVisible = false
+        }
+        if triggerDismissal {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                onSecondaryAction()
+            }
+        }
+    }
 } // <- Added closing brace for extension BigCardOverlay
+
+// MARK: - Report Support
+
+private struct ReportPostReason: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let category: ReportPayload.Category
+}
+
+private struct ReportPostReasonSheet: View {
+    let reasons: [ReportPostReason]
+    let actionColor: Color
+    let onSelect: (ReportPostReason) -> Void
+    let onCancel: () -> Void
+    
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color(.systemBackground)
+                .ignoresSafeArea()
+            VStack(alignment: .leading, spacing: 20) {
+                HStack {
+                    Spacer()
+                    Button(action: onCancel) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundColor(AppColor.muted)
+                            .accessibilityLabel("Close")
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.bottom, 4)
+                
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("What's wrong with this post?")
+                        .font(AppFont.h3)
+                        .foregroundColor(AppColor.text)
+                    Text("Choose a reason so we can take a look.")
+                        .font(AppFont.sub)
+                        .foregroundColor(AppColor.muted)
+                }
+                
+                VStack(spacing: 12) {
+                    ForEach(reasons) { reason in
+                        Button {
+                            onSelect(reason)
+                        } label: {
+                            Text(reason.title)
+                                .font(AppFont.body.weight(.semibold))
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                        }
+                        .buttonStyle(.plain)
+                        .background(actionColor)
+                        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+                    }
+                }
+            }
+            .padding(.top, 24)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 28)
+        }
+    }
+}
+
+private struct ReportPostToast: View {
+    let title: String
+    let message: String
+    let onDismiss: () -> Void
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(AppFont.h3)
+                    .foregroundColor(AppColor.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(message)
+                    .font(AppFont.sub)
+                    .foregroundColor(AppColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(AppColor.muted)
+                    .padding(8)
+                    .background(Color(.systemGray5), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss message")
+        }
+        .padding(.vertical, 18)
+        .padding(.horizontal, 20)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .shadow(color: Color.black.opacity(0.15), radius: 18, y: 8)
+    }
+}
 
 // MARK: - Color Extension
 
