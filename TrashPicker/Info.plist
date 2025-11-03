@@ -13,9 +13,17 @@
 			</array>
 		</dict>
 	</array>
+	<key>OneSignal_app_groups_key</key>
+	<string>group.Swoopy</string>
+	<key>OneSignalAppID</key>
+	<string>f22c666f-ed87-4d91-bcca-1c27f059987f</string>
 	<key>SupabaseAnonKey</key>
 	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzU5NjE1MjAwLCJleHAiOjE5MTczODE2MDB9.mSliAqP3d591IW4i8INqPxKQ_aYIHDNAiU3eBRkqNx4</string>
 	<key>SupabaseUrl</key>
 	<string>https://api.swoopy.eu</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 </dict>
 </plist>

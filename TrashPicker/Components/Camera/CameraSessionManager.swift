@@ -27,8 +27,8 @@ enum CameraError: Error, LocalizedError {
     }
 }
 
-/// Main actor-isolated camera session manager following AVCam architecture
-@MainActor
+/// Camera session manager following AVCam architecture.
+/// UI-facing state is published on the main actor, while heavy capture work stays on a private queue.
 final class CameraSessionManager: NSObject, ObservableObject {
     
     // MARK: - Published State (main actor only)

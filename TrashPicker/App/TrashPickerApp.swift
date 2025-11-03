@@ -1,8 +1,11 @@
 import SwiftUI
 import UIKit
+import OneSignalFramework
 
 @main
 struct TrashPickerApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    
     init() {
         // Install runtime debug guards (e.g., ban system image picker usage in DEBUG)
         #if DEBUG
@@ -186,8 +189,8 @@ private struct RootGateView: View {
                 "sparkles",
                 "person.2.fill",
                 "house.fill",
-                "figure.walk",
-                "checkmark.seal.fill"
+                "FirstItem",
+                "SecondItem"
             ]
         )
         
@@ -209,3 +212,96 @@ private struct RootGateView: View {
             }
     }
 }
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    private let userDefaults = UserDefaults.standard
+    private let permissionPromptKey = "OneSignal.didPromptForPush"
+    
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        OneSignal.Debug.setLogLevel(.LL_VERBOSE)
+        
+        UNUserNotificationCenter.current().delegate = self
+        
+        let appId = Bundle.main.object(forInfoDictionaryKey: "OneSignalAppID") as? String ?? ""
+        precondition(
+            UUID(uuidString: appId) != nil && appId.uppercased() != "YOUR_APP_ID",
+            "Invalid OneSignalAppID in Info.plist. Set your real OneSignal App ID (UUID)."
+        )
+        logBootstrapInfo(appId: appId)
+        
+        OneSignal.initialize(appId, withLaunchOptions: launchOptions)
+        OneSignal.User.pushSubscription.addObserver(self)
+        logPushSubscriptionState(context: "post-init")
+        
+        requestNotificationPermissionIfNeeded()
+        
+        return true
+    }
+    
+    private func requestNotificationPermissionIfNeeded() {
+        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+            guard let self else { return }
+            
+            switch settings.authorizationStatus {
+            case .notDetermined:
+                if self.userDefaults.bool(forKey: self.permissionPromptKey) {
+                    return
+                }
+                self.userDefaults.set(true, forKey: self.permissionPromptKey)
+                DispatchQueue.main.async {
+                    OneSignal.Notifications.requestPermission({ accepted in
+                        print("[OneSignal] User accepted notifications: \(accepted)")
+                        if accepted {
+                            UIApplication.shared.registerForRemoteNotifications()
+                        }
+                    }, fallbackToSettings: false)
+                }
+                
+            default:
+                self.logPushSubscriptionState(context: "permission-status-\(settings.authorizationStatus.rawValue)")
+            }
+        }
+    }
+    
+    private func logBootstrapInfo(appId: String) {
+        let bundleId = Bundle.main.bundleIdentifier ?? "unknown"
+        let appIdentifierPrefix = Bundle.main.object(forInfoDictionaryKey: "AppIdentifierPrefix") as? String
+        let teamId = appIdentifierPrefix?.split(separator: ".").first.map(String.init) ?? "unknown"
+        #if DEBUG
+        let buildEnvironment = "Debug"
+        #else
+        let buildEnvironment = "Release"
+        #endif
+        
+        print("""
+[OneSignal] Initializing
+  AppID: \(appId)
+  BundleID: \(bundleId)
+  TeamID: \(teamId)
+  Environment: \(buildEnvironment)
+""")
+    }
+    
+    private func logPushSubscriptionState(context: String) {
+        let subscription = OneSignal.User.pushSubscription
+        let playerId = subscription.id ?? "nil"
+        let token = subscription.token ?? "nil"
+        let optedIn = subscription.optedIn
+        print("[OneSignal] \(context) playerId=\(playerId) token=\(token) optedIn=\(optedIn)")
+    }
+}
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list, .sound, .badge])
+    }
+}
+
+extension AppDelegate: OSPushSubscriptionObserver {
+    func onPushSubscriptionDidChange(state: OSPushSubscriptionChangedState) {
+        logPushSubscriptionState(context: "subscription-change")
+    }
+}
+

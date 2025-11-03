@@ -1,6 +1,15 @@
 {
-  "originHash" : "a2b47b975283c007063016d75469b395d89f8763da1d376160fb8c6dcfdb6109",
+  "originHash" : "2b824132144e6f1c1a5cc7f35e081113dc451efcf68bf5e169ad81600a0c5650",
   "pins" : [
+    {
+      "identity" : "onesignal-ios-sdk",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/OneSignal/OneSignal-iOS-SDK",
+      "state" : {
+        "revision" : "47972a48f0bf648706e3ec7f8f837d4b3756f69c",
+        "version" : "5.2.15"
+      }
+    },
     {
       "identity" : "supabase-swift",
       "kind" : "remoteSourceControl",

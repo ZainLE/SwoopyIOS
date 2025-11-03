@@ -100,7 +100,12 @@ enum AuthLogger {
     
     static func emailSignInFailure(email: String, mode: String, error: Error) {
         let sanitized = sanitizeEmail(email)
-        self.email.error("❌ Email \(mode, privacy: .public) FAILED | email: \(sanitized, privacy: .public) | error: \(error.localizedDescription, privacy: .public)")
+        let nsError = error as NSError
+        let debugDescription = String(describing: error)
+        let combined = nsError.localizedDescription == debugDescription
+            ? nsError.localizedDescription
+            : "\(nsError.localizedDescription) | \(debugDescription)"
+        self.email.error("❌ Email \(mode, privacy: .public) FAILED | email: \(sanitized, privacy: .public) | domain: \(nsError.domain, privacy: .public) | code: \(nsError.code, privacy: .public) | error: \(combined, privacy: .public)")
     }
     
     static func appleSignInStart() {
@@ -127,7 +132,12 @@ enum AuthLogger {
     }
     
     static func appleSignInFailure(error: Error) {
-        apple.error("❌ Apple Sign-In FAILED | error: \(error.localizedDescription, privacy: .public)")
+        let nsError = error as NSError
+        let debugDescription = String(describing: error)
+        let combined = nsError.localizedDescription == debugDescription
+            ? nsError.localizedDescription
+            : "\(nsError.localizedDescription) | \(debugDescription)"
+        apple.error("❌ Apple Sign-In FAILED | domain: \(nsError.domain, privacy: .public) | code: \(nsError.code, privacy: .public) | error: \(combined, privacy: .public)")
     }
     
     static func oauthCallbackReceived(url: URL) {
