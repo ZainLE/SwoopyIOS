@@ -1,0 +1,38 @@
+import SwiftUI
+
+struct SplashView: View {
+    let logo: String
+    let images: [String]
+    
+    var body: some View {
+        ZStack {
+            AnimatedLogoOrbit(
+                images: images
+            )
+            
+            Image(logo)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 90, height: 45)
+                .offset(x: 0, y: -5)
+        }
+        .ignoresSafeArea()
+        .padding()
+    }
+}
+
+#Preview {
+    SplashView(
+        logo: "SwoopyLogo",
+        images: [
+            "mappin.and.ellipse",
+            "shippingbox",
+            "leaf.fill",
+            "sparkles",
+            "person.2.fill",
+            "house.fill",
+            "FirstItem",
+            "SecondItem"
+        ]
+    )
+}
