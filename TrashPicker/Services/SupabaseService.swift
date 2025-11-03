@@ -259,12 +259,17 @@ final class SupabaseService: NSObject, ObservableObject {
         }
 
         AuthLogger.appleSignInSupabaseExchange()
-        let s = try await client.auth.signInWithIdToken(
-            credentials: OpenIDConnectCredentials(provider: .apple, idToken: idToken, nonce: nonce)
-        )
-        applyAuthSession(s)
-        phase = .signedIn
-        AuthLogger.appleSignInSuccess(userId: s.user.id.uuidString)
+        do {
+            let s = try await client.auth.signInWithIdToken(
+                credentials: OpenIDConnectCredentials(provider: .apple, idToken: idToken, nonce: nonce)
+            )
+            applyAuthSession(s)
+            phase = .signedIn
+            AuthLogger.appleSignInSuccess(userId: s.user.id.uuidString)
+        } catch {
+            AuthLogger.appleSignInFailure(error: error)
+            throw error
+        }
     }
 
     func signInWithEmailMagicLink(_ email: String) async throws {
