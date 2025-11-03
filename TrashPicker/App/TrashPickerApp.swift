@@ -119,7 +119,7 @@ private struct RootGateView: View {
         if shouldShowAuth {
             AuthView()
         } else {
-            RootView()
+            OnboardingGate()
         }
     }
     
@@ -304,4 +304,3 @@ extension AppDelegate: OSPushSubscriptionObserver {
         logPushSubscriptionState(context: "subscription-change")
     }
 }
-

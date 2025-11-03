@@ -22,6 +22,52 @@ private func dbg(_ tag: String, _ items: Any...) {
 #endif
 }
 
+#if DEBUG
+private let feedDebugISOFormatter: ISO8601DateFormatter = {
+    let fmt = ISO8601DateFormatter()
+    fmt.formatOptions = [
+        .withFullDate,
+        .withTime,
+        .withTimeZone,
+        .withFractionalSeconds,
+        .withColonSeparatorInTime
+    ]
+    return fmt
+}()
+
+struct FeedDistanceDebugEntry: Identifiable {
+    let id: String
+    let coordinate: CLLocationCoordinate2D?
+    let coordinateSource: String
+    let serverDistanceKm: Double?
+    let localDistanceKm: Double?
+    let mode: String
+}
+
+struct FeedDistanceDebugContext: Identifiable {
+    let id = UUID()
+    let debugId: String
+    let myLocation: CLLocation
+    let requestRadiusKm: Double
+    let locationSource: String
+    let authorizationStatus: CLAuthorizationStatus
+    let accuracyAuthorization: CLAccuracyAuthorization
+    let preciseEnabled: Bool
+    var entries: [FeedDistanceDebugEntry] = []
+}
+
+private struct FeedDebugContextKey: EnvironmentKey {
+    static let defaultValue: FeedDistanceDebugContext? = nil
+}
+
+extension EnvironmentValues {
+    var feedDebugContext: FeedDistanceDebugContext? {
+        get { self[FeedDebugContextKey.self] }
+        set { self[FeedDebugContextKey.self] = newValue }
+    }
+}
+#endif
+
 // MARK: - Hidden Posts Store (24h dismissed, 2h reserved)
 private class HiddenPostsStore {
     static let shared = HiddenPostsStore()
@@ -142,6 +188,10 @@ struct SwipeDeckView: View {
     @State private var inFlightCoordKey: String?
     @State private var authStatusAtLastFetch: Int?
 
+#if DEBUG
+    @State private var feedDebugContext: FeedDistanceDebugContext?
+#endif
+
     // Single source of truth for navigation state
     fileprivate enum NavigationState: Equatable {
         case feed
@@ -169,6 +219,15 @@ struct SwipeDeckView: View {
         }
     }
 
+#if DEBUG
+    private var activePostId: String? {
+        if let post = deckState.activeCard as? Post {
+            return post.id
+        }
+        return nil
+    }
+#endif
+
     // MARK: - Helpers
     private func markReserved(postId: String) {
         // Persist into 2h TTL set and remove card from deck
@@ -183,6 +242,13 @@ struct SwipeDeckView: View {
         baseView
             .overlay { errorOverlay }
             .overlay { successOverlay }
+#if DEBUG
+            .overlay(alignment: .topLeading) {
+                if let context = feedDebugContext {
+                    FeedDebugOverlayView(context: context, activePostId: activePostId)
+                }
+            }
+#endif
             .fullScreenCover(isPresented: $showCamera) {
                 CameraOverlay(
                     onCaptured: { image in
@@ -421,13 +487,26 @@ struct SwipeDeckView: View {
 
     private var feedContentView: some View {
         VStack(spacing: 0) {
-            DeckStack(
-                deckState: deckState,
-                router: router,
-                isReserving: isReserving,
-                onPass: { Task { await handlePassAction() } },
-                onReserve: { Task { await handleReserveAction() } }
-            )
+            Group {
+#if DEBUG
+                DeckStack(
+                    deckState: deckState,
+                    router: router,
+                    isReserving: isReserving,
+                    onPass: { Task { await handlePassAction() } },
+                    onReserve: { Task { await handleReserveAction() } }
+                )
+                .environment(\.feedDebugContext, feedDebugContext)
+#else
+                DeckStack(
+                    deckState: deckState,
+                    router: router,
+                    isReserving: isReserving,
+                    onPass: { Task { await handlePassAction() } },
+                    onReserve: { Task { await handleReserveAction() } }
+                )
+#endif
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .padding(.top, 18)
             .refreshable {
@@ -733,6 +812,9 @@ CATransaction.commit()
         
         // Log coordinate source
         let age = max(0, Date().timeIntervalSince(location.timestamp))
+        #if DEBUG
+        let locationSource = age < 5.0 ? "fresh" : "cached"
+        #endif
         if age < 5.0 {
             #if DEBUG
             print("[FEED gate] using fresh coord=(\(userLocation.latitude),\(userLocation.longitude)) hdop=\(location.horizontalAccuracy)")
@@ -745,6 +827,10 @@ CATransaction.commit()
         
         dbg("FEED", "request lat=\(userLocation.latitude) lng=\(userLocation.longitude) radius=10 limit=30")
 
+        #if DEBUG
+        feedDebugContext = nil
+        #endif
+
         do {
             let q = FeedQuery(
                 lng: userLocation.longitude,
@@ -754,8 +840,31 @@ CATransaction.commit()
                 mode: nil,
                 limit: 30
             )
+
+            #if DEBUG
+            let generatedDebugId = UUID().uuidString.lowercased()
+            let authSnapshot = LocationService.shared.debugAuthorizationSnapshot()
+            var localDebugContext = FeedDistanceDebugContext(
+                debugId: generatedDebugId,
+                myLocation: location,
+                requestRadiusKm: q.radiusKm,
+                locationSource: locationSource,
+                authorizationStatus: authSnapshot.managerStatus,
+                accuracyAuthorization: authSnapshot.accuracyAuthorization,
+                preciseEnabled: authSnapshot.preciseEnabled
+            )
+            feedDebugContext = localDebugContext
+            let isoTimestamp = feedDebugISOFormatter.string(from: location.timestamp)
+            let accuracyMeters = Int(location.horizontalAccuracy.rounded())
+            print("[DISTANCE REQ] debugId=\(generatedDebugId) my=(\(String(format: "%.5f", userLocation.latitude)),\(String(format: "%.5f", userLocation.longitude)) acc=\(accuracyMeters)m @\(isoTimestamp)) radius=\(String(format: "%.1f", q.radiusKm)) source=\(locationSource) auth=\(authSnapshot.managerStatus.rawValue) precise=\(authSnapshot.preciseEnabled ? "on" : "off")")
+            #endif
+
             let fetchedPosts = try await fetchWithRetry(svc: svc) {
+                #if DEBUG
+                try await api.getFeed(query: q, debugContext: FeedDebugContext(debugId: generatedDebugId))
+                #else
                 try await api.getFeed(query: q)
+                #endif
             }
 
             dbg("FEED", "response count=\(fetchedPosts.count)")
@@ -771,7 +880,65 @@ CATransaction.commit()
 
             lastServerPayload = Set(filtered.map { $0.id })
             posts = filtered
-            deckState.updateItems(visible)
+            let visiblePosts = visible
+            deckState.updateItems(visiblePosts)
+
+            #if DEBUG
+            do {
+                var context = localDebugContext
+                let userCLLocation = location
+                var entries: [FeedDistanceDebugEntry] = []
+                let isoTs = feedDebugISOFormatter.string(from: userCLLocation.timestamp)
+                let myCoordString = "\(String(format: "%.5f", userCLLocation.coordinate.latitude)),\(String(format: "%.5f", userCLLocation.coordinate.longitude))"
+                let accuracyString = Int(userCLLocation.horizontalAccuracy.rounded())
+                let coordinateForPost: (Post) -> (CLLocationCoordinate2D?, String) = { post in
+                    if let exact = post.exactLocation?.coordinate {
+                        return (exact, "exact")
+                    }
+                    if let approx = post.approxLocation?.coordinate {
+                        return (approx, "approx")
+                    }
+                    return (nil, "none")
+                }
+
+                for post in visiblePosts {
+                    let (postCoord, coordSource) = coordinateForPost(post)
+                    let localDistanceKm: Double? = {
+                        guard let postCoord else { return nil }
+                        let postLocation = CLLocation(latitude: postCoord.latitude, longitude: postCoord.longitude)
+                        return postLocation.distance(from: userCLLocation) / 1000.0
+                    }()
+                    let entry = FeedDistanceDebugEntry(
+                        id: post.id,
+                        coordinate: postCoord,
+                        coordinateSource: coordSource,
+                        serverDistanceKm: post.distance,
+                        localDistanceKm: localDistanceKm,
+                        mode: post.mode.rawValue
+                    )
+                    entries.append(entry)
+
+                    let coordString = postCoord.map { "\(String(format: "%.5f", $0.latitude)),\(String(format: "%.5f", $0.longitude))" } ?? "n/a"
+                    let serverString = post.distance.map { String(format: "%.3f", $0) } ?? "nil"
+                    let localString = localDistanceKm.map { String(format: "%.3f", $0) } ?? "nil"
+                    let source = post.distance != nil ? "server" : "local"
+                    print("[DISTANCE TRACE] debugId=\(generatedDebugId) postId=\(post.id) coord=\(coordString) coordSource=\(coordSource) server=\(serverString)km ui=\(localString)km source=\(source)")
+                }
+
+                context.entries = entries
+                feedDebugContext = context
+
+                if let first = entries.first {
+                    let coordString = first.coordinate.map { "\(String(format: "%.5f", $0.latitude)),\(String(format: "%.5f", $0.longitude))" } ?? "n/a"
+                    let serverString = first.serverDistanceKm.map { String(format: "%.2f", $0) } ?? "nil"
+                    let localString = first.localDistanceKm.map { String(format: "%.2f", $0) } ?? "nil"
+                    let source = first.serverDistanceKm != nil ? "server" : "local"
+                    print("DISTANCE-AUDIT debugId=\(generatedDebugId) my=(\(myCoordString) acc=\(accuracyString)m @\(isoTs)) post=\(coordString) server=\(serverString)km ui=\(localString)km source=\(source)")
+                } else {
+                    print("DISTANCE-AUDIT debugId=\(generatedDebugId) my=(\(myCoordString) acc=\(accuracyString)m @\(isoTs)) post=none server=nil ui=nil source=none")
+                }
+            }
+            #endif
 
             isLoading = false
         } catch {
@@ -779,6 +946,17 @@ CATransaction.commit()
             posts = []
             deckState.updateItems([])
             isLoading = false
+
+            #if DEBUG
+            let debugIdMessage: String
+            if let context = feedDebugContext {
+                debugIdMessage = context.debugId
+            } else {
+                debugIdMessage = "pending"
+            }
+            print("[DISTANCE REQ] debugId=\(debugIdMessage) error=\(error.localizedDescription)")
+            feedDebugContext = nil
+            #endif
 
             if error is AuthError || error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
                 errorMessage = "Please sign in again to continue."
@@ -887,6 +1065,52 @@ private struct PulsingLeafBadge: View {
         .allowsHitTesting(false)
     }
 }
+
+#if DEBUG
+private struct FeedDebugOverlayView: View {
+    let context: FeedDistanceDebugContext
+    let activePostId: String?
+
+    private var activeEntry: FeedDistanceDebugEntry? {
+        if let activePostId,
+           let match = context.entries.first(where: { $0.id == activePostId }) {
+            return match
+        }
+        return context.entries.first
+    }
+
+    var body: some View {
+        let myCoord = context.myLocation.coordinate
+        let iso = feedDebugISOFormatter.string(from: context.myLocation.timestamp)
+        let accuracyMeters = Int(context.myLocation.horizontalAccuracy.rounded())
+        VStack(alignment: .leading, spacing: 4) {
+            Text("DIST-ID \(context.debugId)")
+                .font(.caption.weight(.semibold))
+            Text(String(format: "My: %.5f, %.5f acc=%dm %@", myCoord.latitude, myCoord.longitude, accuracyMeters, context.locationSource))
+                .font(.caption2)
+            Text(" @\(iso) auth=\(context.authorizationStatus.rawValue) precise=\(context.preciseEnabled ? "on" : "off")")
+                .font(.caption2)
+            if let entry = activeEntry {
+                let coordString = entry.coordinate.map { String(format: "%.5f, %.5f", $0.latitude, $0.longitude) } ?? "n/a"
+                let serverStr = entry.serverDistanceKm.map { String(format: "%.2f km", $0) } ?? "nil"
+                let localStr = entry.localDistanceKm.map { String(format: "%.2f km", $0) } ?? "nil"
+                Text("Post: \(coordString) (\(entry.coordinateSource))")
+                    .font(.caption2)
+                Text(" server=\(serverStr) ui=\(localStr)")
+                    .font(.caption2)
+            } else {
+                Text("Post: n/a")
+                    .font(.caption2)
+            }
+        }
+        .padding(8)
+        .background(.thinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .shadow(radius: 4)
+        .padding([.top, .leading], 12)
+    }
+}
+#endif
 
 extension SwipeDeckView {
     private struct EmptyFeedCTA: View {
@@ -1892,3 +2116,4 @@ extension SwipeDeckView {
         }
     }
 }
+

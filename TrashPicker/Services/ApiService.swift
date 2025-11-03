@@ -189,6 +189,12 @@ struct FeedQuery: Codable {
     }
 }
 
+#if DEBUG
+struct FeedDebugContext {
+    let debugId: String
+}
+#endif
+
 struct Location: Codable {
     let lng: String?
     let lat: String?
@@ -1048,7 +1054,7 @@ class ApiService: ObservableObject {
     }
     
     // Single source for feed – tolerant decode + DTO→Model mapping
-    func getFeed(query: FeedQuery) async throws -> [Post] {
+    func getFeed(query: FeedQuery, debugContext: FeedDebugContext? = nil) async throws -> [Post] {
         // Safety net: block zero/invalid coordinates
         let coord = CLLocationCoordinate2D(latitude: query.lat, longitude: query.lng)
         if !LocationReadiness.isUsable(coord) {
@@ -1079,7 +1085,15 @@ class ApiService: ObservableObject {
         
         // Log full request line
         let queryString = queryItems.map { "\($0.name)=\($0.value ?? "")" }.joined(separator: "&")
+        #if DEBUG
+        if let debugContext {
+            dbg("FEED", "GET /feed?\(queryString) debugId=\(debugContext.debugId)")
+        } else {
+            dbg("FEED", "GET /feed?\(queryString)")
+        }
+        #else
         dbg("FEED", "GET /feed?\(queryString)")
+        #endif
         
         // Tolerant server response structure
         struct ServerImage: Decodable {
@@ -1109,7 +1123,12 @@ class ApiService: ObservableObject {
             let posts: [ServerPost]
         }
         
-        let headers = try await authHeaders()
+        var headers = try await authHeaders()
+        #if DEBUG
+        if let debugContext {
+            headers["X-Debug-Id"] = debugContext.debugId
+        }
+        #endif
         let req = try buildRequest(path: "/feed", method: .GET, query: queryItems, headers: headers)
         let (data, resp) = try await send(req)
         if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
@@ -1702,4 +1721,3 @@ extension Reservation {
         }
     }
 }
-

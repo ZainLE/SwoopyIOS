@@ -1,6 +1,20 @@
 import Foundation
 import CoreLocation
 
+#if DEBUG
+private let locationAuditFormatter: ISO8601DateFormatter = {
+    let fmt = ISO8601DateFormatter()
+    fmt.formatOptions = [
+        .withFullDate,
+        .withTime,
+        .withFractionalSeconds,
+        .withColonSeparatorInTime,
+        .withTimeZone
+    ]
+    return fmt
+}()
+#endif
+
 // MARK: - Debug Logging
 private let VERBOSE_LOGS = true
 
@@ -49,8 +63,19 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     /// Best-effort last known location from memory or Core Location cache.
     /// Returns `lastFix` if set, otherwise `CLLocationManager.location`.
     func lastKnownFromSystem() -> CLLocation? {
-        if let cached = lastFix { return cached }
-        return mgr.location
+        if let cached = lastFix {
+            #if DEBUG
+            logLocationAudit(cached, source: "memory-cache")
+            #endif
+            return cached
+        }
+        if let fallback = mgr.location {
+            #if DEBUG
+            logLocationAudit(fallback, source: "corelocation-cache")
+            #endif
+            return fallback
+        }
+        return nil
     }
     
     /// Get last known coordinate (synchronous, for immediate use)
@@ -69,6 +94,9 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     func firstFix(timeout: TimeInterval) async throws -> CLLocation {
         // If we already have a fix, return quickly
         if let cached = lastFix {
+            #if DEBUG
+            logLocationAudit(cached, source: "first-fix-cached")
+            #endif
             print("[LOC] firstFix result: success(lat=\(cached.coordinate.latitude), lon=\(cached.coordinate.longitude), hdop=\(cached.horizontalAccuracy))) [cached]")
             return cached
         }
@@ -142,6 +170,9 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
             lastFix = newLocation
             saveLastKnownCoordinate(newLocation)
             dbg("APP", "LocationService: updated location to \(coord)")
+            #if DEBUG
+            logLocationAudit(newLocation, source: "delegate")
+            #endif
             
             // Deliver to continuation
             if let cont = firstFixContinuation {
@@ -167,7 +198,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         dbg("APP", "LocationService: authorization status changed to \(manager.authorizationStatus.rawValue)")
-        
+
         // Notify observers of authorization change
         NotificationCenter.default.post(name: Notification.Name("LocationAuthorizationChanged"), object: nil)
     }
@@ -200,5 +231,33 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         let date = Date(timeIntervalSince1970: timestamp)
         return CLLocation(coordinate: coord, altitude: 0, horizontalAccuracy: 100, verticalAccuracy: -1, timestamp: date)
     }
-}
 
+    #if DEBUG
+    struct LocationAuthorizationSnapshot {
+        let managerStatus: CLAuthorizationStatus
+        let accuracyAuthorization: CLAccuracyAuthorization
+        let preciseEnabled: Bool
+    }
+
+    func debugAuthorizationSnapshot() -> LocationAuthorizationSnapshot {
+        LocationAuthorizationSnapshot(
+            managerStatus: mgr.authorizationStatus,
+            accuracyAuthorization: mgr.accuracyAuthorization,
+            preciseEnabled: mgr.accuracyAuthorization == .fullAccuracy
+        )
+    }
+
+    private func logLocationAudit(_ location: CLLocation, source: String) {
+        let coord = location.coordinate
+        let iso = locationAuditFormatter.string(from: location.timestamp)
+        let accuracy = String(format: "%.1f", location.horizontalAccuracy)
+        let age = String(format: "%.1f", max(0, Date().timeIntervalSince(location.timestamp)))
+        let auth = mgr.authorizationStatus
+        let globalAuth = CLLocationManager.authorizationStatus()
+        let precise = mgr.accuracyAuthorization == .fullAccuracy ? "full" : "reduced"
+        print("""
+[LOC AUDIT] source=\(source) lat=\(String(format: "%.6f", coord.latitude)) lng=\(String(format: "%.6f", coord.longitude)) acc=\(accuracy)m age=\(age)s ts=\(iso) auth=\(auth.rawValue)/\(globalAuth.rawValue) precise=\(precise)
+""")
+    }
+    #endif
+}

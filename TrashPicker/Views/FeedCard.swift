@@ -19,6 +19,9 @@ struct FeedCard: View {
     let onPass: () -> Void
     let onReserve: () -> Void
     @Environment(AppRouter.self) private var router
+#if DEBUG
+    @Environment(\.feedDebugContext) private var feedDebugContext
+#endif
 
     // Local UI state
     @State private var dragOffset: CGSize = .zero
@@ -293,12 +296,31 @@ struct FeedCard: View {
         .offset(y: isNextCard && !shouldShowStaged ? 10 : 0)
         .animation(.spring(response: 0.2, dampingFraction: 0.8), value: shouldShowStaged)
         .gesture(mainDragGesture())
+#if DEBUG
+        .onAppear { logDistanceDebug() }
+        .onChange(of: feedDebugContext?.debugId ?? "") { _, _ in
+            logDistanceDebug()
+        }
+#endif
         .onReceive(timer) { _ in currentTime = Date() }
         .overlay(reservingOverlayView())
         .fullScreenCover(isPresented: $showDetailOverlay) {
             expandedCardView()
         }
     }
+
+#if DEBUG
+    private func logDistanceDebug() {
+        guard let post = item as? Post,
+              let context = feedDebugContext,
+              let entry = context.entries.first(where: { $0.id == post.id }) else { return }
+        let coordString = entry.coordinate.map { "\(String(format: "%.5f", $0.latitude)),\(String(format: "%.5f", $0.longitude))" } ?? "n/a"
+        let serverString = entry.serverDistanceKm.map { String(format: "%.3f", $0) } ?? "nil"
+        let localString = entry.localDistanceKm.map { String(format: "%.3f", $0) } ?? "nil"
+        let source = entry.serverDistanceKm != nil ? "server" : "local"
+        print("[DISTANCE UI] debugId=\(context.debugId) postId=\(post.id) coord=\(coordString) server=\(serverString)km ui=\(localString)km source=\(source)")
+    }
+#endif
 
     // MARK: - Sections
 

@@ -36,44 +36,39 @@ struct AuthView: View {
     private var trimmedConf:  String { confirm.trimmingCharacters(in: .whitespacesAndNewlines) }
     // MARK: - Legal Links Footer
     @ViewBuilder private var signUpLegalFooter: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            let checkSize: CGFloat = 14
-            Button {
-                hasAgreedToTerms.toggle()
-                if hasAgreedToTerms { pulseTermsWarning = false }
-            } label: {
-                Image(systemName: hasAgreedToTerms ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: checkSize, weight: .semibold))
-                    .foregroundColor(hasAgreedToTerms ? Color(AppColor.cta) : .secondary)
-                    .frame(width: 28, height: 28)
-                    .alignmentGuide(.firstTextBaseline) { d in d[.bottom] - 8 }
-                    .offset(y: 6)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(hasAgreedToTerms ? "Agreed to terms" : "Agree to terms")
-            .accessibilityHint("Required before creating an account")
-            
+        let textColor = pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : Color.secondary
+        let linkColor = pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : Color(AppColor.cta)
+        
+        Toggle(isOn: $hasAgreedToTerms) {
             HStack(spacing: 4) {
                 Text("Read the")
-                    .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : .secondary)
+                    .foregroundColor(textColor)
                 Button(action: openPrivacyPolicy) {
                     Text("privacy policy")
-                        .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : Color(AppColor.cta))
+                        .foregroundColor(linkColor)
                 }
                 .buttonStyle(.plain)
                 Text("and")
-                    .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : .secondary)
+                    .foregroundColor(textColor)
                 Button(action: openTerms) {
                     Text("terms & conditions")
-                        .foregroundColor(pulseTermsWarning ? Color(AppTheme.ColorToken.danger) : Color(AppColor.cta))
+                        .foregroundColor(linkColor)
                 }
                 .buttonStyle(.plain)
             }
         }
         .font(.footnote)
+        .toggleStyle(CircleCheckboxStyle())
         .frame(maxWidth: .infinity, alignment: .center)
         .padding(.horizontal, 20)
         .padding(.bottom, 12)
+        .accessibilityLabel("Agree to privacy policy and terms")
+        .accessibilityHint("Required before creating an account")
+        .onChange(of: hasAgreedToTerms) { newValue in
+            if newValue {
+                pulseTermsWarning = false
+            }
+        }
         .animation(.easeInOut(duration: 0.2), value: pulseTermsWarning)
     }
     
