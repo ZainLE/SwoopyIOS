@@ -619,17 +619,17 @@ struct AccountDetailsView: View {
     }
     
     private func logDeleteTapped() {
-        print("[METRIC] settings_delete_tapped")
+        DLog("[METRIC] settings_delete_tapped")
     }
     
     private func logDeleteCanceled() {
         guard !didLogDeleteCancel else { return }
         didLogDeleteCancel = true
-        print("[METRIC] settings_delete_canceled")
+        DLog("[METRIC] settings_delete_canceled")
     }
     
     private func logDeleteConfirmed() {
-        print("[METRIC] settings_delete_confirmed")
+        DLog("[METRIC] settings_delete_confirmed")
     }
     
     private func playHaptic(_ style: UIImpactFeedbackGenerator.FeedbackStyle) {
@@ -722,7 +722,7 @@ struct AccountDetailsView: View {
             errorMessage = "Couldn't save your changes. Please try again."
             
             #if DEBUG
-            print("[PROFILE] Save error: \(error.localizedDescription)")
+            DLog("[PROFILE] Save error: \(error.localizedDescription)")
             #endif
             
             // Show more specific error if available

@@ -23,7 +23,7 @@ private func dbg(_ tag: String, _ items: Any...) {
 #if DEBUG
     guard VERBOSE_LOGS else { return }
     let message = items.map { "\($0)" }.joined(separator: " ")
-    print("[\(tag)] \(message)")
+    DLog("[\(tag)] \(message)")
 #endif
 }
 
@@ -97,14 +97,14 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
             #if DEBUG
             logLocationAudit(cached, source: "first-fix-cached")
             #endif
-            print("[LOC] firstFix result: success(lat=\(cached.coordinate.latitude), lon=\(cached.coordinate.longitude), hdop=\(cached.horizontalAccuracy))) [cached]")
+            DLog("[LOC] firstFix result: success(lat=\(cached.coordinate.latitude), lon=\(cached.coordinate.longitude), hdop=\(cached.horizontalAccuracy))) [cached]")
             return cached
         }
 
         // Check authorization up front
         let status = mgr.authorizationStatus
         if status == .denied || status == .restricted {
-            print("[LOC] firstFix result: denied")
+            DLog("[LOC] firstFix result: denied")
             throw CLError(.denied)
         }
 
@@ -159,7 +159,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
                     // Still deliver to continuation for firstFix() callers
                     if let cont = firstFixContinuation {
                         firstFixContinuation = nil
-                        print("[LOC] firstFix result: success(lat=\(newLocation.coordinate.latitude), lon=\(newLocation.coordinate.longitude), hdop=\(newLocation.horizontalAccuracy))) [delegate]")
+                        DLog("[LOC] firstFix result: success(lat=\(newLocation.coordinate.latitude), lon=\(newLocation.coordinate.longitude), hdop=\(newLocation.horizontalAccuracy))) [delegate]")
                         cont.resume(returning: newLocation)
                     }
                     return
@@ -177,7 +177,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
             // Deliver to continuation
             if let cont = firstFixContinuation {
                 firstFixContinuation = nil
-                print("[LOC] firstFix result: success(lat=\(newLocation.coordinate.latitude), lon=\(newLocation.coordinate.longitude), hdop=\(newLocation.horizontalAccuracy))) [delegate]")
+                DLog("[LOC] firstFix result: success(lat=\(newLocation.coordinate.latitude), lon=\(newLocation.coordinate.longitude), hdop=\(newLocation.horizontalAccuracy))) [delegate]")
                 cont.resume(returning: newLocation)
             }
         }
@@ -191,7 +191,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         dbg("APP", "LocationService: failed to get location. Error: \(error.localizedDescription)")
         if let cont = firstFixContinuation {
             firstFixContinuation = nil
-            print("[LOC] firstFix result: failed(error=\(error.localizedDescription))")
+            DLog("[LOC] firstFix result: failed(error=\(error.localizedDescription))")
             cont.resume(throwing: error)
         }
     }
@@ -255,7 +255,7 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         let auth = mgr.authorizationStatus
         let globalAuth = CLLocationManager.authorizationStatus()
         let precise = mgr.accuracyAuthorization == .fullAccuracy ? "full" : "reduced"
-        print("""
+        DLog("""
 [LOC AUDIT] source=\(source) lat=\(String(format: "%.6f", coord.latitude)) lng=\(String(format: "%.6f", coord.longitude)) acc=\(accuracy)m age=\(age)s ts=\(iso) auth=\(auth.rawValue)/\(globalAuth.rawValue) precise=\(precise)
 """)
     }

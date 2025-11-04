@@ -22,9 +22,7 @@ func fetchWithRetry<T>(
         } catch {
             // Cancellations and our TimeoutError: do not retry
             if error.isCancellationLike {
-                #if DEBUG
-                print("[FETCH] skip retry (reason=cancellation)")
-                #endif
+                DLog("[FETCH] skip retry (reason=cancellation)")
                 throw error
             }
 
@@ -56,9 +54,7 @@ func fetchWithRetry<T>(
                     let base = 150 * Int(pow(2.0, Double(attempt)))
                     let jitter = Int.random(in: 0...150)
                     let delayMs = base + jitter
-                    #if DEBUG
-                    print("[FETCH] retry attempt \(attempt + 1)/\(maxRetries) after \(delayMs)ms")
-                    #endif
+                    DLog("[FETCH] retry attempt \(attempt + 1)/\(maxRetries) after \(delayMs)ms")
                     try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
                     attempt += 1
                     continue
@@ -135,11 +131,9 @@ struct RateLimiter {
 
 enum NetLog {
     static func profileOnce(_ message: String) {
-        #if DEBUG
         if RateLimiter.permit(key: "profile", interval: 2.0) {
-            print("[PROFILE] \(message)")
+            DLog("[PROFILE] \(message)")
         }
-        #endif
     }
 }
 

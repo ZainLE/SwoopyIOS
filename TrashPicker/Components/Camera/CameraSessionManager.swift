@@ -100,7 +100,7 @@ final class CameraSessionManager: NSObject, ObservableObject {
             // Skip if already configured
             guard self.deviceInput == nil else {
                 #if DEBUG
-                print("[CAM] Already configured, skipping")
+                DLog("[CAM] Already configured, skipping")
                 #endif
                 return
             }
@@ -113,7 +113,7 @@ final class CameraSessionManager: NSObject, ObservableObject {
             
             #if DEBUG
             let elapsed = (CFAbsoluteTimeGetCurrent() - self.configStartTime) * 1000
-            print("[CAM] configureMs=\(String(format: "%.1f", elapsed))")
+            DLog("[CAM] configureMs=\(String(format: "%.1f", elapsed))")
             #endif
         }
     }
@@ -136,7 +136,7 @@ final class CameraSessionManager: NSObject, ObservableObject {
                 
                 #if DEBUG
                 let elapsed = (CFAbsoluteTimeGetCurrent() - startTime) * 1000
-                print("[CAM] firstFrameMs=\(String(format: "%.1f", elapsed))")
+                DLog("[CAM] firstFrameMs=\(String(format: "%.1f", elapsed))")
                 #endif
             }
         }
@@ -318,7 +318,7 @@ extension CameraSessionManager: AVCapturePhotoCaptureDelegate {
         #if DEBUG
         Task { @MainActor in
             let elapsed = (CFAbsoluteTimeGetCurrent() - self.captureStartTime) * 1000
-            print("[CAM] captureMs=\(String(format: "%.1f", elapsed))")
+            DLog("[CAM] captureMs=\(String(format: "%.1f", elapsed))")
         }
         #endif
         

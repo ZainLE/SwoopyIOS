@@ -27,6 +27,7 @@ class MockApiService: ApiService {
             expiresAt: "2024-01-20T10:00:00Z",
             exactLocation: Location(lng: "2.1686", lat: "41.3874"),
             approxLocation: nil,
+            addressLine: "Carrer de Mallorca 401",
             images: [
                 PostImage(url: URL(string: "https://via.placeholder.com/400")!, orderIndex: 0)
             ],
@@ -55,6 +56,7 @@ class MockApiService: ApiService {
             expiresAt: "2024-01-21T10:00:00Z",
             exactLocation: nil,
             approxLocation: Location(lng: "2.1700", lat: "41.3900"),
+            addressLine: "Carrer de Marina 45",
             images: [
                 PostImage(url: URL(string: "https://via.placeholder.com/400")!, orderIndex: 0)
             ],
@@ -97,6 +99,7 @@ class MockApiService: ApiService {
                 expiresAt: "2024-01-20T10:00:00Z",
                 exactLocation: Location(lng: "2.1686", lat: "41.3874"),
                 approxLocation: nil,
+                addressLine: "Passeig de Sant Joan 52",
                 images: [
                     PostImage(url: URL(string: "https://via.placeholder.com/400")!, orderIndex: 0)
                 ],

@@ -10,6 +10,12 @@ struct TrashPickerApp: App {
         // Install runtime debug guards (e.g., ban system image picker usage in DEBUG)
         #if DEBUG
         _CameraGuard.install()
+        UserDefaults.standard.register(
+            defaults: [
+                "debug.distanceHUD": false,
+                "debug.devHUD": false
+            ]
+        )
         #endif
         AppBoot.markLaunch()
         UINavigationBar.appearance().titleTextAttributes = [.foregroundColor: UIColor.label]
@@ -51,44 +57,16 @@ private struct RootGateView: View {
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var api: ApiService
     @StateObject private var boot = BootCoordinator.shared
+    @StateObject private var appFlow = AppFlowCoordinator()
     @Environment(\.scenePhase) private var scenePhase
     
-    private enum BootPhase {
-        case splash
-        case app
-    }
-    
-    private static let introDuration: TimeInterval = 2.2
-    private static let showIntroOnColdLaunch = true
-    
-    @State private var bootPhase: BootPhase
     @State private var hasLoggedInteractive = false
     @State private var hasBootSequenceStarted = false
-    @State private var introTask: Task<Void, Never>?
-    @State private var introStartedAt: Date?
-    
-    init() {
-        _bootPhase = State(initialValue: Self.showIntroOnColdLaunch ? .splash : .app)
-    }
 
     var body: some View {
-        ZStack {
-            if bootPhase == .app {
-                appShell
-                    .transition(.opacity)
-                    .zIndex(0)
-            }
-            
-            if bootPhase == .splash {
-                splashShell
-                    .transition(.opacity)
-                    .zIndex(1)
-            }
-        }
-        .animation(.easeInOut(duration: 0.35), value: bootPhase)
+        appShell
         .onAppear {
             startBootSequenceIfNeeded()
-            startIntroIfNeeded()
             markFirstInteractiveIfNeeded()
         }
         .onChange(of: svc.phase) { _, newPhase in
@@ -101,25 +79,26 @@ private struct RootGateView: View {
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
-                startIntroIfNeeded()
+                startBootSequenceIfNeeded()
             }
         }
-        .onDisappear {
-            introTask?.cancel()
-            introTask = nil
-        }
-    }
-
-    private var shouldShowAuth: Bool {
-        svc.phase == .signedOut && svc.didCheckSession
     }
 
     @ViewBuilder
     private var content: some View {
-        if shouldShowAuth {
+        switch appFlow.phase {
+        case .launching:
+            loadingSplash
+        case .auth:
             AuthView()
-        } else {
-            OnboardingGate()
+        case .profileCapture:
+            OnboardingFlow()
+        case .introShowcase:
+            OnboardingFlowView()
+        case .loading:
+            loadingSplash
+        case .main:
+            RootView()
         }
     }
     
@@ -133,9 +112,7 @@ private struct RootGateView: View {
         guard hasBootSequenceStarted == false else { return }
         hasBootSequenceStarted = true
         
-        #if DEBUG
-        print("[BOOT] onAppear executing (first launch)")
-        #endif
+        DLog("[BOOT] onAppear executing (first launch)")
         
         BootCoordinator.shared.markFirstFrame()
         BootCoordinator.shared.start(svc: svc, api: api)
@@ -144,42 +121,7 @@ private struct RootGateView: View {
         }
     }
     
-    private func startIntroIfNeeded() {
-        guard Self.showIntroOnColdLaunch else {
-            bootPhase = .app
-            return
-        }
-        guard bootPhase == .splash else { return }
-        guard introTask == nil else { return }
-        
-        let start = Date()
-        introStartedAt = start
-        print("[ANIM] intro_start")
-        
-        introTask = Task {
-            let delay = UInt64(Self.introDuration * 1_000_000_000)
-            try? await Task.sleep(nanoseconds: delay)
-            await MainActor.run {
-                completeIntroIfNeeded()
-            }
-        }
-    }
-    
-    @MainActor
-    private func completeIntroIfNeeded() {
-        guard bootPhase == .splash else { return }
-        introTask?.cancel()
-        introTask = nil
-        let elapsedMs = Int(Date().timeIntervalSince(introStartedAt ?? Date()) * 1000)
-        print("[ANIM] intro_end t=\(elapsedMs)ms")
-        Haptics.play(.tabReselect)
-        withAnimation(.easeInOut(duration: 0.45)) {
-            bootPhase = .app
-        }
-    }
-    
-    // TrashPickerApp.swift (snippet)
-    private var splashShell: some View {
+    private var loadingSplash: some View {
         SplashView(
             logo: "SwoopyLogo",
             images: [
@@ -194,12 +136,13 @@ private struct RootGateView: View {
             ]
         )
         
-        .accessibilityHidden(true)          // ← enough to keep VO quiet
+        .accessibilityHidden(true)
         .background(Color(.systemBackground).ignoresSafeArea())
     }
     
     private var appShell: some View {
         content
+            .environmentObject(appFlow)
             .overlay(alignment: .top) {
                 if let msg = boot.bannerMessage {
                     Text(msg)
@@ -210,8 +153,44 @@ private struct RootGateView: View {
                         .padding(.top, 12)
                 }
             }
+#if DEBUG
+            .overlay(alignment: .bottomTrailing) {
+                if UserDefaults.standard.bool(forKey: "debug.devHUD") {
+                    DeveloperHUD()
+                        .padding(16)
+                }
+            }
+#endif
     }
 }
+
+private struct LoadingStageView: View {
+    var message: String?
+
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .scaleEffect(1.1)
+            if let message {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground).ignoresSafeArea())
+#if DEBUG
+        .onTapGesture(count: 3) {
+            let key = "debug.devHUD"
+            let current = UserDefaults.standard.bool(forKey: key)
+            UserDefaults.standard.set(!current, forKey: key)
+            DLog("[DEV HUD] toggle -> \(!current)")
+        }
+#endif
+    }
+}
+
 final class AppDelegate: NSObject, UIApplicationDelegate {
     private let userDefaults = UserDefaults.standard
     private let permissionPromptKey = "OneSignal.didPromptForPush"
@@ -250,13 +229,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 self.userDefaults.set(true, forKey: self.permissionPromptKey)
                 DispatchQueue.main.async {
                     OneSignal.Notifications.requestPermission({ accepted in
-                        print("[OneSignal] User accepted notifications: \(accepted)")
+                        DLog("[OneSignal] User accepted notifications: \(accepted)")
                         if accepted {
                             UIApplication.shared.registerForRemoteNotifications()
                         }
                     }, fallbackToSettings: false)
                 }
-                
             default:
                 self.logPushSubscriptionState(context: "permission-status-\(settings.authorizationStatus.rawValue)")
             }
@@ -273,7 +251,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let buildEnvironment = "Release"
         #endif
         
-        print("""
+        DLog("""
 [OneSignal] Initializing
   AppID: \(appId)
   BundleID: \(bundleId)
@@ -287,7 +265,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let playerId = subscription.id ?? "nil"
         let token = subscription.token ?? "nil"
         let optedIn = subscription.optedIn
-        print("[OneSignal] \(context) playerId=\(playerId) token=\(token) optedIn=\(optedIn)")
+        DLog("[OneSignal] \(context) playerId=\(playerId) token=\(token) optedIn=\(optedIn)")
     }
 }
 

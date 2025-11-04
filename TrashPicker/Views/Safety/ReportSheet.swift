@@ -140,10 +140,10 @@ struct ReportSheet: View {
         do {
             if targetPostId != nil {
                 try await api.reportPost(payload)
-                print("[SAFETY] report_submit_ok post=\(targetPostId ?? "nil") cat=\(category.rawValue)")
+                DLog("[SAFETY] report_submit_ok post=\(targetPostId ?? "nil") cat=\(category.rawValue)")
             } else {
                 try await api.reportUser(payload)
-                print("[SAFETY] report_submit_ok user=\(targetUserId ?? "nil") cat=\(category.rawValue)")
+                DLog("[SAFETY] report_submit_ok user=\(targetUserId ?? "nil") cat=\(category.rawValue)")
             }
             
             isSubmitting = false
@@ -153,10 +153,9 @@ struct ReportSheet: View {
             
         } catch {
             isSubmitting = false
-            errorText = error.localizedDescription
+            errorText = "We couldn't send this report. Please try again."
             Haptics.play(.error)
-            print("[SAFETY] report_submit_err \(error)")
+            DLog("[SAFETY] report_submit_err \(error.localizedDescription)")
         }
     }
 }
-

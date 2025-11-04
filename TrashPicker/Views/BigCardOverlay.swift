@@ -68,7 +68,7 @@ struct BigCardOverlay: View {
         case feed
         
         enum ReservationButtonSet {
-            case streetActive // Directions, Cancel
+            case streetActive // Pick up, Cancel, Directions
             case homePending  // Contact (disabled), Cancel
             case homeActive   // Contact, Cancel
             case completed    // No actions, success message
@@ -508,32 +508,29 @@ extension BigCardOverlay {
     private func reservationButtons(_ buttonSet: Variant.ReservationButtonSet) -> some View {
         switch buttonSet {
         case .streetActive:
-            HStack(spacing: 12) {
-                if let tertiaryAction = onTertiaryAction {
-                    Button(action: tertiaryAction) {
-                        Text("Directions")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(primaryColor)
-                            .frame(height: 52)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .background(accentColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 26))
-                }
+            HStack(spacing: 8) {
+                Button("Pick up", action: onPrimaryAction)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.9)
+                    .layoutPriority(1)
+                    .buttonStyle(SwoopyPrimaryButtonStyle())
                 
-                Button(action: onSecondaryAction) {
-                    Text("Cancel")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(primaryColor)
-                        .frame(height: 52)
-                        .frame(maxWidth: .infinity)
-                }
-                .background(Color.clear)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 26)
-                        .stroke(primaryColor, lineWidth: 2)
-                )
+                Button("Cancel", action: onSecondaryAction)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.9)
+                    .layoutPriority(1)
+                    .buttonStyle(SwoopyOutlineButtonStyle())
+                
+                Button("Directions", action: onTertiaryAction ?? {})
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.9)
+                    .layoutPriority(1)
+                    .buttonStyle(SwoopyPillSecondaryStyle())
+                    .disabled(onTertiaryAction == nil)
+                    .opacity(onTertiaryAction == nil ? 0.6 : 1.0)
             }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4)
             
         case .homePending:
             HStack(spacing: 12) {
@@ -658,9 +655,7 @@ extension BigCardOverlay {
             do {
                 try await api.reportPost(payload)
             } catch {
-                #if DEBUG
-                print("[REPORT] post_report_error=\(error.localizedDescription)")
-                #endif
+                DLog("[REPORT] post_report_error=\(error.localizedDescription)")
             }
         }
     }

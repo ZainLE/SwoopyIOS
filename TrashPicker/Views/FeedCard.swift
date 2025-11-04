@@ -184,11 +184,16 @@ struct FeedCard: View {
     private var conditionDisplayText: String {
         let condition = itemCondition
         switch condition?.lowercased() {
-        case "bad", "needs fixing", "needs_fixing": return "Needs Fixing"
-        case "usable": return "Usable"
-        case "good": return "Good"
-        case "excellent", "like new", "like_new": return "Like New"
-        default: return condition?.capitalized ?? "Unknown"
+        case "bad", "needs fixing", "needs_fixing":
+            return "Needs fixing"
+        case "good":
+            return "Good"
+        case "excellent":
+            return "Excellent"
+        case "like new", "like_new":
+            return "Like New"
+        default:
+            return condition?.capitalized ?? "Unknown"
         }
     }
 
@@ -318,7 +323,7 @@ struct FeedCard: View {
         let serverString = entry.serverDistanceKm.map { String(format: "%.3f", $0) } ?? "nil"
         let localString = entry.localDistanceKm.map { String(format: "%.3f", $0) } ?? "nil"
         let source = entry.serverDistanceKm != nil ? "server" : "local"
-        print("[DISTANCE UI] debugId=\(context.debugId) postId=\(post.id) coord=\(coordString) server=\(serverString)km ui=\(localString)km source=\(source)")
+        DLog("[DISTANCE UI] debugId=\(context.debugId) postId=\(post.id) coord=\(coordString) server=\(serverString)km ui=\(localString)km source=\(source)")
     }
 #endif
 

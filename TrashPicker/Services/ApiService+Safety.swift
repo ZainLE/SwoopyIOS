@@ -16,7 +16,7 @@ extension ApiService {
         // Demo mode: mock success for App Review
         if SafetyDemoMode.isEnabled {
             #if DEBUG
-            print("[SAFETY] reportPost demo_mode post=\(payload.postId ?? "nil") cat=\(payload.category.rawValue)")
+            DLog("[SAFETY] reportPost demo_mode post=\(payload.postId ?? "nil") cat=\(payload.category.rawValue)")
             #endif
             try? await Task.sleep(nanoseconds: 500_000_000) // Simulate network delay
             return
@@ -27,7 +27,7 @@ extension ApiService {
         // let _: EmptyResponse = try await requestJSON("/posts/\(postId)/report", method: .POST, body: payload)
         
         #if DEBUG
-        print("[SAFETY] reportPost stub post=\(payload.postId ?? "nil") cat=\(payload.category.rawValue)")
+        DLog("[SAFETY] reportPost stub post=\(payload.postId ?? "nil") cat=\(payload.category.rawValue)")
         #endif
         
         // For now, simulate success
@@ -42,7 +42,7 @@ extension ApiService {
         // Demo mode: mock success for App Review
         if SafetyDemoMode.isEnabled {
             #if DEBUG
-            print("[SAFETY] reportUser demo_mode user=\(payload.reportedUserId ?? "nil") cat=\(payload.category.rawValue)")
+            DLog("[SAFETY] reportUser demo_mode user=\(payload.reportedUserId ?? "nil") cat=\(payload.category.rawValue)")
             #endif
             try? await Task.sleep(nanoseconds: 500_000_000)
             return
@@ -53,7 +53,7 @@ extension ApiService {
         // let _: EmptyResponse = try await requestJSON("/users/\(userId)/report", method: .POST, body: payload)
         
         #if DEBUG
-        print("[SAFETY] reportUser stub user=\(payload.reportedUserId ?? "nil") cat=\(payload.category.rawValue)")
+        DLog("[SAFETY] reportUser stub user=\(payload.reportedUserId ?? "nil") cat=\(payload.category.rawValue)")
         #endif
         
         // For now, simulate success
@@ -68,7 +68,7 @@ extension ApiService {
         // Demo mode: mock success for App Review
         if SafetyDemoMode.isEnabled {
             #if DEBUG
-            print("[SAFETY] blockUser demo_mode user=\(payload.userId)")
+            DLog("[SAFETY] blockUser demo_mode user=\(payload.userId)")
             #endif
             try? await Task.sleep(nanoseconds: 500_000_000)
             return
@@ -79,7 +79,7 @@ extension ApiService {
         // let _: EmptyResponse = try await requestJSON("/users/\(userId)/block", method: .POST, body: payload)
         
         #if DEBUG
-        print("[SAFETY] blockUser stub user=\(payload.userId)")
+        DLog("[SAFETY] blockUser stub user=\(payload.userId)")
         #endif
         
         // For now, simulate success
@@ -94,7 +94,7 @@ extension ApiService {
         // Demo mode: mock success
         if SafetyDemoMode.isEnabled {
             #if DEBUG
-            print("[SAFETY] unblockUser demo_mode user=\(userId)")
+            DLog("[SAFETY] unblockUser demo_mode user=\(userId)")
             #endif
             try? await Task.sleep(nanoseconds: 500_000_000)
             return
@@ -103,7 +103,7 @@ extension ApiService {
         // TODO: Wire to backend endpoint DELETE /users/{id}/block
         
         #if DEBUG
-        print("[SAFETY] unblockUser stub user=\(userId)")
+        DLog("[SAFETY] unblockUser stub user=\(userId)")
         #endif
         
         try? await Task.sleep(nanoseconds: 500_000_000)

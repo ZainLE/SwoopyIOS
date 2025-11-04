@@ -66,7 +66,7 @@ final class CHaptic {
             try engine?.start()
         } catch {
             #if DEBUG
-            print("[Haptics] Failed to start Core Haptics engine: \(error.localizedDescription)")
+            DLog("[Haptics] Failed to start Core Haptics engine: \(error.localizedDescription)")
             #endif
         }
     }
@@ -96,7 +96,7 @@ final class CHaptic {
             try player.start(atTime: 0)
         } catch {
             #if DEBUG
-            print("[Haptics] Failed to play primary action: \(error.localizedDescription)")
+            DLog("[Haptics] Failed to play primary action: \(error.localizedDescription)")
             #endif
             // Fallback
             Haptics.play(.primaryAction)
@@ -127,7 +127,7 @@ final class CHaptic {
             try player.start(atTime: 0)
         } catch {
             #if DEBUG
-            print("[Haptics] Failed to play secondary action: \(error.localizedDescription)")
+            DLog("[Haptics] Failed to play secondary action: \(error.localizedDescription)")
             #endif
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         }
@@ -157,7 +157,7 @@ final class CHaptic {
             try player.start(atTime: 0)
         } catch {
             #if DEBUG
-            print("[Haptics] Failed to play gentle tick: \(error.localizedDescription)")
+            DLog("[Haptics] Failed to play gentle tick: \(error.localizedDescription)")
             #endif
             UISelectionFeedbackGenerator().selectionChanged()
         }

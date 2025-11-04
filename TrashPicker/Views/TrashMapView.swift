@@ -42,9 +42,9 @@ final class MapVM: ObservableObject {
             targetCenter = LocationService.shared.lastKnownCoordinate
             #if DEBUG
             if let cached = targetCenter {
-                print("[FEED gate] map using cached coord=(\(cached.latitude),\(cached.longitude))")
+                DLog("[FEED gate] map using cached coord=(\(cached.latitude),\(cached.longitude))")
             } else {
-                print("[FEED gate] map using fallback coord=(\(fallback.latitude),\(fallback.longitude))")
+                DLog("[FEED gate] map using fallback coord=(\(fallback.latitude),\(fallback.longitude))")
             }
             #endif
         }
@@ -54,7 +54,7 @@ final class MapVM: ObservableObject {
         // Skip request if still invalid (e.g., fallback is 0,0)
         guard LocationReadiness.isUsable(finalCenter) else {
             #if DEBUG
-            print("[FEED gate] map skip (reason=no-usable-location)")
+            DLog("[FEED gate] map skip (reason=no-usable-location)")
             #endif
             return
         }

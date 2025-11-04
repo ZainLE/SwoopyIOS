@@ -242,7 +242,8 @@ extension NotificationsView {
             }
         }
 
-        return error.localizedDescription
+        DLog("[NOTIFS] resolveError fallback: \(error.localizedDescription)")
+        return fallback
     }
 
     private func friendlyMessage(statusCode: Int?, backendMessage: String?, fallback: String) -> String {
@@ -251,7 +252,7 @@ extension NotificationsView {
             if lower.contains("phone_required_for_home_mode") {
                 return "Add a phone number to approve home pickups."
             }
-            return backendMessage
+            DLog("[NOTIFS] backend message surfaced: \(backendMessage)")
         }
 
         if let statusCode {
@@ -334,18 +335,18 @@ final class NotificationsViewModel: ObservableObject {
     func fetch() async {
         guard let api else { return }
         #if DEBUG
-        print("[NOTIFS] fetch start")
+        DLog("[NOTIFS] fetch start")
         #endif
         state = .loading
         do {
             let items = try await fetchNotifications(api: api)
             #if DEBUG
-            print("[NOTIFS] fetch end incoming=\(items.incoming.count) general=\(items.general.count)")
+            DLog("[NOTIFS] fetch end incoming=\(items.incoming.count) general=\(items.general.count)")
             #endif
             self.state = .content(items)
         } catch {
             #if DEBUG
-            print("[NOTIFS] fetch error=\(error.localizedDescription)")
+            DLog("[NOTIFS] fetch error=\(error.localizedDescription)")
             #endif
             let message = resolveError(error, fallback: "Couldn't load requests.")
             self.state = .error(message)
@@ -364,7 +365,7 @@ final class NotificationsViewModel: ObservableObject {
 
     func approve(reservationId: String, shareContact: Bool) async -> ActionResult {
         #if DEBUG
-        print("[NOTIFS] approve start id=\(reservationId) share_contact=\(shareContact)")
+        DLog("[NOTIFS] approve start id=\(reservationId) share_contact=\(shareContact)")
         #endif
         guard let api else { return .failure("No API") }
 
@@ -378,7 +379,7 @@ final class NotificationsViewModel: ObservableObject {
             )
 
             #if DEBUG
-            print("[NOTIFS] approve endpoint=/reservations/\(reservationId)/approve status=\(result.statusCode) message=\(result.message ?? "<none>")")
+            DLog("[NOTIFS] approve endpoint=/reservations/\(reservationId)/approve status=\(result.statusCode) message=\(result.message ?? "<none>")")
             #endif
 
             switch result.statusCode {
@@ -401,7 +402,7 @@ final class NotificationsViewModel: ObservableObject {
             }
         } catch let e as ApiServiceError {
             #if DEBUG
-            print("[NOTIFS] approve error id=\(reservationId) err=\(e.localizedDescription)")
+            DLog("[NOTIFS] approve error id=\(reservationId) err=\(e.localizedDescription)")
             #endif
             switch e {
             case .unauthorized:
@@ -417,16 +418,17 @@ final class NotificationsViewModel: ObservableObject {
                 if lower.contains("phone_required_for_home_mode") {
                     return .failure("Add a phone number in your profile to approve home pickups.")
                 }
-                let message = mapFriendlyMessage(statusCode: nil, backendMessage: msg, fallback: msg)
+                let message = mapFriendlyMessage(statusCode: nil, backendMessage: msg, fallback: "Couldn't approve the request.")
                 return .failure(message)
             case .networkError:
                 return .network
             default:
-                return .failure(e.localizedDescription)
+                DLog("[NOTIFS] approve ApiServiceError default: \(e.localizedDescription)")
+                return .failure("Couldn't approve the request.")
             }
         } catch let httpError as ApiHTTPError {
             #if DEBUG
-            print("[NOTIFS] approve http-error endpoint=/reservations/\(reservationId)/approve status=\(httpError.statusCode) message=\(httpError.message ?? "<none>")")
+            DLog("[NOTIFS] approve http-error endpoint=/reservations/\(reservationId)/approve status=\(httpError.statusCode) message=\(httpError.message ?? "<none>")")
             #endif
             switch httpError.statusCode {
             case 403:
@@ -441,15 +443,16 @@ final class NotificationsViewModel: ObservableObject {
             }
         } catch {
             #if DEBUG
-            print("[NOTIFS] approve error id=\(reservationId) err=\(error.localizedDescription)")
+            DLog("[NOTIFS] approve error id=\(reservationId) err=\(error.localizedDescription)")
             #endif
-            return .failure(error.localizedDescription)
+            DLog("[NOTIFS] approve unexpected error: \(error.localizedDescription)")
+            return .failure("Couldn't approve the request.")
         }
     }
 
     func skip(reservationId: String) async -> ActionResult {
         #if DEBUG
-        print("[NOTIFS] skip start id=\(reservationId)")
+        DLog("[NOTIFS] skip start id=\(reservationId)")
         #endif
         guard let api else { return .failure("No API") }
         do {
@@ -458,7 +461,7 @@ final class NotificationsViewModel: ObservableObject {
                 method: .POST
             )
             #if DEBUG
-            print("[NOTIFS] reject endpoint=/reservations/\(reservationId)/cancel status=\(result.statusCode) message=\(result.message ?? "<none>")")
+            DLog("[NOTIFS] reject endpoint=/reservations/\(reservationId)/cancel status=\(result.statusCode) message=\(result.message ?? "<none>")")
             #endif
 
             switch result.statusCode {
@@ -478,7 +481,7 @@ final class NotificationsViewModel: ObservableObject {
             }
         } catch let e as ApiServiceError {
             #if DEBUG
-            print("[NOTIFS] skip error id=\(reservationId) err=\(e.localizedDescription)")
+            DLog("[NOTIFS] skip error id=\(reservationId) err=\(e.localizedDescription)")
             #endif
             switch e {
             case .unauthorized:
@@ -491,14 +494,16 @@ final class NotificationsViewModel: ObservableObject {
                 if lower.contains("not found") {
                     return .notFound
                 }
-                let message = mapFriendlyMessage(statusCode: nil, backendMessage: msg, fallback: msg)
+                let message = mapFriendlyMessage(statusCode: nil, backendMessage: msg, fallback: "Couldn't cancel the request.")
                 return .failure(message)
             case .networkError: return .network
-            default: return .failure(e.localizedDescription)
+            default:
+                DLog("[NOTIFS] skip ApiServiceError default: \(e.localizedDescription)")
+                return .failure("Couldn't cancel the request.")
             }
         } catch let httpError as ApiHTTPError {
             #if DEBUG
-            print("[NOTIFS] skip http-error endpoint=/reservations/\(reservationId)/cancel status=\(httpError.statusCode) message=\(httpError.message ?? "<none>")")
+            DLog("[NOTIFS] skip http-error endpoint=/reservations/\(reservationId)/cancel status=\(httpError.statusCode) message=\(httpError.message ?? "<none>")")
             #endif
             switch httpError.statusCode {
             case 403:
@@ -510,9 +515,10 @@ final class NotificationsViewModel: ObservableObject {
             }
         } catch {
             #if DEBUG
-            print("[NOTIFS] skip error id=\(reservationId) err=\(error.localizedDescription)")
+            DLog("[NOTIFS] skip error id=\(reservationId) err=\(error.localizedDescription)")
             #endif
-            return .failure(error.localizedDescription)
+            DLog("[NOTIFS] skip unexpected error: \(error.localizedDescription)")
+            return .failure("Couldn't cancel the request.")
         }
     }
 
@@ -681,7 +687,8 @@ final class NotificationsViewModel: ObservableObject {
             }
         }
 
-        return error.localizedDescription
+        DLog("[NOTIFS] resolveError fallback: \(error.localizedDescription)")
+        return fallback
     }
 
     private func mapFriendlyMessage(statusCode: Int?, backendMessage: String?, fallback: String) -> String {
@@ -690,7 +697,7 @@ final class NotificationsViewModel: ObservableObject {
             if lower.contains("phone_required_for_home_mode") {
                 return "Add a phone number to approve home pickups."
             }
-            return backendMessage
+            DLog("[NOTIFS] backend message surfaced: \(backendMessage)")
         }
 
         if let statusCode {
@@ -758,7 +765,7 @@ struct NotificationsView: View {
         }
         .onAppear {
 #if DEBUG
-            print("[NAV] Profile → Notifications")
+            DLog("[NAV] Profile → Notifications")
 #endif
         }
         .onChange(of: svc.userId) { _, newValue in

@@ -58,7 +58,7 @@ final class ProfileVM: ObservableObject {
         // Single-flight: if already running, don't start another
         guard profileTask == nil else {
             #if DEBUG
-            print("[PROFILE] startProfileRefresh skipped (already running)")
+            DLog("[PROFILE] startProfileRefresh skipped (already running)")
             #endif
             return
         }
@@ -67,7 +67,7 @@ final class ProfileVM: ObservableObject {
         if !force, let lastFetch = lastFetchTime, Date().timeIntervalSince(lastFetch) < fetchCooldown {
             #if DEBUG
             let elapsed = Date().timeIntervalSince(lastFetch)
-            print("[PROFILE] startProfileRefresh skipped (cooldown elapsed=\(String(format: "%.1f", elapsed))s)")
+            DLog("[PROFILE] startProfileRefresh skipped (cooldown elapsed=\(String(format: "%.1f", elapsed))s)")
             #endif
             return
         }
@@ -90,7 +90,7 @@ final class ProfileVM: ObservableObject {
         
         #if DEBUG
         let fetchStart = Date()
-        print("[PROFILE] fetchOnce starting")
+        DLog("[PROFILE] fetchOnce starting")
         #endif
         
         // Run network call in background Task.detached
@@ -120,7 +120,7 @@ final class ProfileVM: ObservableObject {
             
             #if DEBUG
             let elapsed = Date().timeIntervalSince(fetchStart)
-            print("[PROFILE] fetchOnce complete elapsed=\(String(format: "%.0f", elapsed * 1000))ms")
+            DLog("[PROFILE] fetchOnce complete elapsed=\(String(format: "%.0f", elapsed * 1000))ms")
             #endif
         } else {
             await MainActor.run {

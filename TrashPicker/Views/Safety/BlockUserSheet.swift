@@ -138,14 +138,14 @@ struct BlockUserSheet: View {
             isSubmitting = false
             ToastCenter.shared.show(SafetyStrings.blocked)
             Haptics.play(.success)
-            print("[SAFETY] block_ok user=\(userId)")
+            DLog("[SAFETY] block_ok user=\(userId)")
             dismiss()
             
         } catch {
             isSubmitting = false
-            errorText = error.localizedDescription
+            errorText = "We couldn't block this user. Please try again."
             Haptics.play(.error)
-            print("[SAFETY] block_err \(error)")
+            DLog("[SAFETY] block_err \(error.localizedDescription)")
         }
     }
 }

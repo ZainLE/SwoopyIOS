@@ -3,7 +3,6 @@ import UIKit
 
 @MainActor
 final class OnboardingViewModel: ObservableObject {
-    @AppStorage("onboardingComplete") private var onboardingComplete = false
     @AppStorage("onboardingFullName") private var storedFullName = ""
     @AppStorage("onboardingPhone") private var storedPhone = ""
     
@@ -56,8 +55,9 @@ final class OnboardingViewModel: ObservableObject {
         isShowingPhotoLibrary = false
     }
     
-    func completeOnboarding() async {
-        guard canContinue else { return }
+    @discardableResult
+    func completeOnboarding() async -> Bool {
+        guard canContinue else { return false }
         isSaving = true
         errorMessage = nil
         
@@ -78,9 +78,10 @@ final class OnboardingViewModel: ObservableObject {
             
             storedFullName = name
             storedPhone = phoneValue
-            onboardingComplete = true
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 }

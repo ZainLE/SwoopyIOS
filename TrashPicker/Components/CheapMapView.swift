@@ -181,7 +181,7 @@ struct CheapMapView: UIViewRepresentable {
                 assert(Thread.isMainThread)
                 parent.onAnnotationTapped(annotation.model.id)
                 #if DEBUG
-                print("[CALLOUT] anchor screenPoint=(\(String(format: "%.1f", anchor.x)),\(String(format: "%.1f", anchor.y))) id=\(annotation.model.rawId)")
+                DLog("[CALLOUT] anchor screenPoint=(\(String(format: "%.1f", anchor.x)),\(String(format: "%.1f", anchor.y))) id=\(annotation.model.rawId)")
                 #endif
             }
         }
@@ -229,7 +229,7 @@ struct CheapMapView: UIViewRepresentable {
                         let point = mapView.convert(selected.coordinate, toPointTo: mapView)
                         parent.calloutAnchor.wrappedValue = point
                         #if DEBUG
-                        print("[CALLOUT] anchor screenPoint=(\(String(format: "%.1f", point.x)),\(String(format: "%.1f", point.y))) id=\(selected.model.rawId)")
+                        DLog("[CALLOUT] anchor screenPoint=(\(String(format: "%.1f", point.x)),\(String(format: "%.1f", point.y))) id=\(selected.model.rawId)")
                         #endif
                     } else {
                         parent.calloutAnchor.wrappedValue = nil

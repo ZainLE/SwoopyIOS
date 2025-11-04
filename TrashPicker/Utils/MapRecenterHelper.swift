@@ -202,7 +202,7 @@ final class MapRecenterHelper: ObservableObject {
             let status = success ? "done" : "fail"
             let distStr = distance.map { String(format: "%.0fm", $0) } ?? "n/a"
             let reasonStr = reason.map { " reason=\($0)" } ?? ""
-            print("[MAP recenter] \(status) elapsed=\(String(format: "%.0fms", elapsed)) distance=\(distStr)\(reasonStr)")
+            DLog("[MAP recenter] \(status) elapsed=\(String(format: "%.0fms", elapsed)) distance=\(distStr)\(reasonStr)")
         }
         #endif
     }

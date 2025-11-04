@@ -28,9 +28,9 @@ struct AddTrashView: View {
     @State private var showLibrary = false
 
     enum ItemCondition: String, CaseIterable, Codable {
-        case needsFixing = "Needs Fixing"
-        case usable = "Usable"
+        case needsFixing = "Needs fixing"
         case good = "Good"
+        case excellent = "Excellent"
         case likeNew = "Like New"
     }
     @State private var condition: ItemCondition = .good            // required
@@ -378,7 +378,8 @@ struct AddTrashView: View {
                 dismiss() // Dismiss to feed
             }
         } catch {
-            self.error = error.localizedDescription
+            DLog("[UPLOAD] add trash save failed: \(error.localizedDescription)")
+            self.error = "We couldn't post your item. Please try again."
             UINotificationFeedbackGenerator().notificationOccurred(.error)
         }
     }
@@ -683,4 +684,3 @@ private extension Shape {
             .stroke(style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [6, 6]))
     }
 }
-

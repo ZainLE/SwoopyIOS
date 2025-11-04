@@ -197,6 +197,7 @@ private struct MapCalloutsPreview: View {
             expiresAt: Date().addingTimeInterval(3600),
             exactLocation: Location(lng: "2.17", lat: "41.388"),
             approxLocation: nil,
+            addressLine: "Carrer de Rosa Sensat 9-11",
             images: images,
             distance: 0.25,
             owner: profile,

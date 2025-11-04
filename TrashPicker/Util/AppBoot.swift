@@ -9,7 +9,7 @@ enum AppBoot {
         if launchAt == nil {
             launchAt = Date()
             #if DEBUG
-            print("[BOOT] launch marked")
+            DLog("[BOOT] launch marked")
             #endif
         }
     }
@@ -20,11 +20,11 @@ enum AppBoot {
         if let start = launchAt {
             let ms = Int(firstInteractiveAt!.timeIntervalSince(start) * 1000)
             #if DEBUG
-            print("[METRIC] timeToInteractiveMs=\(ms)")
+            DLog("[METRIC] timeToInteractiveMs=\(ms)")
             #endif
         } else {
             #if DEBUG
-            print("[BOOT] firstInteractive (launchAt missing)")
+            DLog("[BOOT] firstInteractive (launchAt missing)")
             #endif
         }
     }
@@ -34,16 +34,16 @@ enum AppBoot {
         if let firstInteractiveAt {
             let ms = Int(now.timeIntervalSince(firstInteractiveAt) * 1000)
             #if DEBUG
-            print("[METRIC] shellToSignedInMs=\(ms)")
+            DLog("[METRIC] shellToSignedInMs=\(ms)")
             #endif
         } else if let launchAt {
             let ms = Int(now.timeIntervalSince(launchAt) * 1000)
             #if DEBUG
-            print("[METRIC] shellToSignedInMs=\(ms) (from launch)")
+            DLog("[METRIC] shellToSignedInMs=\(ms) (from launch)")
             #endif
         } else {
             #if DEBUG
-            print("[BOOT] shellToSignedIn (no reference timestamps)")
+            DLog("[BOOT] shellToSignedIn (no reference timestamps)")
             #endif
         }
     }

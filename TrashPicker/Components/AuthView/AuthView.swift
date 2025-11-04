@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import AuthenticationServices
 
 private enum AuthMode { case signIn, signUp }
 private enum LoadingKind { case email, apple, google }
@@ -23,6 +24,7 @@ struct AuthView: View {
     @State private var loading: LoadingKind? = nil
     @State private var errorMessage: String?
     @State private var canSubmit = false
+    @State private var appleCoordinator: AppleSignInCoordinator?
     @FocusState private var focus: Field?
     @State private var hasAgreedToTerms = false
     @State private var pulseTermsWarning = false
@@ -442,18 +444,28 @@ struct AuthView: View {
     
     private func signInWithApple() {
         guard loading == nil else { return }
-        errorMessage = nil; loading = .apple
-        Task { @MainActor in
-            defer { loading = nil }
-            do {
-                let window = UIApplication.shared.connectedScenes
-                    .compactMap { $0 as? UIWindowScene }
-                    .first?.keyWindow
-                try await svc.signInWithApple(on: window)
-            } catch {
-                errorMessage = error.localizedDescription
+        errorMessage = nil
+        loading = .apple
+
+        let coordinator = AppleSignInCoordinator(
+            supabase: svc.client,
+            onSuccess: { session in
+                svc.setSession(session)
+                loading = nil
+                appleCoordinator = nil
+            },
+            onError: { error in
+                if let authError = error as? ASAuthorizationError, authError.code == .canceled {
+                    DLog("⚪️ Apple Sign-In cancelled by user")
+                } else {
+                    errorMessage = error.localizedDescription
+                }
+                loading = nil
+                appleCoordinator = nil
             }
-        }
+        )
+        appleCoordinator = coordinator
+        coordinator.start()
     }
     
     private func signInWithGoogle() {

@@ -13,7 +13,7 @@ private func dbg(_ tag: String, _ items: Any...) {
 #if DEBUG
     guard VERBOSE_LOGS else { return }
     let message = items.map { "\($0)" }.joined(separator: " ")
-    print("[\(tag)] \(message)")
+    DLog("[\(tag)] \(message)")
 #endif
 }
 
@@ -291,6 +291,7 @@ struct Post: Codable, Identifiable {
     let expiresAt: Date?
     let exactLocation: Location?
     let approxLocation: Location?
+    let addressLine: String?
     let images: [PostImage]
     let distance: Double?
     let owner: Profile?
@@ -304,6 +305,7 @@ struct Post: Codable, Identifiable {
         case expiresAt = "expires_at"
         case exactLocation = "exact_location"
         case approxLocation = "approx_location"
+        case addressLine = "address_line"
         case userReservation = "user_reservation"
     }
 }
@@ -373,32 +375,46 @@ extension Profile {
 }
 
 // Full reservation with post included
-    struct Reservation: Codable, Identifiable {
-        let id: String
-        let itemId: String
-        let reserver: String
-        let status: String
-        let requestedAt: String
-        let approvedAt: String?
-        let startAt: String?
-        let endAt: String?
-        let pickedAt: String?
-        let canceledAt: String?
-        let post: Post  // This is safe because Post doesn't contain a full Reservation
-        
-        enum CodingKeys: String, CodingKey {
-            case id
-            case itemId = "item_id"
-            case reserver, status
-            case requestedAt = "requested_at"
-            case approvedAt = "approved_at"
-            case startAt = "start_at"
-            case endAt = "end_at"
-            case pickedAt = "picked_up_at"
-            case canceledAt = "canceled_at"
-            case post = "post"
-        }
+struct Reservation: Codable, Identifiable {
+    enum Status: String, Codable {
+        case pending
+        case active
+        case canceled
+        case picked
+        case expired
     }
+
+    let id: String
+    let itemId: String
+    let reserver: String
+    let status: Status
+    let requestedAt: String
+    let approvedAt: String?
+    let startAt: String?
+    let endAt: String?
+    let pickedAt: String?
+    let canceledAt: String?
+    let contactPhone: String?
+    let post: Post  // This is safe because Post doesn't contain a full Reservation
+
+    var isHome: Bool { post.mode == .home }
+    var canContact: Bool { status == .active && contactPhone?.isEmpty == false }
+    
+    enum CodingKeys: String, CodingKey {
+        case id
+        case itemId = "item_id"
+        case reserver
+        case status
+        case requestedAt = "requested_at"
+        case approvedAt = "approved_at"
+        case startAt = "start_at"
+        case endAt = "end_at"
+        case pickedAt = "picked_up_at"
+        case canceledAt = "canceled_at"
+        case contactPhone = "contact_phone"
+        case post = "post"
+    }
+}
 
 struct ApiResponse<T: Codable>: Codable {
     let data: T?
@@ -535,12 +551,27 @@ enum ItemCondition: String, Codable, CaseIterable {
     case bad = "bad"
     case good = "good"
     case excellent = "excellent"
+    case likeNew = "like_new"
     
     var displayText: String {
         switch self {
-        case .bad: return "Needs Fixing"
-        case .good: return "Good"
+        case .bad:       return "Needs fixing"
+        case .good:      return "Good"
         case .excellent: return "Excellent"
+        case .likeNew:   return "Like New"
+        }
+    }
+    
+    var dotColor: Color {
+        switch self {
+        case .excellent:
+            return Color("SwoopyGreen")
+        case .likeNew:
+            return Color("SwoopyLime")
+        case .good:
+            return Color("SwoopyOlive")
+        case .bad:
+            return Color("SwoopyOrange")
         }
     }
 }
@@ -660,7 +691,7 @@ class ApiService: ObservableObject {
         }
         
         #if DEBUG
-        print("[API] base=\(SupabaseConfig.apiBaseURL)")
+        DLog("[API] base=\(SupabaseConfig.apiBaseURL)")
         #endif
         
         // Read main-actor state on the main actor
@@ -726,7 +757,7 @@ class ApiService: ObservableObject {
             // This handler is for logging purposes
             #if DEBUG
             if let url = request.url?.path {
-                print("[NET] cancel underlying request path=\(url)")
+                DLog("[NET] cancel underlying request path=\(url)")
             }
             #endif
         }
@@ -814,9 +845,9 @@ class ApiService: ObservableObject {
                     return try decoder.decode(T.self, from: data)
                 } catch {
                     #if DEBUG
-                    print("[API decode] primary decode failed:", error.localizedDescription)
+                    DLog("[API decode] primary decode failed: \(error.localizedDescription)")
                     if let bodyString = String(data: data, encoding: .utf8) {
-                        print("[API decode] response body:", bodyString)
+                        DLog("[API decode] response body: \(bodyString)")
                     }
                     #endif
                     // Try to decode as ApiResponse
@@ -831,7 +862,7 @@ class ApiService: ObservableObject {
                         }
                     } catch {
                         #if DEBUG
-                        print("[API decode] ApiResponse decode also failed:", error.localizedDescription)
+                        DLog("[API decode] ApiResponse decode also failed: \(error.localizedDescription)")
                         #endif
                         // Try to decode error message directly
                         if let errorDict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -844,27 +875,27 @@ class ApiService: ObservableObject {
                 
             case 401:
                 #if DEBUG
-                print("[API] 401 Unauthorized")
+                DLog("[API] 401 Unauthorized")
                 if let bodyString = String(data: data, encoding: .utf8) {
-                    print("[API] 401 body:", bodyString)
+                    DLog("[API] 401 body: \(bodyString)")
                 }
                 #endif
                 throw ApiServiceError.unauthorized
                 
             case 404:
                 #if DEBUG
-                print("[API] 404 Not Found")
+                DLog("[API] 404 Not Found")
                 if let bodyString = String(data: data, encoding: .utf8) {
-                    print("[API] 404 body:", bodyString)
+                    DLog("[API] 404 body: \(bodyString)")
                 }
                 #endif
                 throw ApiServiceError.notFound
                 
             case 400...499:
                 #if DEBUG
-                print("[API] \(httpResponse.statusCode) Client Error")
+                DLog("[API] \(httpResponse.statusCode) Client Error")
                 if let bodyString = String(data: data, encoding: .utf8) {
-                    print("[API] \(httpResponse.statusCode) body:", bodyString)
+                    DLog("[API] \(httpResponse.statusCode) body: \(bodyString)")
                 }
                 #endif
                 if let errorResponse = try? JSONDecoder().decode(ApiResponse<String>.self, from: data) {
@@ -875,18 +906,18 @@ class ApiService: ObservableObject {
                 
             case 500...599:
                 #if DEBUG
-                print("[API] \(httpResponse.statusCode) Server Error")
+                DLog("[API] \(httpResponse.statusCode) Server Error")
                 if let bodyString = String(data: data, encoding: .utf8) {
-                    print("[API] \(httpResponse.statusCode) body:", bodyString)
+                    DLog("[API] \(httpResponse.statusCode) body: \(bodyString)")
                 }
                 #endif
                 throw ApiServiceError.serverError("Server error: \(httpResponse.statusCode)")
                 
             default:
                 #if DEBUG
-                print("[API] Unknown status code:", httpResponse.statusCode)
+                DLog("[API] Unknown status code: \(httpResponse.statusCode)")
                 if let bodyString = String(data: data, encoding: .utf8) {
-                    print("[API] unknown status body:", bodyString)
+                    DLog("[API] unknown status body: \(bodyString)")
                 }
                 #endif
                 throw ApiServiceError.unknownError
@@ -1035,19 +1066,19 @@ class ApiService: ObservableObject {
             if let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                let postId = obj["post_id"] as? String {
                 #if DEBUG
-                print("[POST OK] id=\(postId)")
+                DLog("[POST OK] id=\(postId)")
                 #endif
                 return postId
             }
             #if DEBUG
             let body = String(data: data, encoding: .utf8) ?? ""
-            print("[POST OK] (no id body) \(body)")
+            DLog("[POST OK] (no id body) \(body)")
             #endif
             return ""
         } else {
             let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
             #if DEBUG
-            print("[POST ERR] status=\(http.statusCode) body=\(body)")
+            DLog("[POST ERR] status=\(http.statusCode) body=\(body)")
             #endif
             throw ApiServiceError.serverError("POST /post failed (\(http.statusCode)): \(body)")
         }
@@ -1059,7 +1090,7 @@ class ApiService: ObservableObject {
         let coord = CLLocationCoordinate2D(latitude: query.lat, longitude: query.lng)
         if !LocationReadiness.isUsable(coord) {
             #if DEBUG
-            print("[FEED] skip (reason=invalid-coord lat=\(query.lat) lng=\(query.lng))")
+            DLog("[FEED] skip (reason=invalid-coord lat=\(query.lat) lng=\(query.lng))")
             #endif
             return []
         }
@@ -1117,6 +1148,7 @@ class ApiService: ObservableObject {
             let distance: StringOrDouble?
             let owner: Profile?
             let user_reservation: ReservationSummary?
+            let address_line: String?
         }
         
         struct FeedResponse: Decodable {
@@ -1189,6 +1221,7 @@ class ApiService: ObservableObject {
                 expiresAt: serverPost.expires_at?.value,
                 exactLocation: exactLocation,
                 approxLocation: approxLocation,
+                addressLine: serverPost.address_line,
                 images: images,
                 distance: serverPost.distance?.value,
                 owner: serverPost.owner,
@@ -1223,12 +1256,14 @@ class ApiService: ObservableObject {
             let exactLocation: TolerantLocation?
             let approxLocation: TolerantLocation?
             let distance: StringOrDouble?
+            let addressLine: String?
 
             enum CodingKeys: String, CodingKey {
                 case id, title, description, category, condition, mode, images, owner, distance
                 case ownerId = "owner_id"
                 case exactLocation = "exact_location"
                 case approxLocation = "approx_location"
+                case addressLine = "address_line"
             }
         }
 
@@ -1244,12 +1279,14 @@ class ApiService: ObservableObject {
             let picked_up_at: String?
             let picked_at: String?
             let canceled_at: String?
+            let contact_phone: String?
             let post: ServerPost?
             let usedLegacyPostKey: Bool
 
             enum CodingKeys: String, CodingKey {
                 case id, item_id, reserver, status, requested_at, approved_at, start_at, end_at, canceled_at
                 case picked_up_at, picked_at
+                case contact_phone
                 case post, posts
             }
 
@@ -1266,6 +1303,7 @@ class ApiService: ObservableObject {
                 picked_up_at = try c.decodeIfPresent(String.self, forKey: .picked_up_at)
                 picked_at = try c.decodeIfPresent(String.self, forKey: .picked_at)
                 canceled_at = try c.decodeIfPresent(String.self, forKey: .canceled_at)
+                contact_phone = try c.decodeIfPresent(String.self, forKey: .contact_phone)
 
                 if let post = try c.decodeIfPresent(ServerPost.self, forKey: .post) {
                     self.post = post
@@ -1294,7 +1332,7 @@ class ApiService: ObservableObject {
                     self.reservations = reservations
                 } else if let fallback = try container.decodeIfPresent([ServerReservation].self, forKey: .posts) {
                     #if DEBUG
-                    print("[RESERVATIONS] Fallback to legacy 'posts' payload. Remove after rollout.")
+                    DLog("[RESERVATIONS] Fallback to legacy 'posts' payload. Remove after rollout.")
                     #endif
                     self.reservations = fallback
                 } else {
@@ -1318,7 +1356,7 @@ class ApiService: ObservableObject {
         } catch {
             let snippet = String(data: data.prefix(300), encoding: .utf8) ?? ""
             #if DEBUG
-            print("[RESERVATIONS] Decode error: \(error). Snippet: \(snippet)")
+            DLog("[RESERVATIONS] Decode error: \(error). Snippet: \(snippet)")
             #endif
             throw ApiServiceError.decode(error.localizedDescription)
         }
@@ -1326,14 +1364,14 @@ class ApiService: ObservableObject {
         let mapped: [Reservation] = decoded.reservations.compactMap { r -> Reservation? in
             guard let serverPost = r.post else {
                 #if DEBUG
-                print("[RESERVATIONS] Skipping reservation \(r.id) due to missing post payload.")
+                DLog("[RESERVATIONS] Skipping reservation \(r.id) due to missing post payload.")
                 #endif
                 return nil
             }
 
             if r.usedLegacyPostKey {
                 #if DEBUG
-                print("[RESERVATIONS] Reservation \(r.id) used legacy 'posts' key.")
+                DLog("[RESERVATIONS] Reservation \(r.id) used legacy 'posts' key.")
                 #endif
             }
 
@@ -1375,23 +1413,32 @@ class ApiService: ObservableObject {
                 expiresAt: nil,
                 exactLocation: exactLoc,
                 approxLocation: approxLoc,
+                addressLine: serverPost.addressLine,
                 images: images,
                 distance: serverPost.distance?.value,
                 owner: serverPost.owner,
                 userReservation: nil
             )
 
+            let normalizedStatus = Reservation.Status(rawValue: r.status) ?? .pending
+            let contactPhone: String? = {
+                guard let raw = r.contact_phone?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !raw.isEmpty else { return nil }
+                return raw
+            }()
+
             return Reservation(
                 id: r.id,
                 itemId: r.item_id,
                 reserver: r.reserver ?? "",
-                status: r.status,
+                status: normalizedStatus,
                 requestedAt: r.requested_at,
                 approvedAt: r.approved_at,
                 startAt: r.start_at,
                 endAt: r.end_at,
                 pickedAt: r.picked_up_at ?? r.picked_at,
                 canceledAt: r.canceled_at,
+                contactPhone: contactPhone,
                 post: post
             )
         }
@@ -1507,6 +1554,7 @@ class ApiService: ObservableObject {
             let approx_location: TolerantLocation?
             let images: [ServerImage]?
             let active_reservation: ServerReservationSummary?
+            let address_line: String?
         }
         struct PostsResponse: Decodable {
             let posts: [ServerPost]?
@@ -1570,6 +1618,7 @@ class ApiService: ObservableObject {
                 expiresAt: expiresAt,
                 exactLocation: exactLocation,
                 approxLocation: approxLocation,
+                addressLine: server.address_line,
                 images: images,
                 distance: nil,
                 owner: nil,
@@ -1700,24 +1749,24 @@ private extension ApiService {
 
 extension Reservation {
     var isActive: Bool {
-        status == "pending" || status == "active"
+        status == .pending || status == .active
     }
     
     var isCompleted: Bool {
-        status == "picked"
+        status == .picked
     }
     
     var isCanceled: Bool {
-        status == "canceled"
+        status == .canceled
     }
     
     var displayStatus: String {
         switch status {
-        case "pending": return "Pending Approval"
-        case "active": return "Active"
-        case "picked": return "Completed"
-        case "canceled": return "Canceled"
-        default: return status
+        case .pending: return "Pending Approval"
+        case .active: return "Active"
+        case .picked: return "Completed"
+        case .canceled: return "Canceled"
+        case .expired: return "Expired"
         }
     }
 }

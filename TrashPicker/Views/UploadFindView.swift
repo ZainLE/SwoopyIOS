@@ -289,7 +289,7 @@ struct UploadFindView: View {
                     submitState = .success
                     Haptics.play(.success)
                     #if DEBUG
-                    print("[SUBMIT OK] post_id=\(postId)")
+                    DLog("[SUBMIT OK] post_id=\(postId)")
                     #endif
                     try? await Task.sleep(nanoseconds: 1_300_000_000)
                     submitState = .idle
@@ -311,7 +311,7 @@ struct UploadFindView: View {
                     submitState = .idle
                 } catch UploadError.imageProcessingFailed {
                     #if DEBUG
-                    print("[CATCH] imageProcessingFailed")
+                    DLog("[CATCH] imageProcessingFailed")
                     #endif
                     showValidation = true
                     validationText = "Image upload failed. Please try different photos."
@@ -321,7 +321,7 @@ struct UploadFindView: View {
                     submitState = .idle
                 } catch let apiError as ApiServiceError {
                     #if DEBUG
-                    print("[CATCH] ApiServiceError:", apiError.localizedDescription)
+                    DLog("[CATCH] ApiServiceError: \(apiError.localizedDescription)")
                     #endif
                     showValidation = true
                     submitState = .error
@@ -336,8 +336,8 @@ struct UploadFindView: View {
                     submitState = .idle
                 } catch {
                     #if DEBUG
-                    print("[CATCH] generic error:", error.localizedDescription)
-                    print("[CATCH] error type:", type(of: error))
+                    DLog("[CATCH] generic error: \(error.localizedDescription)")
+                    DLog("[CATCH] error type: \(type(of: error))")
                     #endif
                     showValidation = true
                     validationText = "Couldn't upload your item. Please try again."
@@ -434,12 +434,12 @@ struct UploadFindView: View {
         guard !token.isEmpty else { throw UploadError.notAuthenticated }
 
         #if DEBUG
-        print("[SUBMIT START] postId:", postId.uuidString)
-        print("[SUBMIT START] mode:", m.backendValue)
-        print("[SUBMIT START] images count:", draftStore.photos.count)
-        print("[SUBMIT START] hasAuthToken:", svc.hasAuthToken)
-        print("[SUBMIT START] token length:", token.count)
-        print("[SUBMIT START] userId:", userId)
+        DLog("[SUBMIT START] postId: \(postId.uuidString)")
+        DLog("[SUBMIT START] mode: \(m.backendValue)")
+        DLog("[SUBMIT START] images count: \(draftStore.photos.count)")
+        DLog("[SUBMIT START] hasAuthToken: \(svc.hasAuthToken)")
+        DLog("[SUBMIT START] token length: \(token.count)")
+        DLog("[SUBMIT START] userId: \(userId)")
         #endif
 
         let imageURLs = try await uploadImagesToStorage(userId: userId, postId: postId)
@@ -478,12 +478,12 @@ struct UploadFindView: View {
 
         let api = ApiService(supabaseService: svc)
         #if DEBUG
-        print("[UPLOAD COMPLETE] urls:", uniqueURLs.map { $0.absoluteString })
-        print("[POST payload] mode:", modeValue)
-        print("[POST payload] condition:", conditionValue)
-        print("[POST payload] images count:", images.count)
-        print("[POST payload] exact_location:", exactWKT ?? "nil")
-        print("[POST payload] approx_location:", approxWKT ?? "nil")
+        DLog("[UPLOAD COMPLETE] urls: \(uniqueURLs.map { $0.absoluteString })")
+        DLog("[POST payload] mode: \(modeValue)")
+        DLog("[POST payload] condition: \(conditionValue)")
+        DLog("[POST payload] images count: \(images.count)")
+        DLog("[POST payload] exact_location: \(exactWKT ?? "nil")")
+        DLog("[POST payload] approx_location: \(approxWKT ?? "nil")")
         #endif
 
         let createdPostId = try await fetchWithRetry(svc: svc) {
@@ -508,7 +508,7 @@ struct UploadFindView: View {
             // Convert UIImage -> JPEG data
             guard let data = image.jpegData(compressionQuality: 0.8), data.count > 0 else {
                 #if DEBUG
-                print("[UPLOAD ERR] JPEG encoding failed for index:", index)
+                DLog("[UPLOAD ERR] JPEG encoding failed for index: \(index)")
                 #endif
                 throw UploadError.imageProcessingFailed
             }
@@ -522,12 +522,12 @@ struct UploadFindView: View {
                             file: data,
                             options: options)
                 #if DEBUG
-                print("[UPLOAD KEY] \(path)")
-                print("[UPLOAD OK]", path)
+                DLog("[UPLOAD KEY] \(path)")
+                DLog("[UPLOAD OK] \(path)")
                 #endif
             } catch {
                 #if DEBUG
-                print("[UPLOAD ERR]", path, error.localizedDescription)
+                DLog("[UPLOAD ERR] \(path) \(error.localizedDescription)")
                 #endif
                 throw error
             }
@@ -536,7 +536,7 @@ struct UploadFindView: View {
                 .from(bucket)
                 .getPublicURL(path: path)
             #if DEBUG
-            print("[UPLOAD URL]", publicURL.absoluteString)
+            DLog("[UPLOAD URL] \(publicURL.absoluteString)")
             #endif
             urls.append(publicURL)
         }
@@ -808,7 +808,7 @@ enum Condition: CaseIterable, Hashable, Identifiable {
     var id: Self { self }
     var title: String {
         switch self {
-        case .needsFixing: return "Needs Fixing"
+        case .needsFixing: return "Needs fixing"
         case .good:        return "Good"
         case .excellent:   return "Excellent"
         case .likeNew:     return "Like New"
@@ -818,10 +818,10 @@ enum Condition: CaseIterable, Hashable, Identifiable {
     // Backend mapping - matches Flask API spec
     var backendValue: String {
         switch self {
-        case .needsFixing: return "bad"        // "Needs Fixing" = bad
-        case .good:        return "good"       // "Good" = good
-        case .excellent:   return "excellent" // "Excellent" = excellent
-        case .likeNew:     return "excellent" // "Like New" = excellent (same as excellent)
+        case .needsFixing: return "bad"
+        case .good:        return "good"
+        case .excellent:   return "excellent"
+        case .likeNew:     return "like_new"
         }
     }
 }
@@ -937,8 +937,8 @@ struct SupabaseUploader: FindUploader {
             .from(bucket)
             .upload(path: filename, file: data, options: options)
         #if DEBUG
-        print("[UPLOAD KEY] \(filename)")
-        print("[UPLOAD OK]", filename)
+        DLog("[UPLOAD KEY] \(filename)")
+        DLog("[UPLOAD OK] \(filename)")
         #endif
         
         // 5) Public bucket: get public URL and skip verification

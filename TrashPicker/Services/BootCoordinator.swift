@@ -11,19 +11,13 @@ final class BootCoordinator: ObservableObject {
 // MARK: - NetLog helpers
 enum NetLog {
     static func bootStart() {
-        #if DEBUG
-        print("[BOOT] net bootStart")
-        #endif
+        DLog("[BOOT] net bootStart")
     }
     static func bootDone() {
-        #if DEBUG
-        print("[BOOT] net bootDone")
-        #endif
+        DLog("[BOOT] net bootDone")
     }
     static func bootFail(_ error: Error) {
-        #if DEBUG
-        print("[BOOT] net bootFail: \(error.localizedDescription)")
-        #endif
+        DLog("[BOOT] net bootFail: \(error.localizedDescription)")
     }
 }
 
@@ -67,9 +61,7 @@ enum NetLog {
         if firstFrameAt == nil {
             firstFrameAt = Date()
             let ms = Int(firstFrameAt!.timeIntervalSince(appStartAt) * 1000)
-            #if DEBUG
-            print("[BOOT] firstFrameMs=\(ms)")
-            #endif
+            DLog("[BOOT] firstFrameMs=\(ms)")
             Metrics.firstFrameMs(ms)
         }
     }
@@ -78,9 +70,7 @@ enum NetLog {
         if firstDataAt == nil {
             firstDataAt = Date()
             let ms = Int(firstDataAt!.timeIntervalSince(appStartAt) * 1000)
-            #if DEBUG
-            print("[BOOT] firstDataMs=\(ms)")
-            #endif
+            DLog("[BOOT] firstDataMs=\(ms)")
             Metrics.firstDataMs(ms)
         }
     }
@@ -145,4 +135,3 @@ enum LocalFlagsStore {
         UserDefaults.standard.set(["exampleFlag": flags.exampleFlag], forKey: key)
     }
 }
-

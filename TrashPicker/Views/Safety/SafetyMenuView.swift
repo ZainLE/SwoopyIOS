@@ -22,7 +22,7 @@ struct SafetyMenuView: View {
         if featureSafety {
             Menu {
                 Button(action: {
-                    print("[SAFETY] report_open post=\(postId ?? "nil") user=\(userId ?? "nil")")
+                    DLog("[SAFETY] report_open post=\(postId ?? "nil") user=\(userId ?? "nil")")
                     showReportSheet = true
                     Haptics.play(.tabSelect)
                 }) {
@@ -32,7 +32,7 @@ struct SafetyMenuView: View {
                 
                 if userId != nil {
                     Button(action: {
-                        print("[SAFETY] block_open user=\(userId ?? "nil")")
+                        DLog("[SAFETY] block_open user=\(userId ?? "nil")")
                         showBlockSheet = true
                         Haptics.play(.tabSelect)
                     }) {
@@ -86,7 +86,7 @@ struct SafetyMenuCompact: View {
         if featureSafety {
             Menu {
                 Button(action: {
-                    print("[SAFETY] report_open post=\(postId ?? "nil") user=\(userId ?? "nil")")
+                    DLog("[SAFETY] report_open post=\(postId ?? "nil") user=\(userId ?? "nil")")
                     showReportSheet = true
                     Haptics.play(.tabSelect)
                 }) {
@@ -95,7 +95,7 @@ struct SafetyMenuCompact: View {
                 
                 if userId != nil {
                     Button(action: {
-                        print("[SAFETY] block_open user=\(userId ?? "nil")")
+                        DLog("[SAFETY] block_open user=\(userId ?? "nil")")
                         showBlockSheet = true
                         Haptics.play(.tabSelect)
                     }) {
@@ -127,4 +127,3 @@ struct SafetyMenuCompact: View {
         }
     }
 }
-

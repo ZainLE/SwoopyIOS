@@ -378,7 +378,7 @@ final class ApiServiceTests: XCTestCase {
         // Verify reservation fields
         XCTAssertEqual(reservation.id, "R1")
         XCTAssertEqual(reservation.itemId, "P1")
-        XCTAssertEqual(reservation.status, "pending")
+        XCTAssertEqual(reservation.status, .pending)
         
         // Verify joined post decoded correctly (key is "post" not "posts")
         XCTAssertEqual(reservation.post.id, "P1", "Post ID should match")

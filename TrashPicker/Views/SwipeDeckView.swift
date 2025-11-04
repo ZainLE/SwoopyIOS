@@ -18,7 +18,7 @@ private func dbg(_ tag: String, _ items: Any...) {
 #if DEBUG
     guard VERBOSE_LOGS else { return }
     let message = items.map { "\($0)" }.joined(separator: " ")
-    print("[\(tag)] \(message)")
+    DLog("[\(tag)] \(message)")
 #endif
 }
 
@@ -244,7 +244,8 @@ struct SwipeDeckView: View {
             .overlay { successOverlay }
 #if DEBUG
             .overlay(alignment: .topLeading) {
-                if let context = feedDebugContext {
+                if UserDefaults.standard.bool(forKey: "debug.distanceHUD"),
+                   let context = feedDebugContext {
                     FeedDebugOverlayView(context: context, activePostId: activePostId)
                 }
             }
@@ -311,7 +312,7 @@ struct SwipeDeckView: View {
     
     @MainActor
     private func handleMapDismiss() {
-        print("🔵 [NAV] map_dismissed callback")
+        DLog("🔵 [NAV] map_dismissed callback")
         dbg("NAV", "map_dismissed")
         // Animate pill immediately as map starts dismissing
         if navState.isMap {
@@ -343,7 +344,7 @@ struct SwipeDeckView: View {
             if lastAuth != currentAuth && (currentAuth == 3 || currentAuth == 4) {
                 authStatusAtLastFetch = Int(currentAuth)
                 #if DEBUG
-                print("[FEED gate] auth changed to authorized → refetch")
+                DLog("[FEED gate] auth changed to authorized → refetch")
                 #endif
                 await loadFeedWithOneShotLocation()
             }
@@ -354,14 +355,14 @@ struct SwipeDeckView: View {
         navStateWriteCount += 1
         let writeCount = navStateWriteCount
         
-        print("🟡 [NAV] state_changed from=\(oldValue) to=\(newValue) writes=\(writeCount)")
+        DLog("🟡 [NAV] state_changed from=\(oldValue) to=\(newValue) writes=\(writeCount)")
         dbg("NAV", "state_changed from=\(oldValue) to=\(newValue) writes=\(writeCount)")
         
         // Detect thrashing: if we get >2 writes in 200ms, log warning
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 200_000_000)
             if navStateWriteCount > writeCount + 1 {
-                print("⚠️ [NAV] state_thrash detected writes=\(navStateWriteCount) in_200ms")
+                DLog("⚠️ [NAV] state_thrash detected writes=\(navStateWriteCount) in_200ms")
                 dbg("NAV", "⚠️ state_thrash detected writes=\(navStateWriteCount) in_200ms")
             }
         }
@@ -370,10 +371,10 @@ struct SwipeDeckView: View {
         // Keep logs, avoid secondary boolean to prevent conflicts.
         switch newValue {
         case .feed:
-            print("🔴 [NAV] showing_feed isPresented=false (derived)")
+            DLog("🔴 [NAV] showing_feed isPresented=false (derived)")
             dbg("NAV", "showing_feed (derived)")
         case .map:
-            print("🟢 [NAV] presenting_map isPresented=true (derived)")
+            DLog("🟢 [NAV] presenting_map isPresented=true (derived)")
             dbg("NAV", "presenting_map (derived)")
         }
     }
@@ -786,7 +787,7 @@ CATransaction.commit()
         // Gate: validate coordinate is usable
         guard LocationReadiness.isUsable(coord) else {
             #if DEBUG
-            print("[FEED gate] skip (reason=no-usable-location lat=\(coord.latitude) lng=\(coord.longitude))")
+            DLog("[FEED gate] skip (reason=no-usable-location lat=\(coord.latitude) lng=\(coord.longitude))")
             #endif
             isLoading = false
             return
@@ -796,7 +797,7 @@ CATransaction.commit()
         let coordKey = LocationReadiness.cacheKey(coord)
         if inFlightCoordKey == coordKey {
             #if DEBUG
-            print("[FEED gate] skip (reason=already-in-flight key=\(coordKey))")
+            DLog("[FEED gate] skip (reason=already-in-flight key=\(coordKey))")
             #endif
             return
         }
@@ -817,11 +818,11 @@ CATransaction.commit()
         #endif
         if age < 5.0 {
             #if DEBUG
-            print("[FEED gate] using fresh coord=(\(userLocation.latitude),\(userLocation.longitude)) hdop=\(location.horizontalAccuracy)")
+            DLog("[FEED gate] using fresh coord=(\(userLocation.latitude),\(userLocation.longitude)) hdop=\(location.horizontalAccuracy)")
             #endif
         } else {
             #if DEBUG
-            print("[FEED gate] using cached coord=(\(userLocation.latitude),\(userLocation.longitude)) age=\(String(format: "%.1f", age))s")
+            DLog("[FEED gate] using cached coord=(\(userLocation.latitude),\(userLocation.longitude)) age=\(String(format: "%.1f", age))s")
             #endif
         }
         
@@ -856,7 +857,7 @@ CATransaction.commit()
             feedDebugContext = localDebugContext
             let isoTimestamp = feedDebugISOFormatter.string(from: location.timestamp)
             let accuracyMeters = Int(location.horizontalAccuracy.rounded())
-            print("[DISTANCE REQ] debugId=\(generatedDebugId) my=(\(String(format: "%.5f", userLocation.latitude)),\(String(format: "%.5f", userLocation.longitude)) acc=\(accuracyMeters)m @\(isoTimestamp)) radius=\(String(format: "%.1f", q.radiusKm)) source=\(locationSource) auth=\(authSnapshot.managerStatus.rawValue) precise=\(authSnapshot.preciseEnabled ? "on" : "off")")
+            DLog("[DISTANCE REQ] debugId=\(generatedDebugId) my=(\(String(format: "%.5f", userLocation.latitude)),\(String(format: "%.5f", userLocation.longitude)) acc=\(accuracyMeters)m @\(isoTimestamp)) radius=\(String(format: "%.1f", q.radiusKm)) source=\(locationSource) auth=\(authSnapshot.managerStatus.rawValue) precise=\(authSnapshot.preciseEnabled ? "on" : "off"))")
             #endif
 
             let fetchedPosts = try await fetchWithRetry(svc: svc) {
@@ -922,7 +923,7 @@ CATransaction.commit()
                     let serverString = post.distance.map { String(format: "%.3f", $0) } ?? "nil"
                     let localString = localDistanceKm.map { String(format: "%.3f", $0) } ?? "nil"
                     let source = post.distance != nil ? "server" : "local"
-                    print("[DISTANCE TRACE] debugId=\(generatedDebugId) postId=\(post.id) coord=\(coordString) coordSource=\(coordSource) server=\(serverString)km ui=\(localString)km source=\(source)")
+                    DLog("[DISTANCE TRACE] debugId=\(generatedDebugId) postId=\(post.id) coord=\(coordString) coordSource=\(coordSource) server=\(serverString)km ui=\(localString)km source=\(source)")
                 }
 
                 context.entries = entries
@@ -933,9 +934,9 @@ CATransaction.commit()
                     let serverString = first.serverDistanceKm.map { String(format: "%.2f", $0) } ?? "nil"
                     let localString = first.localDistanceKm.map { String(format: "%.2f", $0) } ?? "nil"
                     let source = first.serverDistanceKm != nil ? "server" : "local"
-                    print("DISTANCE-AUDIT debugId=\(generatedDebugId) my=(\(myCoordString) acc=\(accuracyString)m @\(isoTs)) post=\(coordString) server=\(serverString)km ui=\(localString)km source=\(source)")
+                    DLog("DISTANCE-AUDIT debugId=\(generatedDebugId) my=(\(myCoordString) acc=\(accuracyString)m @\(isoTs)) post=\(coordString) server=\(serverString)km ui=\(localString)km source=\(source)")
                 } else {
-                    print("DISTANCE-AUDIT debugId=\(generatedDebugId) my=(\(myCoordString) acc=\(accuracyString)m @\(isoTs)) post=none server=nil ui=nil source=none")
+                    DLog("DISTANCE-AUDIT debugId=\(generatedDebugId) my=(\(myCoordString) acc=\(accuracyString)m @\(isoTs)) post=none server=nil ui=nil source=none")
                 }
             }
             #endif
@@ -954,7 +955,7 @@ CATransaction.commit()
             } else {
                 debugIdMessage = "pending"
             }
-            print("[DISTANCE REQ] debugId=\(debugIdMessage) error=\(error.localizedDescription)")
+            DLog("[DISTANCE REQ] debugId=\(debugIdMessage) error=\(error.localizedDescription)")
             feedDebugContext = nil
             #endif
 
@@ -981,7 +982,7 @@ CATransaction.commit()
             if LocationReadiness.isUsable(coord) {
                 let age = max(0, Date().timeIntervalSince(cached.timestamp))
                 #if DEBUG
-                print("[FEED gate] using cached coord=(\(coord.latitude),\(coord.longitude)) age=\(String(format: "%.1f", age))s")
+                DLog("[FEED gate] using cached coord=(\(coord.latitude),\(coord.longitude)) age=\(String(format: "%.1f", age))s")
                 #endif
                 await fetchFeed(using: cached)
                 
@@ -992,7 +993,7 @@ CATransaction.commit()
                             let fresh = try await LocationService.shared.firstFix(timeout: 2.5)
                             if LocationReadiness.isUsable(fresh.coordinate) {
                                 #if DEBUG
-                                print("[FEED gate] refreshing with fresh coord=(\(fresh.coordinate.latitude),\(fresh.coordinate.longitude))")
+                                DLog("[FEED gate] refreshing with fresh coord=(\(fresh.coordinate.latitude),\(fresh.coordinate.longitude))")
                                 #endif
                                 await fetchFeed(using: fresh)
                             }
@@ -1012,7 +1013,7 @@ CATransaction.commit()
                 await fetchFeed(using: loc)
             } else {
                 #if DEBUG
-                print("[FEED gate] skip (reason=invalid-fix lat=\(loc.coordinate.latitude) lng=\(loc.coordinate.longitude))")
+                DLog("[FEED gate] skip (reason=invalid-fix lat=\(loc.coordinate.latitude) lng=\(loc.coordinate.longitude))")
                 #endif
                 isLoading = false
             }
@@ -1020,7 +1021,7 @@ CATransaction.commit()
         } catch {
             // No fix available - skip request
             #if DEBUG
-            print("[FEED gate] skip (reason=no-usable-location error=\(error.localizedDescription))")
+            DLog("[FEED gate] skip (reason=no-usable-location error=\(error.localizedDescription))")
             #endif
             isLoading = false
             // Don't show error - just show empty state
@@ -1215,14 +1216,14 @@ extension SwipeDeckView {
         private func seg(_ title: String, _ state: SwipeDeckView.NavigationState) -> some View {
             Button {
                 let reason = state == .map ? "map_button_tap" : "feed_button_tap"
-                print("🔵 [\(reason)] IMMEDIATE tap registered current=\(selection) requested=\(state)")
+                DLog("🔵 [\(reason)] IMMEDIATE tap registered current=\(selection) requested=\(state)")
                 dbg("UI", "\(reason) current=\(selection) requested=\(state)")
                 
                 // Standard spring feel for pill movement
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
                     selection = state
                 }
-                print("🟢 [\(reason)] State updated to \(state)")
+                DLog("🟢 [\(reason)] State updated to \(state)")
             } label: {
                 Text(title)
                     .font(.headline)
@@ -1316,7 +1317,7 @@ extension SwipeDeckView {
             // Try to get cached user location first
             if let userCoord = LocationService.shared.lastKnownCoordinate {
                 #if DEBUG
-                print("[MAP] init region from cached user location: \(userCoord.latitude), \(userCoord.longitude)")
+                DLog("[MAP] init region from cached user location: \(userCoord.latitude), \(userCoord.longitude)")
                 #endif
                 return MKCoordinateRegion(
                     center: userCoord,
@@ -1325,7 +1326,7 @@ extension SwipeDeckView {
             }
             // Fallback to Barcelona only if no cached location
             #if DEBUG
-            print("[MAP] init region from fallback (Barcelona)")
+            DLog("[MAP] init region from fallback (Barcelona)")
             #endif
             return MKCoordinateRegion(
                 center: CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686),
@@ -1923,14 +1924,14 @@ extension SwipeDeckView {
 
         private func logCallout(_ message: String) {
             #if DEBUG
-            print(message)
+            DLog(message)
             #endif
         }
 
         private func logPinSelect(_ id: UUID) {
             #if DEBUG
             let rawId = posts.first { UUID(uuidString: $0.id) == id }?.id ?? id.uuidString
-            print("[PIN] select id=\(rawId)")
+            DLog("[PIN] select id=\(rawId)")
             #endif
         }
 
@@ -1973,7 +1974,7 @@ extension SwipeDeckView {
                     
                     if distance < 200 {
                         #if DEBUG
-                        print("[FEED gate] skip (reason=moved-only-\(Int(distance))m key=\(coordKey))")
+                        DLog("[FEED gate] skip (reason=moved-only-\(Int(distance))m key=\(coordKey))")
                         #endif
                         return
                     }
@@ -2116,4 +2117,3 @@ extension SwipeDeckView {
         }
     }
 }
-

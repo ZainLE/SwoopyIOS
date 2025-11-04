@@ -55,6 +55,57 @@ struct OutlinePill: ButtonStyle {
   }
 }
 
+// MARK: - Swoopy Reservation Buttons
+
+struct SwoopyPrimaryButtonStyle: ButtonStyle {
+  var minHeight: CGFloat = 46
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.headline.weight(.semibold))
+      .frame(maxWidth: .infinity)
+      .frame(minHeight: minHeight)
+      .padding(.horizontal, 10)
+      .background(Color("SwoopyGreen"))
+      .foregroundStyle(Color.white)
+      .clipShape(Capsule(style: .continuous))
+      .scaleEffect(configuration.isPressed ? 0.97 : 1)
+  }
+}
+
+struct SwoopyOutlineButtonStyle: ButtonStyle {
+  var minHeight: CGFloat = 46
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.headline.weight(.semibold))
+      .frame(maxWidth: .infinity)
+      .frame(minHeight: minHeight)
+      .padding(.horizontal, 10)
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(Color("SwoopyGreen"), lineWidth: 2)
+      )
+      .foregroundStyle(Color("SwoopyGreen"))
+      .scaleEffect(configuration.isPressed ? 0.97 : 1)
+  }
+}
+
+struct SwoopyPillSecondaryStyle: ButtonStyle {
+  var minHeight: CGFloat = 46
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.headline.weight(.semibold))
+      .frame(maxWidth: .infinity)
+      .frame(minHeight: minHeight)
+      .padding(.horizontal, 10)
+      .background(Color("SwoopyLime"))
+      .clipShape(Capsule(style: .continuous))
+      .scaleEffect(configuration.isPressed ? 0.97 : 1)
+  }
+}
+
 // Segmented pill group (for mode & condition)
 struct SegmentedPills<Data: RandomAccessCollection, ID: Hashable, Label: View>: View {
   @Binding var selection: ID

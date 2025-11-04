@@ -87,7 +87,7 @@ final class ReservationDecodingTests: XCTestCase {
         let reservation = response.reservations[0]
         XCTAssertEqual(reservation.id, "res-123")
         XCTAssertEqual(reservation.itemId, "post-456")
-        XCTAssertEqual(reservation.status, "active")
+        XCTAssertEqual(reservation.status, .active)
         
         // Verify nested post object decoded correctly
         XCTAssertEqual(reservation.post.id, "post-456")

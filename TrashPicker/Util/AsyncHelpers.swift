@@ -49,22 +49,22 @@ func withTimeout<T>(seconds: TimeInterval, operation: @escaping () async throws 
         switch firstResult {
         case .success(let value):
             #if DEBUG
-            print("[PERF] withTimeout: succeeded (reqId=\(reqId), seconds=\(seconds), elapsed=\(String(format: "%.3f", elapsed)))")
+            DLog("[PERF] withTimeout: succeeded (reqId=\(reqId), seconds=\(seconds), elapsed=\(String(format: "%.3f", elapsed)))")
             #endif
             return value
             
         case .failure(let error):
             if case TimeoutError.timedOut = error {
                 #if DEBUG
-                print("[NET] timeout → cancel underlying (reqId=\(reqId), seconds=\(seconds), elapsed=\(String(format: "%.3f", elapsed)))")
+                DLog("[NET] timeout → cancel underlying (reqId=\(reqId), seconds=\(seconds), elapsed=\(String(format: "%.3f", elapsed)))")
                 #endif
             } else if error.isCancellationLike {
                 #if DEBUG
-                print("[NET] cancelled (reqId=\(reqId), elapsed=\(String(format: "%.3f", elapsed)))")
+                DLog("[NET] cancelled (reqId=\(reqId), elapsed=\(String(format: "%.3f", elapsed)))")
                 #endif
             } else {
                 #if DEBUG
-                print("[PERF] withTimeout: failed (reqId=\(reqId), seconds=\(seconds), elapsed=\(String(format: "%.3f", elapsed)), error=\(error.localizedDescription))")
+                DLog("[PERF] withTimeout: failed (reqId=\(reqId), seconds=\(seconds), elapsed=\(String(format: "%.3f", elapsed)), error=\(error.localizedDescription))")
                 #endif
             }
             throw error

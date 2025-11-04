@@ -3,36 +3,36 @@ import Foundation
 
 enum Metrics {
     static func sessionRestoreMs(_ ms: Int) {
-        print("[METRIC] sessionRestoreMs=\(ms)")
+        DLog("[METRIC] sessionRestoreMs=\(ms)")
     }
     static func firstFrameMs(_ ms: Int) {
-        print("[METRIC] firstFrameMs=\(ms)")
+        DLog("[METRIC] firstFrameMs=\(ms)")
     }
     static func firstDataMs(_ ms: Int) {
-        print("[METRIC] firstDataMs=\(ms)")
+        DLog("[METRIC] firstDataMs=\(ms)")
     }
     static func feedFetchMs(_ ms: Int, count: Int) {
-        print("[METRIC] feedFetchMs=\(ms) count=\(count)")
+        DLog("[METRIC] feedFetchMs=\(ms) count=\(count)")
     }
     static func mapFetchMs(_ ms: Int, count: Int) {
-        print("[METRIC] mapFetchMs=\(ms) count=\(count)")
+        DLog("[METRIC] mapFetchMs=\(ms) count=\(count)")
     }
     static func errorType(_ type: String) {
-        print("[METRIC] errorType=\(type)")
+        DLog("[METRIC] errorType=\(type)")
     }
     static func firstMapFrameMs(_ ms: Int) {
-        print("[METRIC] firstMapFrameMs=\(ms)")
+        DLog("[METRIC] firstMapFrameMs=\(ms)")
     }
     static func mapDebounceMs(_ ms: Int) {
-        print("[METRIC] mapDebounceMs=\(ms)")
+        DLog("[METRIC] mapDebounceMs=\(ms)")
     }
     static func fetchCountPerPan(_ count: Int) {
-        print("[METRIC] fetchCountPerPan=\(count)")
+        DLog("[METRIC] fetchCountPerPan=\(count)")
     }
     static func avgFeedMs(_ ms: Int) {
-        print("[METRIC] avgFeedMs=\(ms)")
+        DLog("[METRIC] avgFeedMs=\(ms)")
     }
     static func reservationAction(screen: String, role: String, postId: String, reservationId: String, mode: ItemMode, statusBefore: String, statusAfter: String) {
-        print("[METRIC] reservationAction screen=\(screen) role=\(role) postId=\(postId) reservationId=\(reservationId) mode=\(mode.rawValue) statusBefore=\(statusBefore) statusAfter=\(statusAfter)")
+        DLog("[METRIC] reservationAction screen=\(screen) role=\(role) postId=\(postId) reservationId=\(reservationId) mode=\(mode.rawValue) statusBefore=\(statusBefore) statusAfter=\(statusAfter)")
     }
 }

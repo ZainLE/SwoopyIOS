@@ -105,16 +105,16 @@ final class SupabaseService: NSObject, ObservableObject {
         let acquired = await refreshGate.begin()
         if !acquired {
             #if DEBUG
-            print("[AUTH] refresh skip (guarded=true)")
+            DLog("[AUTH] refresh skip (guarded=true)")
             #endif
             return
         }
         #if DEBUG
-        print("[AUTH] refresh start (guarded=true)")
+        DLog("[AUTH] refresh start (guarded=true)")
         #endif
         defer { Task { await refreshGate.end()
             #if DEBUG
-            print("[AUTH] refresh end (guarded=true)")
+            DLog("[AUTH] refresh end (guarded=true)")
             #endif
         } }
 
@@ -147,7 +147,7 @@ final class SupabaseService: NSObject, ObservableObject {
                 self.feedIsOffline = false
                 #if DEBUG
                 let ageMs = Int(Date().timeIntervalSince(cache.savedAt) * 1000)
-                print("[FEED cache] loaded count=\(cache.items.count) dataAgeMs=\(ageMs)")
+                DLog("[FEED cache] loaded count=\(cache.items.count) dataAgeMs=\(ageMs)")
                 #endif
             }
         }
@@ -188,7 +188,7 @@ final class SupabaseService: NSObject, ObservableObject {
                 return .success(s)
             } catch {
                 #if DEBUG
-                print("Session bootstrap failed or timed out: \(error.localizedDescription)")
+                DLog("Session bootstrap failed or timed out: \(error.localizedDescription)")
                 #endif
                 return .failure(error)
             }
@@ -354,7 +354,7 @@ final class SupabaseService: NSObject, ObservableObject {
             let updatedProfile = try await api.updateProfile(patch)
             
             #if DEBUG
-            print("[PROFILE] Updated via API: \(updatedProfile.firstName ?? "") \(updatedProfile.lastName ?? "")")
+            DLog("[PROFILE] Updated via API: \(updatedProfile.firstName ?? "") \(updatedProfile.lastName ?? "")")
             #endif
             
             // Update session metadata to reflect changes
@@ -363,7 +363,7 @@ final class SupabaseService: NSObject, ObservableObject {
         } catch ApiServiceError.notFound {
             // API endpoint doesn't exist, fall back to SDK
             #if DEBUG
-            print("[PROFILE] API endpoint not found, using SDK fallback")
+            DLog("[PROFILE] API endpoint not found, using SDK fallback")
             #endif
             try await updateProfileDirect(patch)
         } catch {
@@ -431,7 +431,7 @@ final class SupabaseService: NSObject, ObservableObject {
             .execute()
         
         #if DEBUG
-        print("[PROFILE] Updated via SDK: \(patch.firstName ?? "") \(patch.lastName ?? "")")
+        DLog("[PROFILE] Updated via SDK: \(patch.firstName ?? "") \(patch.lastName ?? "")")
         #endif
         
         // Update session metadata
@@ -476,7 +476,7 @@ final class SupabaseService: NSObject, ObservableObject {
 
         do {
             #if DEBUG
-            print("[ACCOUNT] delete start user=\(userId)")
+            DLog("[ACCOUNT] delete start user=\(userId)")
             #endif
 
             let response: DeleteAccountResponse = try await withTimeout(seconds: 30) {
@@ -484,7 +484,7 @@ final class SupabaseService: NSObject, ObservableObject {
             }
 
             #if DEBUG
-            print("[ACCOUNT] delete success message=\(response.message)")
+            DLog("[ACCOUNT] delete success message=\(response.message)")
             #endif
 
             pendingDeletionUserId = userId
@@ -541,13 +541,13 @@ final class SupabaseService: NSObject, ObservableObject {
             guard let self else { return }
             let start = Date()
             #if DEBUG
-            print("[FEED req] id=\(reqId) key=(lat=\(String(format: "%.5f", key.lat)), lon=\(String(format: "%.5f", key.lon)), mode=\(key.mode), r=\(key.radiusKM)) start")
+            DLog("[FEED req] id=\(reqId) key=(lat=\(String(format: "%.5f", key.lat)), lon=\(String(format: "%.5f", key.lon)), mode=\(key.mode), r=\(key.radiusKM)) start")
             #endif
             do {
                 let count = try await self._performFetchFeed(near: near, radiusKM: radiusKM, category: category, condition: condition)
                 #if DEBUG
                 let ms = Int(Date().timeIntervalSince(start) * 1000)
-                print("[FEED req] id=\(reqId) done ms=\(ms) count=\(count)")
+                DLog("[FEED req] id=\(reqId) done ms=\(ms) count=\(count)")
                 #endif
             } catch {
                 // Silent on cancellations; otherwise fallback remains handled inside
@@ -556,7 +556,7 @@ final class SupabaseService: NSObject, ObservableObject {
                 }
                 #if DEBUG
                 let ms = Int(Date().timeIntervalSince(start) * 1000)
-                print("[FEED req] id=\(reqId) fail ms=\(ms) error=\(error.localizedDescription)")
+                DLog("[FEED req] id=\(reqId) fail ms=\(ms) error=\(error.localizedDescription)")
                 #endif
             }
         }
@@ -621,7 +621,7 @@ final class SupabaseService: NSObject, ObservableObject {
                 let elapsed = Date().timeIntervalSince(attemptStart)
                 #if DEBUG
                 let formatted = String(format: "%.2f", elapsed)
-                print("[FEED retry] attempt=\(attempt) elapsed=\(formatted)s error=\(error.localizedDescription)")
+                DLog("[FEED retry] attempt=\(attempt) elapsed=\(formatted)s error=\(error.localizedDescription)")
                 #endif
             }
         }
@@ -630,15 +630,15 @@ final class SupabaseService: NSObject, ObservableObject {
             feed = cachedFeed
             #if DEBUG
             let ageMs = feedCacheStore.currentAgeMs() ?? -1
-            print("[FEED fallback] using cached feed count=\(cachedFeed.count) dataAgeMs=\(ageMs)")
+            DLog("[FEED fallback] using cached feed count=\(cachedFeed.count) dataAgeMs=\(ageMs)")
             if let lastError {
-                print("[FEED fallback] lastError=\(lastError.localizedDescription)")
+                DLog("[FEED fallback] lastError=\(lastError.localizedDescription)")
             }
             #endif
             return cachedFeed.count
         } else if let lastError {
             #if DEBUG
-            print("[FEED fallback] no cache available error=\(lastError.localizedDescription)")
+            DLog("[FEED fallback] no cache available error=\(lastError.localizedDescription)")
             #endif
         }
         return 0
@@ -669,7 +669,7 @@ final class SupabaseService: NSObject, ObservableObject {
             myReservations = reservationItems
             pending = reservationItems.filter { $0.status.lowercased() == "pending" }
             #if DEBUG
-            print("[PROFILE] fetchMyStuff success uploads=\(uploads.count) reservations=\(reservationItems.count) pending=\(pending.count)")
+            DLog("[PROFILE] fetchMyStuff success uploads=\(uploads.count) reservations=\(reservationItems.count) pending=\(pending.count)")
             #endif
         } catch {
             // Silently ignore cancellations - they're expected when view disappears
@@ -704,7 +704,7 @@ final class SupabaseService: NSObject, ObservableObject {
         let approxCoord = post.approxLocation?.coordinate
         let createdAt = post.createdAt ?? Date()
         let expiresAt = post.expiresAt ?? createdAt
-        let status = reservation?.status ?? post.userReservation?.status ?? "available"
+        let status = reservation?.status.rawValue ?? post.userReservation?.status ?? "available"
         let reservedUntil = reservation?.endAt.flatMap(parseISODate)
         let reservedBy = (reservation?.reserver).flatMap { UUID(uuidString: $0) }
         let pickedUpAt = reservation?.pickedAt.flatMap(parseISODate)
@@ -712,13 +712,13 @@ final class SupabaseService: NSObject, ObservableObject {
         let uploaderUUID = UUID(uuidString: post.ownerId)
         if uploaderUUID == nil {
             #if DEBUG
-            print("[PROFILE] ⚠️ ownerId not UUID: \(post.ownerId)")
+            DLog("[PROFILE] ⚠️ ownerId not UUID: \(post.ownerId)")
             #endif
         }
         let postUUID = UUID(uuidString: post.id)
         if postUUID == nil {
             #if DEBUG
-            print("[PROFILE] ⚠️ post id not UUID: \(post.id)")
+            DLog("[PROFILE] ⚠️ post id not UUID: \(post.id)")
             #endif
         }
         
@@ -928,16 +928,16 @@ extension SupabaseService {
         let acquired = await refreshGate.begin()
         if !acquired {
             #if DEBUG
-            print("[AUTH] refresh skip (guarded=true)")
+            DLog("[AUTH] refresh skip (guarded=true)")
             #endif
             return
         }
         #if DEBUG
-        print("[AUTH] refresh start (guarded=true)")
+        DLog("[AUTH] refresh start (guarded=true)")
         #endif
         defer { Task { await refreshGate.end()
             #if DEBUG
-            print("[AUTH] refresh end (guarded=true)")
+            DLog("[AUTH] refresh end (guarded=true)")
             #endif
         } }
 
@@ -1041,7 +1041,7 @@ private extension SupabaseService {
     @MainActor
     func applyAuthSession(_ session: Session?) {
         #if DEBUG
-        print("[AUTH] applyAuthSession on main actor")
+        DLog("[AUTH] applyAuthSession on main actor")
         #endif
         self.session = session
         if let s = session {

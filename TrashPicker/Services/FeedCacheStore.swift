@@ -67,9 +67,7 @@ final class FeedCacheStore {
             try data.write(to: url, options: .atomic)
             lastSavedAt = record.savedAt
         } catch {
-            #if DEBUG
-            print("[FEED cache] save error=\(error.localizedDescription)")
-            #endif
+            DLog("[FEED cache] save error=\(error.localizedDescription)")
         }
     }
 
@@ -116,12 +114,9 @@ final class FeedCacheStore {
         do {
             try FileManager.default.removeItem(at: url)
         } catch {
-            // Ignore missing file errors; log others for debugging
-            #if DEBUG
             if (error as NSError).code != NSFileNoSuchFileError {
-                print("[FEED cache] clear error=\(error.localizedDescription)")
+                DLog("[FEED cache] clear error=\(error.localizedDescription)")
             }
-            #endif
         }
         lastSavedAt = nil
     }
