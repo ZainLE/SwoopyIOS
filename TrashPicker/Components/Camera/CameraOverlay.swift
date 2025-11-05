@@ -9,7 +9,6 @@ struct CameraOverlay: View {
     
     let onCaptured: (UIImage) -> Void
     let onCancel: () -> Void
-    let topPadding: CGFloat = 50
     
     @State private var isCapturing = false
     @State private var showPhotoPicker = false
@@ -50,7 +49,7 @@ struct CameraOverlay: View {
                                 .clipShape(Circle())
                         }
                         .padding(.trailing, 24)
-                        .padding(.top, topPadding)
+                        .padding(.top, 50)
                         }
                     Spacer()
                     

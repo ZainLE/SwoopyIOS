@@ -27,6 +27,7 @@ struct BigCardOverlay: View {
     let memberSince: Date?
     let pickupsCount: Int?
     let variant: Variant
+    let deadline: Date?
     
     // Actions
     let onDismiss: () -> Void
@@ -39,6 +40,8 @@ struct BigCardOverlay: View {
     @State private var dragOffset: CGSize = .zero
     @Namespace private var imageTransition
     @StateObject private var locationViewModel: LocationDescriptionViewModel
+    @State private var clock: Date = Date()
+    private let countdownTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     @State private var isReportPostSheetPresented = false
     @State private var isReportPostSuccessVisible = false
     @State private var reportSuccessTask: Task<Void, Never>? = nil
@@ -74,6 +77,16 @@ struct BigCardOverlay: View {
             case completed    // No actions, success message
         }
     }
+
+    // Live status text for reservations overlay
+    private func dynamicStatusText() -> String {
+        guard mode == .street, let deadline else { return statusInfo }
+        let remaining = max(0, Int(min(deadline.timeIntervalSinceNow, 2 * 3600)))
+        let hours = remaining / 3600
+        let minutes = (remaining % 3600) / 60
+        if hours > 0 { return "Pickup in: \(hours)h \(minutes)m" }
+        return "Pickup in: \(minutes)m"
+    }
     
     init(
         postID: String?,
@@ -89,6 +102,7 @@ struct BigCardOverlay: View {
         memberSince: Date?,
         pickupsCount: Int?,
         variant: Variant,
+        deadline: Date? = nil,
         onDismiss: @escaping () -> Void,
         onPrimaryAction: @escaping () -> Void,
         onSecondaryAction: @escaping () -> Void,
@@ -107,6 +121,7 @@ struct BigCardOverlay: View {
         self.memberSince = memberSince
         self.pickupsCount = pickupsCount
         self.variant = variant
+        self.deadline = deadline
         self.onDismiss = onDismiss
         self.onPrimaryAction = onPrimaryAction
         self.onSecondaryAction = onSecondaryAction
@@ -225,6 +240,9 @@ struct BigCardOverlay: View {
             reportSuccessTask?.cancel()
             reportSuccessTask = nil
         }
+        .onReceive(countdownTimer) { now in
+            clock = now
+        }
     }
 }
 
@@ -313,10 +331,21 @@ extension BigCardOverlay {
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundColor(.primary)
             
-            // Line 2: Status info (12pt)
-            Text(statusInfo)
+            // Line 2: Status info (12pt) — live countdown for street reservations
+            Text(dynamicStatusText())
                 .font(.system(size: 12, weight: .regular))
                 .foregroundColor(statusColor)
+
+            // Line 3: Address (street only), reuse friendlyText if available and meaningful
+            if mode == .street,
+               !locationViewModel.friendlyText.isEmpty,
+               locationViewModel.friendlyText != "Nearby" {
+                Text(locationViewModel.friendlyText)
+                    .font(.footnote)
+                    .foregroundStyle(Color("SwoopyDeepGreen"))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.9)
+            }
         }
     }
     
@@ -374,10 +403,12 @@ extension BigCardOverlay {
                 .allowsHitTesting(false)
             }
 
-            Text(locationViewModel.friendlyText)
-                .font(.footnote)
-                .foregroundStyle(AppTheme.ColorToken.muted)
-                .multilineTextAlignment(.leading)
+            if !locationViewModel.friendlyText.isEmpty && locationViewModel.friendlyText != "Nearby" {
+                Text(locationViewModel.friendlyText)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.ColorToken.muted)
+                    .multilineTextAlignment(.leading)
+            }
         }
     }
     

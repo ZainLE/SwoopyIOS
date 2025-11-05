@@ -40,7 +40,7 @@ struct ReservationRow: Identifiable {
     // owner (uploader)
     let ownerName: String
     let ownerPhone: String?
-    let contactPhone: String?
+    var contactPhone: String?
 
     // reservation state
     let status: ReservationStatus
@@ -54,7 +54,13 @@ struct ReservationRow: Identifiable {
     
     // Computed properties for business logic
     var expiresAt: Date {
-        endAt ?? Calendar.current.date(byAdding: .hour, value: 6, to: requestedAt) ?? requestedAt
+        // Backend's endAt wins; otherwise default to +6h for home, +2h cap for street
+        let fallback = Calendar.current.date(byAdding: .hour, value: 6, to: requestedAt) ?? requestedAt
+        if mode == .street {
+            let maxStreet = Calendar.current.date(byAdding: .hour, value: 2, to: requestedAt) ?? requestedAt
+            return min(endAt ?? fallback, maxStreet)
+        }
+        return endAt ?? fallback
     }
 
     var isExpired: Bool {
@@ -174,6 +180,8 @@ struct ReservationsView: View {
     @State private var contactReservation: ReservationRow?
     @State private var showContactOptions = false
     @State private var pendingContactRefreshId: String?
+    @State private var pendingOpenReservationId: String?
+    @State private var clock = Date()
 
     var body: some View {
         NavigationStack {
@@ -186,6 +194,37 @@ struct ReservationsView: View {
                 }
                 .onChange(of: svc.session?.accessToken ?? "") { _, _ in
                     Task { await maybeLoadReservations() }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .refreshReservations)) { note in
+                    if let reservationId = note.object as? String {
+                        pendingContactRefreshId = reservationId
+                    }
+                    Task { await loadReservations() }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .reservationContactUpdated)) { note in
+                    guard let info = note.userInfo as? [String: Any],
+                          let reservationId = info["reservationId"] as? String,
+                          let phone = info["contactPhone"] as? String else { return }
+                    updateLocalReservationContact(reservationId: reservationId, contactPhone: phone)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .openReservation)) { note in
+                    guard let reservationId = note.object as? String else { return }
+                    pendingOpenReservationId = reservationId
+                    presentReservationIfPossible()
+                    Task { await loadReservations() }
+                }
+                // Auto-remove expired reservations while viewing and advance a simple clock to refresh countdowns
+                .onReceive(timer) { now in
+                    clock = now
+                    let before = reservations.count
+                    if before > 0 {
+                        reservations.removeAll { $0.isExpired }
+                        let after = reservations.count
+                        if after < before {
+                            // Keep backend state in sync after local expiry removal
+                            Task { await loadReservations() }
+                        }
+                    }
                 }
                 .overlay(toastOverlayView)
         }
@@ -222,6 +261,7 @@ struct ReservationsView: View {
                     memberSince: nil,
                     pickupsCount: nil,
                     variant: reservationVariant(for: reservation),
+                    deadline: reservation.pickupDeadline,
                     onDismiss: { selectedReservation = nil },
                     onPrimaryAction: { handlePrimaryAction(for: reservation) },
                     onSecondaryAction: {
@@ -259,7 +299,10 @@ struct ReservationsView: View {
             let apiReservations = try await fetchWithRetry(svc: svc) {
                 try await api.getMyReservations()
             }
-            let rows = apiReservations.map(ReservationRow.init)
+            // Map and filter out expired reservations upfront
+            let rows = apiReservations
+                .map(ReservationRow.init)
+                .filter { !$0.isExpired }
             await MainActor.run {
                 reservations = rows
                 isLoading = false
@@ -277,6 +320,8 @@ struct ReservationsView: View {
                     }
                     pendingContactRefreshId = nil
                 }
+
+                presentReservationIfPossible()
             }
         } catch {
             DLog("Failed to load reservations: \(error.localizedDescription)")
@@ -292,10 +337,45 @@ struct ReservationsView: View {
         }
     }
 
+    @MainActor
+    private func presentReservationIfPossible() {
+        guard let targetId = pendingOpenReservationId else { return }
+        guard let reservation = reservations.first(where: { $0.id == targetId }) else { return }
+        selectedReservation = reservation
+        pendingOpenReservationId = nil
+    }
+
+    @MainActor
+    private func updateLocalReservationContact(reservationId: String, contactPhone: String) {
+        var didUpdate = false
+        if let index = reservations.firstIndex(where: { $0.id == reservationId }) {
+            reservations[index].contactPhone = contactPhone
+            didUpdate = true
+        }
+
+        if var current = selectedReservation, current.id == reservationId {
+            current.contactPhone = contactPhone
+            selectedReservation = current
+        }
+
+        if didUpdate && pendingContactRefreshId == reservationId {
+            pendingContactRefreshId = nil
+            contactReservation = reservations.first(where: { $0.id == reservationId })
+            if contactReservation?.canContact == true {
+                showContactOptions = true
+            }
+        } else if !didUpdate && pendingContactRefreshId == nil {
+            pendingContactRefreshId = reservationId
+        }
+    }
+
     // MARK: - Computed Sections
 
     private var visibleReservations: [ReservationRow] {
-        reservations.sorted { $0.requestedAt > $1.requestedAt }
+        // Ensure no expired items slip through and keep newest first
+        reservations
+            .filter { !$0.isExpired }
+            .sorted { $0.requestedAt > $1.requestedAt }
     }
 
     // MARK: - View Builders
@@ -368,6 +448,7 @@ struct ReservationsView: View {
                 .multilineTextAlignment(.center)
 
             Button("Browse Feed") {
+                router.selectedTab = .feed
                 onGoToFeed?()
                 dismiss()
             }
@@ -405,6 +486,7 @@ struct ReservationsView: View {
             reservation: reservation,
             isLoading: loadingReservations.contains(reservation.id),
             imageTransition: imageTransition,
+            tick: clock,
             onTap: { selectedReservation = reservation },
             onPickUp: { onPickup(reservationId: reservation.id) },
             onCancel: { onCancel(reservationId: reservation.id) },
@@ -441,9 +523,9 @@ struct ReservationsView: View {
     // MARK: - Actions
 
     private func onPickup(reservationId: String) {
-        guard let reservation = reservations.first(where: { $0.id == reservationId }) else { return }
+        guard reservations.contains(where: { $0.id == reservationId }) else { return }
         let alert = UIAlertController(
-            title: "Picked up the item?",
+            title: "Have you picked it up?",
             message: nil,
             preferredStyle: .alert
         )
@@ -471,11 +553,7 @@ struct ReservationsView: View {
 
     private func onDirections(reservation: ReservationRow) {
         guard reservation.mode == .street, let coordinate = reservation.exactCoordinate else { return }
-        MapHelper.openAppleMaps(
-            lat: coordinate.latitude,
-            lng: coordinate.longitude,
-            name: reservation.title
-        )
+        MapHelper.openAppleMaps(coordinate: coordinate, name: reservation.title)
     }
 
     private func onContact(reservation: ReservationRow) {
@@ -488,7 +566,7 @@ struct ReservationsView: View {
                 showContactOptions = true
             } else {
                 pendingContactRefreshId = reservation.id
-                NotificationCenter.default.post(name: .refreshReservations, object: nil)
+                NotificationCenter.default.post(name: .refreshReservations, object: reservation.id)
             }
         case .picked:
             showToastMessage("Already picked up.")
@@ -619,7 +697,8 @@ struct ReservationsView: View {
         case .pending:
             return AppTheme.ColorToken.danger
         case .active:
-            return AppTheme.ColorToken.primary
+            // Street reservations should show countdown in red; Home stays primary
+            return reservation.mode == .street ? Color("SwoopyRed") : AppTheme.ColorToken.primary
         case .picked:
             return AppTheme.ColorToken.success
         case .canceled, .expired:
@@ -660,6 +739,7 @@ private struct ReservationCard: View {
     let reservation: ReservationRow
     let isLoading: Bool
     let imageTransition: Namespace.ID
+    let tick: Date
     let onTap: () -> Void
     let onPickUp: () -> Void
     let onCancel: () -> Void
@@ -670,10 +750,11 @@ private struct ReservationCard: View {
         static let thumbnail: CGFloat = 96
     }
 
-    init(reservation: ReservationRow, isLoading: Bool, imageTransition: Namespace.ID, onTap: @escaping () -> Void, onPickUp: @escaping () -> Void, onCancel: @escaping () -> Void, onDirections: @escaping () -> Void, onContact: @escaping () -> Void) {
+    init(reservation: ReservationRow, isLoading: Bool, imageTransition: Namespace.ID, tick: Date, onTap: @escaping () -> Void, onPickUp: @escaping () -> Void, onCancel: @escaping () -> Void, onDirections: @escaping () -> Void, onContact: @escaping () -> Void) {
         self.reservation = reservation
         self.isLoading = isLoading
         self.imageTransition = imageTransition
+        self.tick = tick
         self.onTap = onTap
         self.onPickUp = onPickUp
         self.onCancel = onCancel
@@ -712,8 +793,8 @@ private struct ReservationCard: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.9)
                         .layoutPriority(1)
-                        .buttonStyle(SwoopyPrimaryButtonStyle())
-                        .disabled(isLoading || reservation.status == .pending)
+                        .buttonStyle(SwoopyPrimaryButtonStyle(minHeight: 44))
+                        .disabled(isLoading || !reservation.canContact)
                         .opacity(isLoading ? 0.6 : (reservation.canContact ? 1 : 0.45))
 
                     Button("Cancel", action: onCancel)
@@ -754,8 +835,8 @@ private struct ReservationCard: View {
                     .minimumScaleFactor(0.9)
                     .layoutPriority(1)
                     .buttonStyle(SwoopyPrimaryButtonStyle())
-                    .disabled(isLoading || reservation.status != .active)
-                    .opacity((isLoading || reservation.status != .active) ? 0.6 : 1.0)
+                    .disabled(isLoading)
+                    .opacity(isLoading ? 0.6 : 1.0)
 
                 Button("Cancel", action: onCancel)
                     .lineLimit(1)
@@ -816,6 +897,8 @@ private struct ReservationCard: View {
 
     private var streetTextBlock: some View {
         VStack(alignment: .leading, spacing: 2) {
+            // bind to ticking clock to refresh countdown text
+            EmptyView().id(tick)
             if let meters = reservation.distanceMeters {
                 Text(formatDistance(meters))
                     .font(.headline.weight(.semibold))
@@ -896,3 +979,4 @@ private func formatRemaining(_ until: Date) -> String {
     }
     return "Pickup in: \(minutes)m"
 }
+

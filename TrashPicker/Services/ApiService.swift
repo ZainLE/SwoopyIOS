@@ -189,11 +189,9 @@ struct FeedQuery: Codable {
     }
 }
 
-#if DEBUG
 struct FeedDebugContext {
     let debugId: String
 }
-#endif
 
 struct Location: Codable {
     let lng: String?
@@ -1770,3 +1768,4 @@ extension Reservation {
         }
     }
 }
+

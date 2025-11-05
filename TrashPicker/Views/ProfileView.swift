@@ -165,8 +165,8 @@ final class ProfileVM: ObservableObject {
 struct ProfileView: View {
     @EnvironmentObject var svc: SupabaseService
     @StateObject private var viewModel: ProfileVM
+    @StateObject private var notificationService = NotificationService(api: ApiService(supabaseService: SupabaseService.shared))
     @State private var showingSignOutError = false
-    @State private var notificationsCount = 0
     @State private var reportCategory: String?
     @State private var reportMessage: String = ""
     @State private var reportScreenshot: UIImage?
@@ -207,7 +207,7 @@ struct ProfileView: View {
                 viewModel.startProfileRefresh(force: true)
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 await viewModel.load()
-                notificationsCount = svc.pending.count
+                await reloadNotificationBadges()
             }
         }
         .fullScreenCover(isPresented: $reportShowCamera) {
@@ -249,22 +249,24 @@ struct ProfileView: View {
         .onReceive(svc.$myUploads) { uploads in
             viewModel.uploadsCount = uploads.count
         }
-        .onReceive(svc.$pending) { items in
-            notificationsCount = items.count
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .notificationsBadgeDecrement)) { _ in
-            notificationsCount = max(notificationsCount - 1, 0)
-        }
         .onAppear {
             Task {
                 await viewModel.load()
-                notificationsCount = svc.pending.count
+                await reloadNotificationBadges()
             }
             viewModel.startProfileRefresh()
         }
         .onDisappear {
             viewModel.stopProfileRefresh()
             hideReportSuccessModal()
+        }
+        .onChange(of: svc.phase) { _, newPhase in
+            if newPhase == .signedIn {
+                Task { await reloadNotificationBadges() }
+            } else if newPhase == .signedOut {
+                notificationService.requestsCount = 0
+                notificationService.unreadCount = 0
+            }
         }
         .overlay {
             ZStack {
@@ -419,8 +421,9 @@ struct ProfileView: View {
     
     @ViewBuilder
     private var notificationsSection: some View {
+        let totalBadge = max(0, notificationService.requestsCount + notificationService.unreadCount)
         Section {
-            NavigationLink(destination: NotificationsView()) {
+            NavigationLink(destination: NotificationsViewNew(notificationService: notificationService)) {
                 HStack(spacing: 12) {
                     Image(systemName: "bell")
                         .font(.system(size: 20))
@@ -432,26 +435,28 @@ struct ProfileView: View {
                             .font(AppFont.body)
                             .foregroundColor(AppColor.text)
                         
-                        Text("Pickup requests")
+                        Text("Requests & updates")
                             .font(AppFont.sub)
                             .foregroundColor(AppColor.muted)
                     }
                     
                     Spacer()
                     
-                    Text("\(notificationsCount)")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(AppColor.brandGreen)
-                        .clipShape(Capsule())
+                    if totalBadge > 0 {
+                        Text("\(totalBadge)")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(AppColor.brandGreen)
+                            .clipShape(Capsule())
+                    }
                 }
                 .padding(.vertical, 4)
             }
         }
     }
-    
+
     @ViewBuilder
     private var primaryActionsSection: some View {
         Section {
@@ -496,7 +501,25 @@ struct ProfileView: View {
             .listRowSeparator(.hidden)
         }
     }
-    
+
+    @MainActor
+    private func reloadNotificationBadges() async {
+        guard svc.hasAuthToken else {
+            notificationService.requestsCount = 0
+            notificationService.unreadCount = 0
+            return
+        }
+        do {
+            async let reqs = notificationService.fetchIncomingRequests()
+            async let notes = notificationService.fetchNotifications()
+            _ = try await (reqs, notes)
+        } catch {
+#if DEBUG
+            DLog("[PROFILE] notifications refresh failed: \(error.localizedDescription)")
+#endif
+        }
+    }
+
     private var reportProblemContext: ReportProblemContext {
         let session = svc.session
         let user = session?.user
@@ -1232,3 +1255,4 @@ extension CKTrashItem {
     var cityText: String { city }
     var mapCoordinate: CLLocationCoordinate2D? { coordinate }
 }
+

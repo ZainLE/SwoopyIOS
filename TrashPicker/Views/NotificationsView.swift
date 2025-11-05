@@ -276,12 +276,12 @@ extension Notification.Name {
     static let notificationsBadgeDecrement = Notification.Name("notificationsBadgeDecrement")
 }
 
-struct NotificationSections {
-    var incoming: [NotificationItem]
-    var general: [NotificationItem]
+struct NotificationsSections {
+    var incoming: [NotificationsItem]
+    var general: [NotificationsItem]
 }
 
-struct NotificationItem: Identifiable, Equatable {
+struct NotificationsItem: Identifiable, Equatable {
     let id: String
     let reservationId: String
     let postId: String
@@ -295,7 +295,7 @@ struct NotificationItem: Identifiable, Equatable {
     let createdAt: Date?
     let contactPhone: String?
 
-    static func == (lhs: NotificationItem, rhs: NotificationItem) -> Bool {
+    static func == (lhs: NotificationsItem, rhs: NotificationsItem) -> Bool {
         return lhs.id == rhs.id
     }
 }
@@ -314,7 +314,7 @@ final class NotificationsViewModel: ObservableObject {
     enum State {
         case loading
         case error(String)
-        case content(NotificationSections)
+        case content(NotificationsSections)
     }
 
     @Published var state: State = .loading
@@ -529,7 +529,7 @@ final class NotificationsViewModel: ObservableObject {
     }
 
     // MARK: - Private
-    private func fetchNotifications(api: ApiService) async throws -> NotificationSections {
+    private func fetchNotifications(api: ApiService) async throws -> NotificationsSections {
         struct NotificationsEnvelope: Decodable {
             struct ServerNotification: Decodable {
                 struct RemotePost: Decodable {
@@ -577,7 +577,7 @@ final class NotificationsViewModel: ObservableObject {
             return nil
         }
 
-        let incoming: [NotificationItem] = (decoded.notifications ?? []).compactMap { note in
+        let incoming: [NotificationsItem] = (decoded.notifications ?? []).compactMap { note in
             guard let type = note.type?.lowercased(), type == "new_request" else { return nil }
             let mode = ItemMode(rawValue: (note.post?.mode ?? "").lowercased()) ?? .street
             guard mode == .home else { return nil }
@@ -594,7 +594,7 @@ final class NotificationsViewModel: ObservableObject {
             let avatarURL = note.counterparty?.avatar_url.flatMap(URL.init(string:))
             let createdAt = Time.parseISO(note.created_at)
 
-            return NotificationItem(
+            return NotificationsItem(
                 id: reservationId,
                 reservationId: reservationId,
                 postId: postId,
@@ -610,7 +610,7 @@ final class NotificationsViewModel: ObservableObject {
             )
         }.sorted { ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) }
 
-        let general: [NotificationItem] = (decoded.notifications ?? []).compactMap { note in
+        let general: [NotificationsItem] = (decoded.notifications ?? []).compactMap { note in
             guard let type = note.type?.lowercased(), type != "new_request" else { return nil }
 
             if let currentId,
@@ -648,7 +648,7 @@ final class NotificationsViewModel: ObservableObject {
                 return nil
             }
 
-            return NotificationItem(
+            return NotificationsItem(
                 id: reservationId,
                 reservationId: reservationId,
                 postId: postId,
@@ -664,7 +664,7 @@ final class NotificationsViewModel: ObservableObject {
             )
         }.sorted { ($0.createdAt ?? .distantPast) > ($1.createdAt ?? .distantPast) }
 
-        return NotificationSections(incoming: incoming, general: general)
+        return NotificationsSections(incoming: incoming, general: general)
     }
 
     private func resolveError(_ error: Error, fallback: String) -> String {
@@ -722,7 +722,7 @@ struct NotificationsView: View {
     @StateObject private var vm = NotificationsViewModel(dateProvider: DefaultDateProvider())
     @State private var api: ApiService?
     @State private var toastMessage: String? = nil
-    @State private var selectedIncoming: NotificationItem?
+    @State private var selectedIncoming: NotificationsItem?
     @State private var detailPhoneInput: String = ""
     @State private var detailError: String?
     @State private var detailAction: DetailAction = .idle
@@ -819,7 +819,7 @@ struct NotificationsView: View {
     }
 
     @ViewBuilder
-    private func contentView(for sections: NotificationSections) -> some View {
+    private func contentView(for sections: NotificationsSections) -> some View {
         if sections.incoming.isEmpty && sections.general.isEmpty {
             List {
                 ContentUnavailableView(
@@ -864,7 +864,7 @@ struct NotificationsView: View {
         }
     }
 
-    private func incomingDetailSheet(item: NotificationItem) -> some View {
+    private func incomingDetailSheet(item: NotificationsItem) -> some View {
         NavigationStack {
             IncomingRequestDetailContent(
                 item: item,
@@ -885,7 +885,7 @@ struct NotificationsView: View {
         }
     }
 
-    private func generalMessage(for item: NotificationItem) -> String {
+    private func generalMessage(for item: NotificationsItem) -> String {
         if let message = item.message, !message.isEmpty {
             return message
         }
@@ -934,7 +934,7 @@ struct NotificationsView: View {
     }
 
     private struct IncomingRequestRow: View {
-        let item: NotificationItem
+        let item: NotificationsItem
         let relativeTime: String?
 
         var body: some View {
@@ -987,7 +987,7 @@ struct NotificationsView: View {
     }
 
     private struct GeneralNotificationRow: View {
-        let item: NotificationItem
+        let item: NotificationsItem
         let message: String
         let relativeTime: String?
         let iconName: String
@@ -1038,7 +1038,7 @@ struct NotificationsView: View {
     }
 
     private struct IncomingRequestDetailContent: View {
-        let item: NotificationItem
+        let item: NotificationsItem
         @Binding var phoneInput: String
         @Binding var detailError: String?
         let actionState: DetailAction
@@ -1167,3 +1167,4 @@ struct NotificationsView: View {
         }
     }
 }
+

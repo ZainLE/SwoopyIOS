@@ -3,8 +3,8 @@ import PhotosUI
 import UIKit
 
 struct OnboardingFlow: View {
-    @StateObject private var viewModel: OnboardingViewModel
     @EnvironmentObject private var appFlow: AppFlowCoordinator
+    @StateObject private var viewModel: OnboardingViewModel
     @State private var pickerItem: PhotosPickerItem?
     @State private var showPhotoSourceSheet = false
     
@@ -62,12 +62,10 @@ struct OnboardingFlow: View {
     private func continueFlow() {
         guard viewModel.canContinue, viewModel.isSaving == false else { return }
         Task {
-            let success = await viewModel.completeOnboarding()
-            if success {
-                await MainActor.run {
-                    Haptics.play(.success)
-                    appFlow.markProfileComplete()
-                }
+            let ok = await viewModel.completeOnboarding()
+            if ok {
+                appFlow.markProfileComplete()
+                Haptics.play(.success)
             }
         }
     }
@@ -102,41 +100,30 @@ private struct WelcomeProfileScreen: View {
     }
     
     var body: some View {
-        ZStack(alignment: .bottom) {
-            ScrollView {
-                VStack(spacing: 24) {
-                    logo
-                    avatarSection
-                    formFields
-                    if viewModel.isSaving {
-                        ProgressView()
-                            .padding(.top, 8)
-                    }
-                    if let error = viewModel.errorMessage {
-                        Text(error)
-                            .font(.footnote)
-                            .foregroundColor(.red)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+        ScrollView {
+            VStack(spacing: 24) {
+                logo
+                avatarSection
+                formFields
+                if viewModel.isSaving {
+                    ProgressView()
+                        .padding(.top, 8)
                 }
-                .padding(.horizontal, 24)
-                .padding(.top, 32)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.bottom, 140)
-            }
-            .scrollIndicators(.hidden)
-            .scrollDismissesKeyboard(.interactively)
-            .keyboardPadding()
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    Button("Done") {
-                        focus = nil
-                    }
-                    .font(.body.weight(.semibold))
+                if let error = viewModel.errorMessage {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundColor(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            
+            .padding(.horizontal, 24)
+            .padding(.top, 24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.bottom, 140)
+        }
+        .scrollIndicators(.hidden)
+        .scrollDismissesKeyboard(.immediately)
+        .safeAreaInset(edge: .bottom) {
             PillButton(title: "Continue", enabled: viewModel.canContinue && !viewModel.isSaving) {
                 guard viewModel.canContinue, !viewModel.isSaving else { return }
                 focus = nil
@@ -144,10 +131,8 @@ private struct WelcomeProfileScreen: View {
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 16)
-            .keyboardPadding()
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
-        .background(Color(AppColor.surface).ignoresSafeArea())
         .onChange(of: viewModel.phone) { _, newValue in
             let sanitized = sanitize(phone: newValue)
             if sanitized != newValue {
@@ -214,7 +199,11 @@ private struct WelcomeProfileScreen: View {
     }
     
     private var helperText: String {
-        "It helps verify your account and build trust within the community."
+        if isPhoneInvalid {
+            return "Phone numbers should start with + and include 7–15 digits."
+        } else {
+            return "It helps verify your account and build trust within the community."
+        }
     }
     
     private var helperColor: Color {
