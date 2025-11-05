@@ -15,6 +15,7 @@ private let kAuthCornerRadius: CGFloat = 12
 struct AuthView: View {
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var api: ApiService
+    @EnvironmentObject var appFlow: AppFlowCoordinator
     
     @State private var mode: AuthMode = .signIn
     @State private var email = ""
@@ -32,6 +33,8 @@ struct AuthView: View {
     @State private var confirmInteracted = false
     @State private var validationAttempted = false
     @State private var lastFocusedField: Field? = nil
+    @State private var showOTPVerification = false
+    @State private var otpEmail = ""
     
     private var trimmedEmail: String { email.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedPass:  String { password.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -207,6 +210,11 @@ struct AuthView: View {
         .onAppear { recalcSubmit(); BootCoordinator.shared.start(svc: svc, api: api) }
         .onTapGesture { focus = nil }
         .background(Color(AppColor.surface))
+        .sheet(isPresented: $showOTPVerification) {
+            OTPVerificationView(email: otpEmail)
+                .environmentObject(svc)
+                .environmentObject(appFlow)
+        }
     }
     
     // MARK: - Sections (split for compiler sanity)
@@ -439,7 +447,10 @@ struct AuthView: View {
                 case .signIn:
                     try await svc.signInEmailPassword(email: trimmedEmail, password: trimmedPass)
                 case .signUp:
-                    try await svc.signUpEmailPassword(email: trimmedEmail, password: trimmedPass)
+                    // Sign up and navigate to OTP verification
+                    try await svc.client.auth.signUp(email: trimmedEmail, password: trimmedPass)
+                    otpEmail = trimmedEmail
+                    showOTPVerification = true
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -633,4 +644,5 @@ struct AuthView: View {
     AuthView()
         .environmentObject(SupabaseService.shared)
         .environmentObject(ApiService(supabaseService: SupabaseService.shared))
+        .environmentObject(AppFlowCoordinator())
 }
