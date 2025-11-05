@@ -25,7 +25,7 @@ final class AppFlowCoordinator: ObservableObject {
 
     private var loadingTask: Task<Void, Never>?
     private var loadingStartedAt: Date?
-    private let minimumLoadingDuration: TimeInterval = 0.45
+    private let minimumLoadingDuration: TimeInterval = 2.5
 
     init(
         supabase: SupabaseService = .shared,

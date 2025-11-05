@@ -42,8 +42,8 @@ class AnimatedLogoOrbitScene: SKScene {
     let container = SKNode()
     
     // Badge configuration
-    private let badgeRadius: CGFloat = 13.0
-    private let symbolPointSize: CGFloat = 15.0
+    private let badgeRadius: CGFloat = 10.0
+    private let symbolPointSize: CGFloat = 13.0
     
     // Curated light palette for Swoopy vibe
     private let symbolPalettes: [[UIColor]] = [
@@ -176,37 +176,39 @@ class AnimatedLogoOrbitScene: SKScene {
         let bundles: [Bundle] = [Bundle.main, Bundle(for: AnimatedLogoOrbitScene.self)]
         let image = bundles.compactMap { UIImage(named: name, in: $0, compatibleWith: nil) }.first
         guard let image else { return nil }
-        let texture = SKTexture(image: image)
-        texture.usesMipmaps = true
-        texture.filteringMode = .linear
-        let sprite = SKSpriteNode(texture: texture)
-
         let targetDiameter = max(badgeRadius * 2, 0)
-        let imageSize = image.size
-        if imageSize.width > 0, imageSize.height > 0 {
-            let scale = max(targetDiameter / imageSize.width, targetDiameter / imageSize.height)
-            let newSize = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
-            sprite.size = newSize
-        } else {
-            sprite.size = CGSize(width: targetDiameter, height: targetDiameter)
+
+        // Pre-render a circular image at device scale for crisp edges and proper aspect fill
+        let scale = UIScreen.main.scale
+        let rendererFormat = UIGraphicsImageRendererFormat.default()
+        rendererFormat.scale = scale
+        rendererFormat.opaque = false
+        let renderSize = CGSize(width: targetDiameter, height: targetDiameter)
+        let renderer = UIGraphicsImageRenderer(size: renderSize, format: rendererFormat)
+        let circularImage = renderer.image { ctx in
+            let rect = CGRect(origin: .zero, size: renderSize)
+            let path = UIBezierPath(ovalIn: rect)
+            path.addClip()
+
+            // Aspect-fill the source image into the circle rect
+            let imgSize = image.size
+            guard imgSize.width > 0, imgSize.height > 0 else { return }
+            let aspect = max(rect.width / imgSize.width, rect.height / imgSize.height)
+            let drawSize = CGSize(width: imgSize.width * aspect, height: imgSize.height * aspect)
+            let drawOrigin = CGPoint(x: (rect.width - drawSize.width) / 2.0, y: (rect.height - drawSize.height) / 2.0)
+            let drawRect = CGRect(origin: drawOrigin, size: drawSize)
+            image.draw(in: drawRect)
         }
 
-        sprite.position = CGPoint.zero
+        let texture = SKTexture(image: circularImage)
+        texture.usesMipmaps = true
+        texture.filteringMode = .linear
+
+        let sprite = SKSpriteNode(texture: texture)
+        sprite.size = CGSize(width: targetDiameter, height: targetDiameter)
+        sprite.position = .zero
         sprite.colorBlendFactor = 0
-
-        let cropNode = SKCropNode()
-        cropNode.name = "assetCrop"
-        cropNode.position = .zero
-
-        let maskDiameter = targetDiameter
-        let mask = SKShapeNode(circleOfRadius: maskDiameter / 2)
-        mask.fillColor = .white
-        mask.strokeColor = .clear
-        mask.lineWidth = 0
-        cropNode.maskNode = mask
-
-        cropNode.addChild(sprite)
-        return cropNode
+        return sprite
     }
     
     private func createSymbolTexture(symbolName: String, palette: [UIColor]) -> SKTexture? {

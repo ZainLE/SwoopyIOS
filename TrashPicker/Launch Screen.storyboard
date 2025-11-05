@@ -15,11 +15,16 @@
                         <rect key="frame" x="0.0" y="0.0" width="393" height="852"/>
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                         <subviews>
-                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" fixedFrame="YES" image="SwoopyLogo" translatesAutoresizingMaskIntoConstraints="NO" id="cYu-t2-7fK">
+                            <imageView clipsSubviews="YES" userInteractionEnabled="NO" contentMode="scaleAspectFit" image="SwoopyLogo" translatesAutoresizingMaskIntoConstraints="NO" id="cYu-t2-7fK">
                                 <rect key="frame" x="116" y="261" width="160" height="330"/>
-                                <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMaxY="YES"/>
                             </imageView>
                         </subviews>
+                        <constraints>
+                            <constraint firstItem="cYu-t2-7fK" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="cnstr-centerX"/>
+                            <constraint firstItem="cYu-t2-7fK" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" id="cnstr-centerY"/>
+                            <constraint firstItem="cYu-t2-7fK" firstAttribute="width" constant="160" id="cnstr-width"/>
+                            <constraint firstItem="cYu-t2-7fK" firstAttribute="height" constant="330" id="cnstr-height"/>
+                        </constraints>
                         <viewLayoutGuide key="safeArea" id="Bcu-3y-fUS"/>
                         <color key="backgroundColor" red="1" green="1" blue="1" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
                     </view>
