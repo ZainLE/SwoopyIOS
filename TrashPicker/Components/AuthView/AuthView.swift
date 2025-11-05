@@ -145,20 +145,30 @@ struct AuthView: View {
     }
     
     var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                headerLogo
-                spacer16
-                segmentControl
-                errorBubble
-                formFields
-                separator
-                socialButtons
-                Spacer(minLength: 20)
+        ZStack {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 20) {
+                    headerLogo
+                    spacer16
+                    segmentControl
+                    errorBubble
+                    formFields
+                    separator
+                    socialButtons
+                    Spacer(minLength: 20)
+                }
+                .padding(.top, 20)
+                .padding(.bottom, 20)
             }
-            .padding(.top, 20)
-            .padding(.bottom, 20)
+
+            VStack {
+                Spacer()
+                if mode == .signUp {
+                    signUpLegalFooter
+                }
+            }
         }
+        .ignoresSafeArea(.keyboard)
         .tint(Color(AppColor.darkGreen))
         .onChange(of: email) { _ in recalcSubmit() }
         .onChange(of: password) { _ in
@@ -197,11 +207,6 @@ struct AuthView: View {
         .onAppear { recalcSubmit(); BootCoordinator.shared.start(svc: svc, api: api) }
         .onTapGesture { focus = nil }
         .background(Color(AppColor.surface))
-        .safeAreaInset(edge: .bottom) {
-            if mode == .signUp {
-                signUpLegalFooter
-            }
-        }
     }
     
     // MARK: - Sections (split for compiler sanity)
