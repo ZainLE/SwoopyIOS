@@ -1,0 +1,21 @@
+/* 
+  Localizable.strings (English)
+  Swoopy - SmartlookConsentSDK Localization
+*/
+
+// SmartlookConsentSDK Panel UI
+"smartlook-consent-sdk-title" = "Privacy settings";
+"smartlook-consent-sdk-text" = "Choose what data you share with Swoopy.";
+"smartlook-consent-sdk-button" = "Save";
+
+// Privacy Consent
+"smartlook-consent-sdk-privacy-consent" = "Privacy consent";
+
+// Analytics Consent
+"smartlook-consent-sdk-analytics-consent" = "Analytics & crash reports";
+"smartlook-consent-sdk-analytics-consent-url" = "https://swoopy.eu/privacy";
+
+// Legacy UI Strings (kept for backward compatibility)
+"smartlook-consent-sdk-settings-title" = "Privacy Settings";
+"smartlook-consent-sdk-settings-save-button" = "Save";
+"smartlook-consent-sdk-settings-fullscreen-button" = "View Full Policy";

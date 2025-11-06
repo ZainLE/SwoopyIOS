@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import OneSignalFramework
+import SmartlookAnalytics
 
 @main
 struct TrashPickerApp: App {
@@ -18,6 +19,8 @@ struct TrashPickerApp: App {
         )
         #endif
         AppBoot.markLaunch()
+        // AUDIT: log bundle id
+        AuditLog.flow("bundleId=\(Bundle.main.bundleIdentifier ?? "nil")")
         UINavigationBar.appearance().titleTextAttributes = [.foregroundColor: UIColor.label]
         
         // Enforce Light Mode globally across all windows
@@ -32,6 +35,9 @@ struct TrashPickerApp: App {
     @StateObject private var ck  = CKTrashService()
     @StateObject private var draftStore = UploadDraftStore()
     @StateObject private var loc = LocationManager()
+    @StateObject private var consent = ConsentManager.shared
+    
+    @State private var showConsentAlert = false
 
     var body: some Scene {
         WindowGroup {
@@ -41,6 +47,7 @@ struct TrashPickerApp: App {
                 .environmentObject(ck)
                 .environmentObject(draftStore)
                 .environmentObject(loc)
+                .environmentObject(consent)
                 .onOpenURL { url in
                     Task {
                         // Handle OAuth callback (Google, magic links, etc.)
@@ -49,6 +56,24 @@ struct TrashPickerApp: App {
                 }
                 .tint(AppTheme.ColorToken.primary)
                 .preferredColorScheme(.light) // SwiftUI-level Light Mode enforcement
+                .onAppear {
+                    // Show consent alert on first launch if consent is unknown
+                    if consent.analytics == .unknown {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            showConsentAlert = true
+                        }
+                    }
+                }
+                .alert("Help improve Swoopy?", isPresented: $showConsentAlert) {
+                    Button("Allow analytics") {
+                        consent.setProvidedByAlert()
+                    }
+                    Button("Not now", role: .cancel) {
+                        consent.setDeniedByAlert()
+                    }
+                } message: {
+                    Text("Allow anonymous usage, crash, and performance data to fix bugs and enhance your experience.")
+                }
         }
     }
 }
@@ -91,6 +116,8 @@ private struct RootGateView: View {
             loadingSplash
         case .auth:
             AuthView()
+        case .loadingProfile:
+            LoadingGateView(message: "Loading your profile…")
         case .profileCapture:
             OnboardingFlow()
         case .introShowcase:
@@ -160,6 +187,14 @@ private struct RootGateView: View {
                         .padding(16)
                 }
             }
+            .overlay(alignment: .bottomLeading) {
+                FlowDebugHUD(
+                    session: svc.phase == .signedIn,
+                    profile: appFlow.hasCompletedProfile,
+                    onboarding: appFlow.hasCompletedIntro,
+                    state: String(describing: appFlow.phase)
+                )
+            }
 #endif
     }
 }
@@ -213,6 +248,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         logPushSubscriptionState(context: "post-init")
         
         requestNotificationPermissionIfNeeded()
+
+        // Smartlook Analytics initialization
+        // NOTE: Mask sensitive fields (addresses, precise location) in Smartlook recordings.
+        Smartlook.instance.preferences.projectKey = "6ca49e4d5c6c098cd2aee92d68dc987c0f8fc8fa"
+        
+        // Apply current consent state at boot (native consent system)
+        Task { @MainActor in
+            let currentState = ConsentManager.shared.analytics
+            ConsentRuntime.applyAnalytics(currentState)
+            
+            #if DEBUG
+            DLog("[ANALYTICS] App launched - consent state: \(currentState)")
+            #endif
+        }
         
         return true
     }

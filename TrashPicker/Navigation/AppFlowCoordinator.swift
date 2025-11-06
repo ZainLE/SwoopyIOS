@@ -1,3 +1,15 @@
+// AUDIT REPORT:
+// After you run a DEBUG build and reproduce the issue, paste [FLOW]/[GATE]/[AUTH] logs here.
+// Summary:
+// - Single source of truth: AppFlowCoordinator.phase, driven by SupabaseService.phase & didCheckSession
+// - Gating: hasCompletedProfile (per-user defaults), hasCompletedIntro (per-user defaults)
+// - Next steps: capture logs around launch and first navigation decision
+//
+// Acceptance Criteria:
+// - Returning user who finished onboarding goes straight to feed (Phase.main)
+// - New user: profile capture → onboarding (once) → feed
+// - Reinstalls/bundle ID changes don’t auto-skip unless using server-side flag (optional)
+
 import Combine
 import Foundation
 
@@ -6,6 +18,7 @@ final class AppFlowCoordinator: ObservableObject {
     enum Phase: Equatable {
         case launching
         case auth
+        case loadingProfile
         case profileCapture
         case introShowcase
         case loading
@@ -18,6 +31,8 @@ final class AppFlowCoordinator: ObservableObject {
     private let boot: BootCoordinator
     private let defaults: UserDefaults
     private var cancellables: Set<AnyCancellable> = []
+    private var profileLoadDone: Bool = false
+    private var serverProfileHasName: Bool = false
 
     private var profileCompletionByUser: [String: Bool]
     private var introCompletionByUser: [String: Bool]
@@ -25,7 +40,7 @@ final class AppFlowCoordinator: ObservableObject {
 
     private var loadingTask: Task<Void, Never>?
     private var loadingStartedAt: Date?
-    private let minimumLoadingDuration: TimeInterval = 2.5
+    private let minimumLoadingDuration: TimeInterval = 2.7
 
     init(
         supabase: SupabaseService = .shared,
@@ -50,8 +65,10 @@ final class AppFlowCoordinator: ObservableObject {
     }
 
     var hasCompletedIntro: Bool {
-        guard let key = currentUserKey else { return false }
-        return introCompletionByUser[key] == true
+        // AUDIT: gating variable read (onboarding completion, centralized)
+        let v = OnboardingStorage.isComplete()
+        AuditLog.gate("read onboarding_completed_v1 = \(v)")
+        return v
     }
 
     func markProfileComplete() {
@@ -74,17 +91,9 @@ final class AppFlowCoordinator: ObservableObject {
     }
 
     func markIntroComplete() {
-        guard let key = currentUserKey else {
-            evaluatePhase(reason: "introComplete_noUser")
-            return
-        }
-
-        if introCompletionByUser[key] == true {
-            evaluatePhase(reason: "introComplete_existing")
-            return
-        }
-
-        setIntroCompletion(true, for: key)
+        OnboardingStorage.markComplete()
+        // AUDIT: onboarding completion set
+        AuditLog.gate("onboarding_completed_v1 set → true")
         evaluatePhase(reason: "introComplete_new")
     }
 
@@ -132,6 +141,7 @@ final class AppFlowCoordinator: ObservableObject {
             loadingTask?.cancel()
             loadingTask = nil
             loadingStartedAt = nil
+            profileLoadDone = false
         }
         evaluatePhase(reason: "authPhase")
     }
@@ -165,6 +175,12 @@ final class AppFlowCoordinator: ObservableObject {
     }
 
     private func evaluatePhase(reason: String) {
+        // AUDIT: launch → decide
+        AuditLog.flow("launch → decide (reason=\(reason))")
+        let sessionOK = supabase.phase == .signedIn
+        let profileOK = hasCompletedProfile
+        let introOK = hasCompletedIntro
+        AuditLog.gate("session=\(sessionOK) profile=\(profileOK) onboarding=\(introOK) didCheckSession=\(supabase.didCheckSession)")
         guard supabase.didCheckSession else {
             updatePhase(.launching, reason: reason)
             return
@@ -175,7 +191,15 @@ final class AppFlowCoordinator: ObservableObject {
             return
         }
 
-        guard hasCompletedProfile else {
+        // Ensure profile info is loaded/checked before deciding capture
+        if profileLoadDone == false {
+            enterLoadingProfile(reason: reason)
+            return
+        }
+
+        // Consider server metadata name as a signal of profile completeness
+        let effectiveProfileComplete = hasCompletedProfile || serverProfileHasName
+        guard effectiveProfileComplete else {
             updatePhase(.profileCapture, reason: reason)
             return
         }
@@ -190,6 +214,26 @@ final class AppFlowCoordinator: ObservableObject {
         }
 
         enterLoadingFlow(reason: reason)
+    }
+
+    private func enterLoadingProfile(reason: String) {
+        if phase != .loadingProfile {
+            updatePhase(.loadingProfile, reason: reason)
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            // Read session metadata as current source of truth for profile name
+            let nameMeta = supabase.session?.user.userMetadata["full_name"]?.description
+                ?? supabase.session?.user.userMetadata["name"]?.description
+                ?? ""
+            let trimmed = nameMeta.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.serverProfileHasName = !trimmed.isEmpty
+            self.profileLoadDone = true
+            AuditLog.gate("profile fetch: name='\(trimmed)' → hasName=\(self.serverProfileHasName)")
+            await MainActor.run { [weak self] in
+                self?.evaluatePhase(reason: "profileLoaded")
+            }
+        }
     }
 
     private func enterLoadingFlow(reason: String) {
@@ -261,11 +305,9 @@ final class AppFlowCoordinator: ObservableObject {
     }
 
     private func setIntroCompletion(_ value: Bool, for key: String) {
-        if value {
-            introCompletionByUser[key] = true
-        } else {
-            introCompletionByUser.removeValue(forKey: key)
-        }
+        // Kept for legacy migration compatibility; now centralized in OnboardingStorage
+        if value { introCompletionByUser[key] = true } else { introCompletionByUser.removeValue(forKey: key) }
         saveIntroFlags()
+        AuditLog.gate("persist introCompletion[\(key)] = \(value)")
     }
 }

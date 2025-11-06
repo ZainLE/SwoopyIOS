@@ -1,0 +1,10 @@
+/* 
+  Root.strings (English)
+  Swoopy Settings Bundle Localization
+*/
+
+"Privacy" = "Privacy";
+"Analytics & Crash Reports" = "Analytics & Crash Reports";
+"Help us improve Swoopy by allowing us to collect anonymous usage data, crash reports, and performance metrics. This helps us fix bugs and enhance your experience." = "Help us improve Swoopy by allowing us to collect anonymous usage data, crash reports, and performance metrics. This helps us fix bugs and enhance your experience.";
+"About" = "About";
+"Version" = "Version";

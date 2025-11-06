@@ -16,6 +16,8 @@
 		8E6579AA2E7066D800CECD47 /* Realtime in Frameworks */ = {isa = PBXBuildFile; productRef = 8E6579A92E7066D800CECD47 /* Realtime */; };
 		8E6579AC2E7066D800CECD47 /* Storage in Frameworks */ = {isa = PBXBuildFile; productRef = 8E6579AB2E7066D800CECD47 /* Storage */; };
 		8E6579AE2E7066D800CECD47 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 8E6579AD2E7066D800CECD47 /* Supabase */; };
+		8EF874082EBC9C4A00B9CE3E /* SmartlookAnalytics in Frameworks */ = {isa = PBXBuildFile; productRef = 8EF874072EBC9C4A00B9CE3E /* SmartlookAnalytics */; };
+		8EF8740B2EBCA05E00B9CE3E /* SmartlookConsentSDK in Frameworks */ = {isa = PBXBuildFile; productRef = 8EF8740A2EBCA05E00B9CE3E /* SmartlookConsentSDK */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -139,6 +141,8 @@
 				8E6579AE2E7066D800CECD47 /* Supabase in Frameworks */,
 				8E6579A42E7066D800CECD47 /* Auth in Frameworks */,
 				8E6579AC2E7066D800CECD47 /* Storage in Frameworks */,
+				8EF8740B2EBCA05E00B9CE3E /* SmartlookConsentSDK in Frameworks */,
+				8EF874082EBC9C4A00B9CE3E /* SmartlookAnalytics in Frameworks */,
 				8E6579AA2E7066D800CECD47 /* Realtime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -234,6 +238,8 @@
 				8E6579AB2E7066D800CECD47 /* Storage */,
 				8E6579AD2E7066D800CECD47 /* Supabase */,
 				8E301A312EB8FD6200B1CF5F /* OneSignalFramework */,
+				8EF874072EBC9C4A00B9CE3E /* SmartlookAnalytics */,
+				8EF8740A2EBCA05E00B9CE3E /* SmartlookConsentSDK */,
 			);
 			productName = TrashPicker;
 			productReference = 8E7AB91B2E68ACE8002CC686 /* Swoopy.app */;
@@ -324,6 +330,8 @@
 			packageReferences = (
 				8E6579A22E70663100CECD47 /* XCRemoteSwiftPackageReference "supabase-swift" */,
 				8E301A2E2EB8FD6200B1CF5F /* XCRemoteSwiftPackageReference "OneSignal-iOS-SDK" */,
+				8EF874062EBC9C4A00B9CE3E /* XCRemoteSwiftPackageReference "analytics-swift-package" */,
+				8EF874092EBCA05E00B9CE3E /* XCRemoteSwiftPackageReference "ios-consent-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8E7AB91C2E68ACE8002CC686 /* Products */;
@@ -822,6 +830,22 @@
 				minimumVersion = 2.5.1;
 			};
 		};
+		8EF874062EBC9C4A00B9CE3E /* XCRemoteSwiftPackageReference "analytics-swift-package" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/smartlook/analytics-swift-package";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.2.15;
+			};
+		};
+		8EF874092EBCA05E00B9CE3E /* XCRemoteSwiftPackageReference "ios-consent-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/smartlook/ios-consent-sdk.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.6.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -864,6 +888,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 8E6579A22E70663100CECD47 /* XCRemoteSwiftPackageReference "supabase-swift" */;
 			productName = Supabase;
+		};
+		8EF874072EBC9C4A00B9CE3E /* SmartlookAnalytics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8EF874062EBC9C4A00B9CE3E /* XCRemoteSwiftPackageReference "analytics-swift-package" */;
+			productName = SmartlookAnalytics;
+		};
+		8EF8740A2EBCA05E00B9CE3E /* SmartlookConsentSDK */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8EF874092EBCA05E00B9CE3E /* XCRemoteSwiftPackageReference "ios-consent-sdk" */;
+			productName = SmartlookConsentSDK;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

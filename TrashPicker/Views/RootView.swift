@@ -8,11 +8,3 @@ struct RootView: View {
            .environment(router)
     }
 }
-
-#Preview {
-    RootView()
-        .environmentObject(SupabaseService.shared)
-        .environmentObject(LocationManager())
-        .environmentObject(UploadDraftStore())
-        .environmentObject(CKTrashService())
-}

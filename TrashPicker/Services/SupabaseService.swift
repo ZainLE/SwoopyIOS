@@ -199,10 +199,14 @@ final class SupabaseService: NSObject, ObservableObject {
             switch result {
             case .success(let session):
                 self.applyAuthSession(session)
+                // AUDIT: after bootstrap restore
+                AuditLog.auth("bootstrapAuth success: isAuthenticated=\(self.isAuthenticated) userId=\(self.userId?.uuidString ?? "nil")")
             case .failure:
                 self.session = nil
                 self.isAuthenticated = false
                 self.phase = .signedOut
+                // AUDIT: after bootstrap failed
+                AuditLog.auth("bootstrapAuth failed → signedOut")
             }
         }
         let ms = Int(Date().timeIntervalSince(bootStart) * 1000)
@@ -213,6 +217,8 @@ final class SupabaseService: NSObject, ObservableObject {
         let s = try? await client.auth.session
         await MainActor.run { [s] in
             applyAuthSession(s)
+            // AUDIT: refreshAuthState result
+            AuditLog.auth("refreshAuthState: isAuthenticated=\(isAuthenticated) userId=\(userId?.uuidString ?? "nil")")
         }
     }
 
@@ -223,6 +229,8 @@ final class SupabaseService: NSObject, ObservableObject {
         do {
             let s = try await client.auth.session(from: url)
             applyAuthSession(s)
+            // AUDIT: oauth redirect applied
+            AuditLog.auth("oauth redirect applied: isAuthenticated=\(isAuthenticated) userId=\(userId?.uuidString ?? "nil")")
             AuthLogger.oauthCallbackSuccess(userId: s.user.id.uuidString)
         } catch {
             AuthLogger.oauthCallbackFailure(error: error)
@@ -317,6 +325,8 @@ final class SupabaseService: NSObject, ObservableObject {
     @MainActor
     func setSession(_ s: Session) {
         applyAuthSession(s)
+        // AUDIT: setSession applied
+        AuditLog.auth("setSession applied: isAuthenticated=\(isAuthenticated) userId=\(userId?.uuidString ?? "nil")")
     }
 
     @MainActor
@@ -327,6 +337,8 @@ final class SupabaseService: NSObject, ObservableObject {
         applyAuthSession(nil)
         // Keep didCheckSession = true so UI shows Auth immediately
         phase = .signedOut
+        // AUDIT: signOut
+        AuditLog.auth("signOut → signedOut")
     }
     
     // MARK: - Profile Management
@@ -1053,15 +1065,19 @@ private extension SupabaseService {
                 KeychainStore.saveSession(accessToken: s.accessToken, refreshToken: s.refreshToken)
                 if phase != .signedIn { phase = .signedIn }
                 AuthLogger.sessionApplied(userId: s.user.id.uuidString, accessTokenPresent: true)
+                // AUDIT: session applied
+                AuditLog.auth("applyAuthSession: signedIn userId=\(s.user.id.uuidString)")
             } else {
                 KeychainStore.clearSession()
                 if phase != .signedOut { phase = .signedOut }
+                AuditLog.auth("applyAuthSession: token missing → signedOut")
             }
         } else {
             self.userId = nil
             self.isAuthenticated = false
             KeychainStore.clearSession()
             if phase != .signedOut { phase = .signedOut }
+            AuditLog.auth("applyAuthSession: nil → signedOut")
         }
     }
 
@@ -1073,6 +1089,8 @@ private extension SupabaseService {
             await MainActor.run {
                 applyAuthSession(nil)
                 didCheckSession = true
+                // AUDIT: restoreSessionIfPossible no creds
+                AuditLog.auth("restoreSessionIfPossible: no keychain creds → signedOut didCheckSession=true")
             }
             return
         }
@@ -1085,6 +1103,8 @@ private extension SupabaseService {
             await MainActor.run {
                 applyAuthSession(s)
                 didCheckSession = true
+                // AUDIT: restoreSessionIfPossible success
+                AuditLog.auth("restoreSessionIfPossible success: isAuthenticated=\(isAuthenticated) userId=\(userId?.uuidString ?? "nil")")
             }
         } catch {
             // On failure with cached tokens: avoid brief auth flash; keep splash briefly
@@ -1095,6 +1115,7 @@ private extension SupabaseService {
                 if self.phase != .signedIn {
                     applyAuthSession(nil)
                     didCheckSession = true
+                    AuditLog.auth("restoreSessionIfPossible failed: fallback → signedOut didCheckSession=true")
                 }
             }
         }

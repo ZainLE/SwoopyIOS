@@ -1,6 +1,24 @@
 {
-  "originHash" : "252c44cb2c45e69f7766230da427f5cd5e1773e9f72967dcd9f2b8c384036f97",
+  "originHash" : "d1d318b21dbfbc21376b9f82ae1959ea8db857c40ccb60bade44859f48797828",
   "pins" : [
+    {
+      "identity" : "analytics-swift-package",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/smartlook/analytics-swift-package",
+      "state" : {
+        "revision" : "9e07a62f426365a06ffd75471b2ad4ade4efa0ce",
+        "version" : "2.2.15"
+      }
+    },
+    {
+      "identity" : "ios-consent-sdk",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/smartlook/ios-consent-sdk.git",
+      "state" : {
+        "revision" : "268dff63859f4e91de71aadaa153af44cf455824",
+        "version" : "1.6.0"
+      }
+    },
     {
       "identity" : "onesignal-ios-sdk",
       "kind" : "remoteSourceControl",

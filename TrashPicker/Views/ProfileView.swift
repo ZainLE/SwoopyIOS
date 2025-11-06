@@ -456,6 +456,7 @@ struct ProfileView: View {
             }
         }
     }
+    
 
     @ViewBuilder
     private var primaryActionsSection: some View {

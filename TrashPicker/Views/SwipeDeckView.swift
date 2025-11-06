@@ -9,6 +9,7 @@ import SwiftUI
 import MapKit
 import Combine
 import UIKit
+import SmartlookAnalytics
 
 
 private let VERBOSE_LOGS = true
@@ -625,6 +626,21 @@ struct SwipeDeckView: View {
             reservedIds.insert(post.id)
             HiddenPostsStore.shared.saveReserved(reservedIds)
             
+            // Analytics: ReservationMade (consent-gated)
+            if ConsentManager.shared.analytics == .provided {
+                let userId = svc.userId?.uuidString ?? "unknown"
+                let properties = Properties()
+                    .setProperty("postId", to: String(describing: post.id))
+                    .setProperty("mode", to: post.mode.rawValue)
+                    .setProperty("userId", to: userId)
+
+                Smartlook.instance.track(event: "ReservationMade", properties: properties)
+
+                #if DEBUG
+                DLog("[ANALYTICS] 📊 ReservationMade event tracked - postId: \(post.id)")
+                #endif
+            }
+
             // Refresh feed and show success
             await fetchFeedBridge()
             withAnimation(.easeOut(duration: 0.18)) {
@@ -697,6 +713,21 @@ struct SwipeDeckView: View {
             // Optional: background refresh; do not block UI
             Task { await fetchFeedBridge() }
             
+            // Analytics: ReservationMade (consent-gated)
+            if ConsentManager.shared.analytics == .provided {
+                let userId = svc.userId?.uuidString ?? "unknown"
+                let properties = Properties()
+                    .setProperty("postId", to: String(describing: post.id))
+                    .setProperty("mode", to: post.mode.rawValue)
+                    .setProperty("userId", to: userId)
+
+                Smartlook.instance.track(event: "ReservationMade", properties: properties)
+
+                #if DEBUG
+                DLog("[ANALYTICS] 📊 ReservationMade event tracked - postId: \(post.id)")
+                #endif
+            }
+
             // Show success toast
             successMessage = "Reserved for 2h 🎉"
             showSuccess = true
@@ -2117,3 +2148,4 @@ extension SwipeDeckView {
         }
     }
 }
+

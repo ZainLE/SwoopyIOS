@@ -7,6 +7,7 @@ import SwiftUI
 import MapKit
 import CoreLocation
 import UIKit
+import SmartlookAnalytics
 
 // MARK: - Supporting Types
 
@@ -585,6 +586,15 @@ struct ReservationsView: View {
             }
             await loadReservations()
             showToastMessage("Item marked as picked up")
+            // Analytics: ItemPickedUp (consent-gated)
+            if ConsentManager.shared.analytics == .provided {
+                let userId = svc.userId?.uuidString ?? "unknown"
+                let props = Properties()
+                    .setProperty("reservationId", to: String(describing: reservationId))
+                    .setProperty("userId", to: userId)
+
+                Smartlook.instance.track(event: "ItemPickedUp", properties: props)
+            }
         } catch {
             showToastMessage("Couldn't update reservation. Please try again.")
             await loadReservations()
