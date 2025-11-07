@@ -6,11 +6,22 @@ private enum AuthMode { case signIn, signUp }
 private enum LoadingKind { case email, apple, google }
 private enum Field { case email, password, confirm }
 
+@MainActor
+final class AuthFormViewModel: ObservableObject {
+    @Published var signInEmail: String = ""
+    @Published var signInPassword: String = ""
+    @Published var signUpEmail: String = ""
+    @Published var signUpPassword: String = ""
+    @Published var signUpConfirmPassword: String = ""
+}
+
 // MARK: - Constants
 
 private let kAuthButtonWidth: CGFloat = 360
 private let kAuthButtonHeight: CGFloat = 48
 private let kAuthCornerRadius: CGFloat = 12
+private let googleSignInErrorDomain = "com.google.GIDSignIn"
+private let googleSignInCanceledCode = -5
 
 struct AuthView: View {
     @EnvironmentObject var svc: SupabaseService
@@ -18,9 +29,7 @@ struct AuthView: View {
     @EnvironmentObject var appFlow: AppFlowCoordinator
     
     @State private var mode: AuthMode = .signIn
-    @State private var email = ""
-    @State private var password = ""
-    @State private var confirm = ""
+    @StateObject private var form = AuthFormViewModel()
     @State private var reveal = false
     @State private var loading: LoadingKind? = nil
     @State private var errorMessage: String?
@@ -35,6 +44,68 @@ struct AuthView: View {
     @State private var lastFocusedField: Field? = nil
     @State private var showOTPVerification = false
     @State private var otpEmail = ""
+    
+    private var email: String {
+        get { mode == .signIn ? form.signInEmail : form.signUpEmail }
+        set {
+            if mode == .signIn {
+                form.signInEmail = newValue
+            } else {
+                form.signUpEmail = newValue
+            }
+        }
+    }
+    
+    private var password: String {
+        get { mode == .signIn ? form.signInPassword : form.signUpPassword }
+        set {
+            if mode == .signIn {
+                form.signInPassword = newValue
+            } else {
+                form.signUpPassword = newValue
+            }
+        }
+    }
+    
+    private var confirm: String {
+        get { form.signUpConfirmPassword }
+        set { form.signUpConfirmPassword = newValue }
+    }
+    
+    private var emailBinding: Binding<String> {
+        Binding(
+            get: { email },
+            set: { newValue in
+                if mode == .signIn {
+                    form.signInEmail = newValue
+                } else {
+                    form.signUpEmail = newValue
+                }
+            }
+        )
+    }
+    
+    private var passwordBinding: Binding<String> {
+        Binding(
+            get: { password },
+            set: { newValue in
+                if mode == .signIn {
+                    form.signInPassword = newValue
+                } else {
+                    form.signUpPassword = newValue
+                }
+            }
+        )
+    }
+    
+    private var confirmBinding: Binding<String> {
+        Binding(
+            get: { confirm },
+            set: { newValue in
+                form.signUpConfirmPassword = newValue
+            }
+        )
+    }
     
     private var trimmedEmail: String { email.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedPass:  String { password.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -183,8 +254,7 @@ struct AuthView: View {
             recalcSubmit()
         }
         .onChange(of: mode) {
-            // reset cross-mode state, then recalc
-            email = ""; password = ""; confirm = ""
+            // reset cross-mode UI state, then recalc
             errorMessage = nil; focus = nil
             loading = nil
             hasAgreedToTerms = false
@@ -251,7 +321,7 @@ struct AuthView: View {
     
     @ViewBuilder private var formFields: some View {
         VStack(spacing: 12) {
-            TextField("Email", text: $email)
+            TextField("Email", text: emailBinding)
                 .textContentType(.emailAddress)
                 .keyboardType(.emailAddress)
                 .textInputAutocapitalization(.never)
@@ -297,13 +367,13 @@ struct AuthView: View {
             HStack {
                 Group {
                     if reveal {
-                        TextField("Password", text: $password)
+                        TextField("Password", text: passwordBinding)
                             .textContentType(.password)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .focused($focus, equals: .password)
                     } else {
-                        SecureField("Password", text: $password)
+                        SecureField("Password", text: passwordBinding)
                             .textContentType(.password)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
@@ -344,7 +414,7 @@ struct AuthView: View {
     @ViewBuilder private var confirmField: some View {
         let errorMessage = shouldShowConfirmError ? confirmValidationMessage : nil
         VStack(alignment: .leading, spacing: 4) {
-            SecureField("Confirm password", text: $confirm)
+            SecureField("Confirm password", text: confirmBinding)
                 .textContentType(.password)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -471,7 +541,7 @@ struct AuthView: View {
                 appleCoordinator = nil
             },
             onError: { error in
-                if let authError = error as? ASAuthorizationError, authError.code == .canceled {
+                if isUserCancelledAppleError(error) {
                     DLog("⚪️ Apple Sign-In cancelled by user")
                 } else {
                     errorMessage = error.localizedDescription
@@ -490,7 +560,13 @@ struct AuthView: View {
         Task { @MainActor in
             defer { loading = nil }
             do { try await svc.signInWithGoogle() }
-            catch { errorMessage = error.localizedDescription }
+            catch {
+                if isUserCancelledGoogleError(error) {
+                    DLog("⚪️ Google Sign-In cancelled by user")
+                    return
+                }
+                errorMessage = error.localizedDescription
+            }
         }
     }
     
@@ -504,6 +580,43 @@ struct AuthView: View {
         if let url = URL(string: "https://terms.swoopy.eu/") {
             UIApplication.shared.open(url)
         }
+    }
+    
+    private func isUserCancelledAppleError(_ error: Error) -> Bool {
+        if let appleError = error as? ASAuthorizationError, appleError.code == .canceled {
+            return true
+        }
+        if #available(iOS 12.0, *) {
+            if let webError = error as? ASWebAuthenticationSessionError, webError.code == .canceledLogin {
+                return true
+            }
+            let nsError = error as NSError
+            if nsError.domain == ASWebAuthenticationSessionError.errorDomain,
+               nsError.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+                return true
+            }
+        }
+        return false
+    }
+    
+    private func isUserCancelledGoogleError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == googleSignInErrorDomain && nsError.code == googleSignInCanceledCode {
+            return true
+        }
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            return true
+        }
+        if #available(iOS 12.0, *) {
+            if let webError = error as? ASWebAuthenticationSessionError, webError.code == .canceledLogin {
+                return true
+            }
+            if nsError.domain == ASWebAuthenticationSessionError.errorDomain,
+               nsError.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+                return true
+            }
+        }
+        return false
     }
     
     // MARK: - Auth Buttons Component
