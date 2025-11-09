@@ -60,19 +60,23 @@ struct CameraOverlay: View {
                         HStack {
                             uploadButton
                             Spacer()
+                            Button(action: handleFlipCamera) {
+                                Image(systemName: "arrow.triangle.2.circlepath.camera")
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundColor(AppTheme.ColorToken.primary)
+                                    .frame(width: 52, height: 52)
+                                    .background(Color.white.opacity(0.98))
+                                    .clipShape(Circle())
+                                    .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
+                            }
+                            .disabled(isCapturing)
+                            .accessibilityLabel("Switch to front/back camera")
                         }
                     }
                     .padding(.horizontal, 32)
                     .padding(.bottom, 40)
                 }
             }
-        }
-        .task {
-            await startCamera()
-        }
-        .onDisappear {
-            // Keep session running for faster reopen
-            // To stop: Task { await camera.stop() }
         }
         .photosPicker(
             isPresented: $showPhotoPicker,
@@ -159,14 +163,6 @@ struct CameraOverlay: View {
         }
     }
     
-    private func startCamera() async {
-        let granted = await camera.ensurePermission()
-        guard granted else { return }
-        // Configure before starting (proper ordering)
-        camera.configureIfNeeded()
-        camera.start()
-    }
-    
     private func handleCapture() {
         guard !isCapturing else { return }
         isCapturing = true
@@ -188,6 +184,12 @@ struct CameraOverlay: View {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         camera.pausePreview()
         showPhotoPicker = true
+    }
+    
+    private func handleFlipCamera() {
+        guard !isCapturing else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        camera.switchCamera()
     }
     
     private func handleCancel() {

@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import SwiftUI
+import os.log
 
 // MARK: - Debug Logging
 
@@ -19,6 +20,8 @@ private func dbg(_ tag: String, _ items: Any...) {
 
 // MARK: - HTTP Method
 enum HTTPMethod: String { case GET, POST, PUT, PATCH, DELETE }
+
+private let notificationsLog = OSLog(subsystem: Bundle.main.bundleIdentifier ?? "TrashPicker", category: "notifications")
 
 // Helper wrappers to align with unified request helper expectations
 private extension ApiService {
@@ -172,20 +175,23 @@ struct FeedQuery: Codable {
     let category: String?
     let mode: String?
     let limit: Int
+    let excludeSelf: Bool
     
     enum CodingKeys: String, CodingKey {
         case lng, lat
         case radiusKm = "radius_km"
         case category, mode, limit
+        case excludeSelf = "exclude_self"
     }
     
-    init(lng: Double, lat: Double, radiusKm: Double = 10.0, category: String? = nil, mode: String? = nil, limit: Int = 20) {
+    init(lng: Double, lat: Double, radiusKm: Double = 10.0, category: String? = nil, mode: String? = nil, limit: Int = 20, excludeSelf: Bool = true) {
         self.lng = lng
         self.lat = lat
         self.radiusKm = radiusKm
         self.category = category
         self.mode = mode
         self.limit = limit
+        self.excludeSelf = excludeSelf
     }
 }
 
@@ -201,8 +207,10 @@ struct Location: Codable {
 extension Location {
     var coordinate: CLLocationCoordinate2D? {
         guard let latS = lat, let lngS = lng,
-              let lat = Double(latS), let lng = Double(lngS) else { return nil }
-        return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+              let lat = Double(latS), let lng = Double(lngS),
+              lat.isFinite, lng.isFinite else { return nil }
+        let coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+        return CLLocationCoordinate2DIsValid(coordinate) ? coordinate : nil
     }
 }
 
@@ -223,8 +231,10 @@ struct TolerantLocation: Decodable {
     }
 
     var coordinate: CLLocationCoordinate2D? {
-        guard let lat = lat?.value, let lng = lng?.value else { return nil }
-        return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+        guard let lat = lat?.value, let lng = lng?.value,
+              lat.isFinite, lng.isFinite else { return nil }
+        let coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+        return CLLocationCoordinate2DIsValid(coordinate) ? coordinate : nil
     }
 
     private static func decodeValue(
@@ -277,7 +287,7 @@ struct PostCreatePayload: Encodable {
 
 // MARK: - Core Models without circular references
 
-struct Post: Codable, Identifiable {
+struct Post: Codable, Identifiable, Equatable {
     let id: String
     let title: String
     let description: String?
@@ -305,6 +315,12 @@ struct Post: Codable, Identifiable {
         case approxLocation = "approx_location"
         case addressLine = "address_line"
         case userReservation = "user_reservation"
+    }
+}
+
+extension Post {
+    static func == (lhs: Post, rhs: Post) -> Bool {
+        lhs.id == rhs.id
     }
 }
 
@@ -336,9 +352,56 @@ struct Profile: Codable {
         case lastName = "last_name"
         case city
         case avatarUrl = "avatar_url"
+        case photoUrl = "photo_url"
         case givenCount = "given_count"
         case pickedCount = "picked_count"
         case phone
+    }
+    
+    init(
+        id: String,
+        firstName: String?,
+        lastName: String?,
+        city: String?,
+        avatarUrl: URL?,
+        givenCount: Int?,
+        pickedCount: Int?,
+        phone: String?
+    ) {
+        self.id = id
+        self.firstName = firstName
+        self.lastName = lastName
+        self.city = city
+        self.avatarUrl = avatarUrl
+        self.givenCount = givenCount
+        self.pickedCount = pickedCount
+        self.phone = phone
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        firstName = try container.decodeIfPresent(String.self, forKey: .firstName)
+        lastName = try container.decodeIfPresent(String.self, forKey: .lastName)
+        city = try container.decodeIfPresent(String.self, forKey: .city)
+        let avatarString = try container.decodeIfPresent(String.self, forKey: .avatarUrl)
+            ?? container.decodeIfPresent(String.self, forKey: .photoUrl)
+        avatarUrl = avatarString.flatMap { URL(string: $0) }
+        givenCount = try container.decodeIfPresent(Int.self, forKey: .givenCount)
+        pickedCount = try container.decodeIfPresent(Int.self, forKey: .pickedCount)
+        phone = try container.decodeIfPresent(String.self, forKey: .phone)
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(firstName, forKey: .firstName)
+        try container.encodeIfPresent(lastName, forKey: .lastName)
+        try container.encodeIfPresent(city, forKey: .city)
+        try container.encodeIfPresent(avatarUrl?.absoluteString, forKey: .avatarUrl)
+        try container.encodeIfPresent(givenCount, forKey: .givenCount)
+        try container.encodeIfPresent(pickedCount, forKey: .pickedCount)
+        try container.encodeIfPresent(phone, forKey: .phone)
     }
 }
 
@@ -545,35 +608,6 @@ struct IncomingRequest: Decodable, Identifiable {
 
 // MARK: - Enums
 
-enum ItemCondition: String, Codable, CaseIterable {
-    case bad = "bad"
-    case good = "good"
-    case excellent = "excellent"
-    case likeNew = "like_new"
-    
-    var displayText: String {
-        switch self {
-        case .bad:       return "Needs fixing"
-        case .good:      return "Good"
-        case .excellent: return "Excellent"
-        case .likeNew:   return "Like New"
-        }
-    }
-    
-    var dotColor: Color {
-        switch self {
-        case .excellent:
-            return Color("SwoopyGreen")
-        case .likeNew:
-            return Color("SwoopyLime")
-        case .good:
-            return Color("SwoopyOlive")
-        case .bad:
-            return Color("SwoopyOrange")
-        }
-    }
-}
-
 enum ItemMode: String, Codable, CaseIterable {
     case street = "street"
     case home = "home"
@@ -714,16 +748,85 @@ class ApiService: ObservableObject {
         ]
     }
 
-    private func buildRequest(
+    private func resolvedURL(for rawPath: String, query: [URLQueryItem]? = nil) throws -> URL {
+        if let absolute = URL(string: rawPath), absolute.scheme != nil {
+            var components = URLComponents(url: absolute, resolvingAgainstBaseURL: false)
+            if let query, !query.isEmpty {
+                components?.queryItems = query
+            }
+            if let url = components?.url {
+                return url
+            }
+            return absolute
+        }
+
+        guard var baseComponents = URLComponents(string: baseURL) else {
+            throw ApiServiceError.invalidURL
+        }
+
+        let basePath = baseComponents.path
+        let trimmedBasePath = basePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        var relativePath = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if relativePath == "/" {
+            relativePath = ""
+        }
+
+        if relativePath.hasPrefix("/") {
+            relativePath.removeFirst()
+        }
+
+        if !trimmedBasePath.isEmpty,
+           relativePath.hasPrefix(trimmedBasePath) {
+            let prefixEnd = relativePath.index(relativePath.startIndex, offsetBy: trimmedBasePath.count)
+            if prefixEnd == relativePath.endIndex || relativePath[prefixEnd] == "/" {
+                relativePath = String(relativePath.dropFirst(trimmedBasePath.count))
+                if relativePath.hasPrefix("/") {
+                    relativePath.removeFirst()
+                }
+            }
+        }
+
+        relativePath = relativePath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+
+        var finalPath = basePath.isEmpty ? "" : basePath
+
+        if !relativePath.isEmpty {
+            if finalPath.isEmpty || finalPath == "/" {
+                finalPath = "/" + relativePath
+            } else {
+                if !finalPath.hasSuffix("/") {
+                    finalPath += "/"
+                }
+                finalPath += relativePath
+            }
+        } else if finalPath.isEmpty {
+            finalPath = "/"
+        }
+
+        if finalPath.isEmpty {
+            finalPath = "/"
+        }
+
+        baseComponents.path = finalPath
+        baseComponents.queryItems = query?.isEmpty == true ? nil : query
+
+        guard let url = baseComponents.url else {
+            throw ApiServiceError.invalidURL
+        }
+
+        return url
+    }
+
+    func buildRequest(
         path: String,
         method: HTTPMethod,
         query: [URLQueryItem]? = nil,
         body: Data? = nil,
         headers: [String:String] = [:]
     ) throws -> URLRequest {
-        guard var comps = URLComponents(string: baseURL + path) else { throw ApiServiceError.invalidURL }
-        comps.queryItems = query
-        guard let url = comps.url else { throw ApiServiceError.invalidURL }
+        let url = try resolvedURL(for: path, query: query)
         var req = URLRequest(url: url)
         req.httpMethod = method.rawValue
         req.httpBody = body
@@ -733,19 +836,91 @@ class ApiService: ObservableObject {
         return req
     }
 
-    private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+    func send(_ request: URLRequest, corr: String? = nil) async throws -> (Data, URLResponse) {
+        #if DEBUG || RESERVATIONS_DIAGNOSTICS
+        let correlationId = corr ?? Diag.generateCorrelationId()
+        let startTime = Date()
+        
+        // Log request start
+        var headerDict: [String: String] = [:]
+        request.allHTTPHeaderFields?.forEach { headerDict[$0.key] = $0.value }
+        
+        Diag.logRequestStart(
+            corr: correlationId,
+            method: request.httpMethod ?? "GET",
+            url: request.url?.absoluteString ?? "",
+            headers: headerDict,
+            bodySize: request.httpBody?.count
+        )
+        #endif
+        
         // Use withTaskCancellationHandler to ensure URLSession respects cancellation
         return try await withTaskCancellationHandler {
             let (data, resp) = try await session.data(for: request)
+            
+            #if DEBUG || RESERVATIONS_DIAGNOSTICS
+            let duration = Int(Date().timeIntervalSince(startTime) * 1000)
+            let statusCode = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            let requestId = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Request-ID")
+            
+            Diag.logResponseEnd(
+                corr: correlationId,
+                requestId: requestId,
+                statusCode: statusCode,
+                bodySize: data.count,
+                durationMs: duration,
+                error: nil
+            )
+            #endif
+            
             if let http = resp as? HTTPURLResponse, http.statusCode == 401 {
+                #if DEBUG || RESERVATIONS_DIAGNOSTICS
+                Diag.logAuthStateChange(corr: correlationId, event: "auth.refresh.start", reason: "401 response")
+                #endif
+                
                 do {
                     try await supabaseService.refreshSession()
+                    
+                    #if DEBUG || RESERVATIONS_DIAGNOSTICS
+                    Diag.logAuthStateChange(corr: correlationId, event: "auth.refresh.success", reason: "token refreshed")
+                    #endif
+                    
                     var retry = request
                     if let newToken = await currentAccessTokenOrNil(), !newToken.isEmpty {
                         retry.setValue("Bearer \(newToken)", forHTTPHeaderField: "Authorization")
                     }
-                    return try await session.data(for: retry)
+                    
+                    #if DEBUG || RESERVATIONS_DIAGNOSTICS
+                    let retryStart = Date()
+                    Diag.log(.request, "request.retry", fields: [
+                        "corr": correlationId,
+                        "url": retry.url?.absoluteString ?? ""
+                    ])
+                    #endif
+                    
+                    let (retryData, retryResp) = try await session.data(for: retry)
+                    
+                    #if DEBUG || RESERVATIONS_DIAGNOSTICS
+                    let retryDuration = Int(Date().timeIntervalSince(retryStart) * 1000)
+                    let retryStatusCode = (retryResp as? HTTPURLResponse)?.statusCode ?? 0
+                    let retryRequestId = (retryResp as? HTTPURLResponse)?.value(forHTTPHeaderField: "X-Request-ID")
+                    
+                    Diag.logResponseEnd(
+                        corr: correlationId,
+                        requestId: retryRequestId,
+                        statusCode: retryStatusCode,
+                        bodySize: retryData.count,
+                        durationMs: retryDuration,
+                        error: nil
+                    )
+                    #endif
+                    
+                    return (retryData, retryResp)
                 } catch {
+                    #if DEBUG || RESERVATIONS_DIAGNOSTICS
+                    Diag.logAuthStateChange(corr: correlationId, event: "auth.refresh.failed", reason: error.localizedDescription)
+                    Diag.logAuthStateChange(corr: correlationId, event: "auth.signout", reason: "refresh failed")
+                    #endif
                     throw ApiServiceError.unauthorized
                 }
             }
@@ -756,6 +931,12 @@ class ApiService: ObservableObject {
             #if DEBUG
             if let url = request.url?.path {
                 DLog("[NET] cancel underlying request path=\(url)")
+            }
+            #endif
+            
+            #if DEBUG || RESERVATIONS_DIAGNOSTICS
+            if let corr = corr {
+                Diag.log(.error, "request.cancelled", fields: ["corr": corr])
             }
             #endif
         }
@@ -784,7 +965,7 @@ class ApiService: ObservableObject {
         await MainActor.run { supabaseService.userId?.uuidString }
     }
 
-    private func getAuthHeaders() async throws -> [String: String] {
+    func getAuthHeaders() async throws -> [String: String] {
         // Rely on token presence; no need to separately check isAuthenticated
         let token = await main_currentAccessTokenOrNil() ?? ""
         guard !token.isEmpty else { throw ApiServiceError.noAuthToken }
@@ -803,17 +984,7 @@ class ApiService: ObservableObject {
         body: Data? = nil,
         queryParams: [URLQueryItem]? = nil
     ) async throws -> T {
-        guard var urlComponents = URLComponents(string: "\(baseURL)\(endpoint)") else {
-            throw ApiServiceError.invalidURL
-        }
-        
-        if let queryParams = queryParams {
-            urlComponents.queryItems = queryParams
-        }
-        
-        guard let url = urlComponents.url else {
-            throw ApiServiceError.invalidURL
-        }
+        let url = try resolvedURL(for: endpoint, query: queryParams)
         
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -927,31 +1098,50 @@ class ApiService: ObservableObject {
         }
     }
 
-    private func extractErrorMessage(from data: Data) -> String? {
+    func extractErrorMessage(from data: Data) -> String? {
         guard !data.isEmpty else { return nil }
 
         if let payload = try? JSONDecoder().decode(ApiResponse<String>.self, from: data) {
             if let error = payload.error, !error.isEmpty {
-                return error
+                return mapBackendErrorToFriendly(error)
             }
             if let message = payload.message, !message.isEmpty {
-                return message
+                return mapBackendErrorToFriendly(message)
             }
             if let dataValue = payload.data, !dataValue.isEmpty {
-                return dataValue
+                return mapBackendErrorToFriendly(dataValue)
             }
         }
 
         if let errorMessage = try? JSONDecoder().decode(APIErrorMessage.self, from: data).error,
            !errorMessage.isEmpty {
-            return errorMessage
+            return mapBackendErrorToFriendly(errorMessage)
         }
 
         if let text = String(data: data, encoding: .utf8), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return text
+            return mapBackendErrorToFriendly(text)
         }
 
         return nil
+    }
+    
+    /// Map backend error messages to user-friendly messages
+    private func mapBackendErrorToFriendly(_ raw: String) -> String {
+        // Check for Postgres constraint violations
+        if raw.contains("phone_format_check") || raw.contains("23514") {
+            return "Please enter a valid phone number in international format, e.g. +34660580637"
+        }
+        
+        // Check for RLS violations (should not happen if client uses UPDATE properly)
+        if raw.contains("row-level security") || raw.contains("RLS") || raw.contains("policy") {
+            #if DEBUG
+            DLog("[API ERROR] RLS violation detected - check for INSERT/UPSERT on profiles")
+            #endif
+            return "Couldn't save profile. Please try again."
+        }
+        
+        // Return original message if no mapping found
+        return raw
     }
 
     func rawRequest(
@@ -1037,6 +1227,218 @@ class ApiService: ObservableObject {
         let envelope = try decoder.decode(IncomingRequestsEnvelope.self, from: data)
         return envelope.requests ?? envelope.data ?? envelope.items ?? []
     }
+
+    // MARK: - Unified Notifications
+
+    private static let notificationsDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    func fetchNotifications(since: Date? = nil, limit: Int = 50) async throws -> NotificationListResponse {
+        var query: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(limit))]
+        if let since {
+            let isoString = ApiService.notificationsDateFormatter.string(from: since)
+            query.append(URLQueryItem(name: "since", value: isoString))
+        }
+        var headers = try await authHeaders()
+        let requestId = UUID().uuidString
+        headers["X-Request-ID"] = requestId
+        let request = try buildRequest(
+            path: "/custom-api/my/notifications",
+            method: .GET,
+            query: query,
+            headers: headers
+        )
+        if let url = request.url?.absoluteString {
+            os_log("[NOTIF] GET %{public}@", log: notificationsLog, type: .info, url)
+        }
+        let (data, response) = try await send(request)
+        if let http = response as? HTTPURLResponse {
+            os_log("[NOTIF] status=%{public}d reqId=%{public}@", log: notificationsLog, type: .info, http.statusCode, requestId)
+        }
+        os_log("[NOTIF] bytes=%{public}d", log: notificationsLog, type: .info, data.count)
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+        guard (200...299).contains(http.statusCode) else {
+            if http.statusCode == 401 { throw ApiServiceError.unauthorized }
+            let message = extractErrorMessage(from: data)
+            throw ApiHTTPError(statusCode: http.statusCode, message: message)
+        }
+
+        // Use legacy envelope decoder with fractional seconds support
+        let decoder = JSONDecoder()
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        decoder.dateDecodingStrategy = .custom { d in
+            let s = try d.singleValueContainer().decode(String.self)
+            guard let date = f.date(from: s) else {
+                throw DecodingError.dataCorrupted(.init(codingPath: d.codingPath, debugDescription: "Bad date \(s)"))
+            }
+            return date
+        }
+        
+        do {
+            let env = try decoder.decode(NotificationsEnvelopeLegacy.self, from: data)
+            
+            let actionRequired = env.incoming_requests ?? []
+            let updates = env.general_notifications ?? []
+            let unread = env.unread_count
+            
+            os_log("[NOTIF] using legacy envelope: incoming=%{public}d general=%{public}d unread=%{public}d", 
+                   log: notificationsLog, type: .info, actionRequired.count, updates.count, unread)
+            
+            // Convert to NotificationItem format for compatibility
+            var allItems: [NotificationItem] = []
+            var failedCount = 0
+            
+            // Map incoming_requests to actionable items
+            for row in actionRequired {
+                do {
+                    let item = try convertLegacyToItem(row, category: .actionable)
+                    allItems.append(item)
+                } catch {
+                    failedCount += 1
+                    os_log("[NOTIF][MAP_ERROR] actionable id=%{public}@ error=%{public}@", 
+                           log: notificationsLog, type: .error, row.id.uuidString, String(describing: error))
+                }
+            }
+            
+            // Map general_notifications to informational items
+            for row in updates {
+                do {
+                    let item = try convertLegacyToItem(row, category: .informational)
+                    allItems.append(item)
+                } catch {
+                    failedCount += 1
+                    os_log("[NOTIF][MAP_ERROR] informational id=%{public}@ error=%{public}@", 
+                           log: notificationsLog, type: .error, row.id.uuidString, String(describing: error))
+                }
+            }
+            
+            os_log("[NOTIF][MAP] mapped=%{public}d failed=%{public}d total=%{public}d", 
+                   log: notificationsLog, type: .info, allItems.count, failedCount, actionRequired.count + updates.count)
+            
+            return NotificationListResponse(unreadCount: unread, items: allItems)
+        } catch {
+            os_log("[NOTIF][DECODE_ERROR] %{public}@", log: notificationsLog, type: .error, String(describing: error))
+            let raw = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            let preview = String(raw.prefix(2048))
+            os_log("[NOTIF][RAW] %{public}@", log: notificationsLog, type: .debug, preview)
+            throw error
+        }
+    }
+    
+    private func convertLegacyToItem(_ row: NotificationRowLegacy, category: NotificationCategory) throws -> NotificationItem {
+        // Handle optional names with fallback
+        let firstName = row.counterparty.first_name?.trimmingCharacters(in: .whitespaces) ?? ""
+        let lastName = row.counterparty.last_name?.trimmingCharacters(in: .whitespaces) ?? ""
+        let fullName = "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
+        let counterpartyName = fullName.isEmpty ? "Someone" : fullName
+        
+        // Clean contact phone
+        let cleanPhone = row.contact_phone?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let phone = (cleanPhone?.isEmpty == false) ? cleanPhone : nil
+        
+        // Determine state for actionable items
+        let state: NotificationState? = category == .actionable ? .pending_approval : nil
+        
+        // Direct construction instead of JSON round-trip
+        return NotificationItem(
+            id: row.id.uuidString,
+            type: NotificationType(rawString: row.type),
+            category: category,
+            state: state,
+            isRead: row.read_at != nil,
+            createdAt: row.created_at,
+            persistenceType: .infinite,
+            persistenceSeconds: nil,
+            payload: nil,
+            reservationId: row.reservation_id?.uuidString,
+            postId: row.post.id.uuidString,
+            counterpartyUserId: row.counterparty.user_id.uuidString,
+            counterpartyName: counterpartyName,
+            counterpartyAvatarURL: row.counterparty.photo_url,
+            counterpartyPhone: phone,
+            itemTitle: row.post.title,
+            itemThumbURL: nil
+        )
+    }
+
+    func markNotificationRead(id: String) async throws {
+        try await sendNotificationMutation(path: "/custom-api/notifications/\(id)/read", method: .POST)
+    }
+
+    func markAllNotificationsRead() async throws {
+        try await sendNotificationMutation(path: "/custom-api/notifications/read", method: .POST)
+    }
+
+    func deleteNotification(id: String) async throws {
+        let headers = try await authHeaders()
+        var request = try buildRequest(
+            path: "/custom-api/notifications/\(id)",
+            method: .DELETE,
+            headers: headers
+        )
+        request.addXRequestId()
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+        if (200...299).contains(http.statusCode) || http.statusCode == 404 || http.statusCode == 410 {
+            return
+        }
+        if http.statusCode == 403 {
+            let message = extractErrorMessage(from: data)
+            throw ApiHTTPError(statusCode: 403, message: message?.isEmpty == false ? message : "Only informational notifications can be deleted.")
+        }
+        let message = extractErrorMessage(from: data)
+        throw ApiHTTPError(statusCode: http.statusCode, message: message)
+    }
+
+    func approveReservation(id: String, corr: String? = nil) async throws {
+        try await sendReservationMutation(path: "/custom-api/reservations/\(id)/approve", corr: corr)
+    }
+
+    func cancelReservation(id: String, corr: String? = nil) async throws {
+        try await sendReservationMutation(path: "/custom-api/reservations/\(id)/cancel", corr: corr)
+    }
+
+    func completeReservation(id: String, corr: String? = nil) async throws {
+        try await sendReservationMutation(path: "/custom-api/reservations/\(id)/complete", corr: corr)
+    }
+
+    private func sendNotificationMutation(path: String, method: HTTPMethod) async throws {
+        let headers = try await authHeaders()
+        var request = try buildRequest(path: path, method: method, headers: headers)
+        request.addXRequestId()
+        let (data, response) = try await send(request)
+        try handleIdempotentResponse(data: data, response: response)
+    }
+
+    private func sendReservationMutation(path: String, corr: String? = nil) async throws {
+        let headers = try await authHeaders()
+        var request = try buildRequest(path: path, method: .POST, headers: headers)
+        request.addXRequestId()
+        let (data, response) = try await send(request, corr: corr)
+        try handleIdempotentResponse(data: data, response: response, additionalSuccessCodes: [409])
+    }
+
+    private func handleIdempotentResponse(data: Data, response: URLResponse, additionalSuccessCodes: [Int] = []) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+        if (200...299).contains(http.statusCode) || http.statusCode == 404 || http.statusCode == 410 || additionalSuccessCodes.contains(http.statusCode) {
+            return
+        }
+        if http.statusCode == 401 {
+            throw ApiServiceError.unauthorized
+        }
+        let message = extractErrorMessage(from: data)
+        throw ApiHTTPError(statusCode: http.statusCode, message: message)
+    }
     
     // MARK: - Posts
     
@@ -1099,6 +1501,12 @@ class ApiService: ObservableObject {
             URLQueryItem(name: "radius_km", value: "\(query.radiusKm)"),
             URLQueryItem(name: "limit", value: "\(query.limit)")
         ]
+        
+        // Add exclude_self parameter
+        if query.excludeSelf {
+            queryItems.append(URLQueryItem(name: "exclude_self", value: "true"))
+        }
+        
         // Server-side exclusion hint: pass current user id if available
         if let me = await main_userIdString() {
             queryItems.append(URLQueryItem(name: "user_id", value: me))
@@ -1179,13 +1587,14 @@ class ApiService: ObservableObject {
         dbg("FEED", "sample owners=\(sampleOwners)")
         
         // Map ServerPost to Post
-        let posts = response.posts.compactMap { serverPost -> Post? in
+        let posts: [Post] = response.posts.compactMap { serverPost -> Post? in
             // Convert string condition/mode to enums
-            guard let condition = ItemCondition(rawValue: serverPost.condition),
+            guard let backendCondition = ConditionBackend(rawValue: serverPost.condition),
                   let mode = ItemMode(rawValue: serverPost.mode) else {
                 dbg("FEED", "Skipping post \(serverPost.id.prefix(8)) - invalid condition or mode")
                 return nil
             }
+            let condition = backendCondition.ui
             
             // Convert ServerImage to PostImage
             let images = (serverPost.images ?? []).map { serverImg in
@@ -1226,6 +1635,7 @@ class ApiService: ObservableObject {
                 userReservation: serverPost.user_reservation
             )
         }
+        posts.forEach { LocationCache.shared.store(post: $0) }
         return posts
     }
 
@@ -1373,7 +1783,8 @@ class ApiService: ObservableObject {
                 #endif
             }
 
-            let condition = ItemCondition(rawValue: serverPost.condition ?? "") ?? .good
+            let backendCondition = ConditionBackend(rawValue: serverPost.condition ?? "") ?? .good
+            let condition = backendCondition.ui
             let mode = ItemMode(rawValue: serverPost.mode ?? "") ?? .street
 
             let images: [PostImage] = (serverPost.images ?? []).compactMap { img -> PostImage? in
@@ -1417,6 +1828,7 @@ class ApiService: ObservableObject {
                 owner: serverPost.owner,
                 userReservation: nil
             )
+            LocationCache.shared.store(post: post)
 
             let normalizedStatus = Reservation.Status(rawValue: r.status) ?? .pending
             let contactPhone: String? = {
@@ -1459,6 +1871,7 @@ class ApiService: ObservableObject {
             }
         }
         let response = try JSONDecoder().decode(PostResponse.self, from: data)
+        LocationCache.shared.store(post: response.post)
         return response.post
     }
     
@@ -1466,10 +1879,11 @@ class ApiService: ObservableObject {
     
     /// Reserve a post. Returns reservation_id on success.
     @discardableResult
-    func reservePost(_ postId: String) async throws -> String {
+    func reservePost(_ postId: String, requestId: String = UUID().uuidString, corr: String? = nil) async throws -> String {
         do {
             // Build request using centralized helper
-            let headers = try await authHeaders()
+            var headers = try await authHeaders()
+            headers["X-Request-ID"] = requestId
             let req = try buildRequest(
                 path: "/feed/\(postId)/reserve",
                 method: .POST,
@@ -1478,7 +1892,7 @@ class ApiService: ObservableObject {
             )
             
             // Send with auto-refresh
-            let (data, resp) = try await send(req)
+            let (data, resp) = try await send(req, corr: corr)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
             
             dbg("RESERVE", "status=\(code)")
@@ -1520,12 +1934,15 @@ class ApiService: ObservableObject {
         }
     }
     
-    func cancelReservation(_ postId: String) async throws {
+    func cancelReservation(postId: String) async throws {
         struct CancelResponse: Codable {
-            let message: String
+            let message: String?
         }
-        
-        let _: CancelResponse = try await makeRequest("/feed/\(postId)/reserve", method: "DELETE")
+
+        let _: CancelResponse = try await makeRequest(
+            "/feed/\(postId)/reserve",
+            method: "DELETE"
+        )
     }
     
     func getMyPosts() async throws -> [Post] {
@@ -1570,7 +1987,7 @@ class ApiService: ObservableObject {
         let posts = payload.posts ?? []
 
         return posts.map { server in
-            let condition = ItemCondition(rawValue: server.condition ?? "") ?? .good
+            let condition = ConditionBackend(rawValue: server.condition ?? "")?.ui ?? .good
             let mode = ItemMode(rawValue: server.mode ?? "") ?? .street
 
             let images: [PostImage] = (server.images ?? []).compactMap { img in
@@ -1604,7 +2021,7 @@ class ApiService: ObservableObject {
             let safeTitle = (server.title?.isEmpty ?? true) ? "Untitled item" : (server.title ?? "Untitled item")
             let safeCategory = (server.category?.isEmpty ?? true) ? "misc" : (server.category ?? "misc")
 
-            return Post(
+            let post = Post(
                 id: server.id,
                 title: safeTitle,
                 description: server.description,
@@ -1622,6 +2039,8 @@ class ApiService: ObservableObject {
                 owner: nil,
                 userReservation: summary
             )
+            LocationCache.shared.store(post: post)
+            return post
         }
     }
     
@@ -1643,6 +2062,113 @@ class ApiService: ObservableObject {
     
     // MARK: - Profile
     
+    /// Fetch user profile from backend API
+    /// Returns current profile data including avatar_url
+    func getProfile() async throws -> Profile {
+        let headers = try await authHeaders()
+        let request = try buildRequest(path: "/me/profile", method: .GET, headers: headers)
+        let (data, response) = try await send(request)
+        
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+        
+        guard (200...299).contains(http.statusCode) else {
+            let message = extractErrorMessage(from: data) ?? "Couldn't load profile"
+            throw SimpleError(message: message)
+        }
+        
+        let decoder = JSONDecoder()
+        let envelope = try decoder.decode(ProfileUpdateEnvelope.self, from: data)
+        
+        guard let identifier = envelope.user_id ?? envelope.id else {
+            throw ApiServiceError.serverError("Profile payload missing identifier")
+        }
+        
+        let avatarString = envelope.photo_url ?? envelope.avatar_url
+        let avatarURL = avatarString.flatMap { URL(string: $0) }
+        
+        return Profile(
+            id: identifier,
+            firstName: envelope.first_name,
+            lastName: envelope.last_name,
+            city: envelope.city,
+            avatarUrl: avatarURL,
+            givenCount: envelope.given_count,
+            pickedCount: envelope.picked_count,
+            phone: envelope.phone
+        )
+    }
+    
+    /// Upload profile photo via backend API
+    /// Returns the photo URL from the server
+    func uploadProfilePhoto(_ imageData: Data) async throws -> URL {
+        let token = await currentAccessTokenOrNil() ?? ""
+        guard !token.isEmpty else { throw ApiServiceError.noAuthToken }
+        
+        guard let url = URL(string: baseURL + "/me/profile/photo") else {
+            throw ApiServiceError.invalidURL
+        }
+        
+        // Check file size (5MB limit)
+        let maxSize = 5 * 1024 * 1024
+        if imageData.count > maxSize {
+            throw SimpleError(message: "Image must be under 5MB.")
+        }
+        
+        // Build multipart form data
+        let boundary = "Boundary-\(UUID().uuidString)"
+        var body = Data()
+        let lineBreak = "\r\n"
+        
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"photo\"; filename=\"avatar.jpg\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+        body.append(imageData)
+        body.append(lineBreak.data(using: .utf8)!)
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = body
+        
+        let (data, response) = try await send(request)
+        
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+        
+        switch http.statusCode {
+        case 200:
+            // Decode JSON response
+            let decoder = JSONDecoder()
+            struct PhotoResponse: Decodable {
+                let photo_url: String
+            }
+            let photoResponse = try decoder.decode(PhotoResponse.self, from: data)
+            guard let photoURL = URL(string: photoResponse.photo_url) else {
+                throw ApiServiceError.serverError("Invalid photo URL in response")
+            }
+            return photoURL
+            
+        case 413:
+            throw SimpleError(message: "Image must be under 5MB.")
+            
+        case 422:
+            throw SimpleError(message: "Invalid image format. Please use JPEG, PNG, or WebP.")
+            
+        case 429:
+            throw SimpleError(message: "You're updating too quickly. Please try again shortly.")
+            
+        default:
+            let message = extractErrorMessage(from: data) ?? "Couldn't upload photo. Please try again."
+            throw SimpleError(message: message)
+        }
+    }
+    
     /// Update user profile via backend API
     /// Returns updated profile on success
     func updateProfile(_ patch: ProfilePatch) async throws -> Profile {
@@ -1656,14 +2182,52 @@ class ApiService: ObservableObject {
     }
 }
 
+// MARK: - Decoder (accepts fractional seconds)
+extension JSONDecoder {
+    static func swoopyAPI() -> JSONDecoder {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+
+        let isoFrac = ISO8601DateFormatter()
+        isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let isoNoFrac = ISO8601DateFormatter()
+        isoNoFrac.formatOptions = [.withInternetDateTime]
+
+        d.dateDecodingStrategy = .custom { dec in
+            let str = try dec.singleValueContainer().decode(String.self)
+            if let dt = isoFrac.date(from: str) ?? isoNoFrac.date(from: str) {
+                return dt
+            }
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: dec.codingPath, debugDescription: "Invalid ISO-8601 date: \(str)")
+            )
+        }
+        return d
+    }
+}
+
 // MARK: - Convenience Extensions
 
+extension URLRequest {
+    mutating func addXRequestId(_ value: String = UUID().uuidString) {
+        setValue(value, forHTTPHeaderField: "X-Request-ID")
+    }
+}
+
 extension Post {
+    var exactCoordinate: CLLocationCoordinate2D? {
+        exactLocation?.coordinate
+    }
+
+    var approxCoordinate: CLLocationCoordinate2D? {
+        approxLocation?.coordinate
+    }
+
     var displayLocation: String {
-        if let exact = exactLocation, let lat = exact.lat, let lng = exact.lng {
-            return "\(lat), \(lng)"
-        } else if let approx = approxLocation, let lat = approx.lat, let lng = approx.lng {
-            return "Approx: \(lat), \(lng)"
+        if let exact = exactCoordinate {
+            return "\(exact.latitude), \(exact.longitude)"
+        } else if let approx = approxCoordinate {
+            return "Approx: \(approx.latitude), \(approx.longitude)"
         }
         return "Location not available"
     }
@@ -1768,4 +2332,3 @@ extension Reservation {
         }
     }
 }
-

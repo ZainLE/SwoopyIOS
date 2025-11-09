@@ -8,7 +8,7 @@ struct OnboardingFlow: View {
     @State private var pickerItem: PhotosPickerItem?
     @State private var showPhotoSourceSheet = false
     
-    init(profileService: ProfileService = MockProfileService()) {
+    init(profileService: ProfileService = SupabaseProfileService()) {
         _viewModel = StateObject(wrappedValue: OnboardingViewModel(profileService: profileService))
     }
     
@@ -34,7 +34,7 @@ struct OnboardingFlow: View {
             }
         }
         .fullScreenCover(isPresented: $viewModel.isShowingCamera) {
-            CameraOverlay(
+            CameraScreen(
                 onCaptured: { image in
                     viewModel.didPickImage(image)
                     viewModel.resetPickers()
@@ -100,26 +100,49 @@ private struct WelcomeProfileScreen: View {
     }
     
     var body: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                logo
-                avatarSection
-                formFields
-                if viewModel.isSaving {
-                    ProgressView()
-                        .padding(.top, 8)
+        ZStack {
+            ScrollView {
+                VStack(spacing: 24) {
+                    logo
+                    avatarSection
+                    formFields
+                    if let error = viewModel.errorMessage {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundColor(.red)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
-                if let error = viewModel.errorMessage {
-                    Text(error)
-                        .font(.footnote)
-                        .foregroundColor(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                .padding(.horizontal, 24)
+                .padding(.top, 24)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 140)
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 24)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.bottom, 140)
+            
+            // Upload progress overlay
+            if viewModel.isSaving {
+                Color.black.opacity(0.4)
+                    .ignoresSafeArea()
+                
+                VStack(spacing: 16) {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(1.5)
+                    
+                    if !viewModel.uploadProgress.isEmpty {
+                        Text(viewModel.uploadProgress)
+                            .font(.body)
+                            .foregroundColor(.white)
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .padding(32)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color.black.opacity(0.8))
+                )
+            }
         }
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.immediately)
@@ -170,19 +193,27 @@ private struct WelcomeProfileScreen: View {
     
     private var formFields: some View {
         VStack(alignment: .leading, spacing: 20) {
-            InputField(title: "Full Name", isRequired: true) {
-                TextField("Full Name", text: $viewModel.fullName)
-                    .textInputAutocapitalization(.words)
-                    .autocorrectionDisabled()
-                    .submitLabel(.next)
-                    .focused($focus, equals: .name)
-                    .onSubmit { focus = .phone }
+            VStack(alignment: .leading, spacing: 6) {
+                InputField(title: "Full Name", isRequired: true) {
+                    TextField("First Last", text: $viewModel.fullName)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                        .submitLabel(.next)
+                        .focused($focus, equals: .name)
+                        .onSubmit { focus = .phone }
+                }
+                .accessibilityIdentifier("onboarding.fullName")
+                
+                if !nameValidationError.isEmpty {
+                    Text(nameValidationError)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
             }
-            .accessibilityIdentifier("onboarding.fullName")
 
             VStack(alignment: .leading, spacing: 6) {
                 InputField(title: "Phone number", isRequired: true) {
-                    TextField("+34 632 00 00 45", text: $viewModel.phone)
+                    TextField("+34612345678", text: $viewModel.phone)
                         .keyboardType(.phonePad)
                         .submitLabel(.done)
                         .focused($focus, equals: .phone)
@@ -191,18 +222,32 @@ private struct WelcomeProfileScreen: View {
                 .accessibilityIdentifier("onboarding.phone")
                 
                 Text(helperText)
-                    .font(.footnote)
+                    .font(.caption)
                     .foregroundStyle(helperColor)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
     
+    private var nameValidationError: String {
+        let names = splitName(viewModel.trimmedFullName)
+        if viewModel.trimmedFullName.isEmpty {
+            return "" // Don't show error for empty field
+        } else if names.first.isEmpty {
+            return "First name is required"
+        } else if names.first.count > 50 {
+            return "First name must be 50 characters or less"
+        } else if names.last.count > 50 {
+            return "Last name must be 50 characters or less"
+        }
+        return "" // Valid
+    }
+    
     private var helperText: String {
         if isPhoneInvalid {
-            return "Phone numbers should start with + and include 7–15 digits."
+            return "Must be in E.164 format: +[country code][number] (e.g., +34612345678)"
         } else {
-            return "It helps verify your account and build trust within the community."
+            return "International format with + and country code"
         }
     }
     
@@ -213,7 +258,14 @@ private struct WelcomeProfileScreen: View {
     private var isPhoneInvalid: Bool {
         let value = viewModel.trimmedPhone
         guard !value.isEmpty else { return false }
-        return value.range(of: #"^\+[0-9]{7,15}$"#, options: .regularExpression) == nil
+        return !viewModel.isPhoneValid
+    }
+    
+    private func splitName(_ fullName: String) -> (first: String, last: String) {
+        let parts = fullName.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        let first = parts.first.map(String.init) ?? ""
+        let last = parts.count > 1 ? String(parts[1]) : ""
+        return (first, last)
     }
     
     private func sanitize(phone: String) -> String {

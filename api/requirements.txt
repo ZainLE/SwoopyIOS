@@ -1,0 +1,8 @@
+flask
+pyjwt
+supabase
+python-dotenv
+psycopg2-binary
+python-dateutil
+shapely
+pydantic

@@ -1,0 +1,19 @@
+services:
+  web:
+    build: .
+    ports:
+      - "5555:5555"
+    env_file:
+      - .env
+    environment:
+      - TZ=UTC
+    volumes:
+      - ./logs:/var/log
+    restart: unless-stopped
+    network_mode: host
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5555/custom-api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

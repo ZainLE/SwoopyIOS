@@ -41,6 +41,7 @@ struct AccountDetailsView: View {
     // Photo picker
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var profileImage: Image?
+    @State private var selectedPhotoData: Data? // Track photo data for upload
 
     @State private var oldPassword: String = ""
     @State private var newPassword: String = ""
@@ -65,6 +66,8 @@ struct AccountDetailsView: View {
                 .padding(.vertical, 24)
             }
             .background(Color(.systemGroupedBackground).ignoresSafeArea())
+            .scrollDismissesKeyboard(.immediately)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
             .navigationTitle("User Information")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -242,7 +245,7 @@ struct AccountDetailsView: View {
             }
             
             labeledField("Phone number") {
-                TextField("Enter phone number", text: $phone)
+                TextField("+34612345678", text: $phone)
                     .keyboardType(.phonePad)
                     .textContentType(.telephoneNumber)
                     .font(AppFont.body)
@@ -465,7 +468,8 @@ struct AccountDetailsView: View {
     
     private var hasChanges: Bool {
         fullName.trimmingCharacters(in: .whitespacesAndNewlines) != initialFullName.trimmingCharacters(in: .whitespacesAndNewlines) ||
-        phone.trimmingCharacters(in: .whitespacesAndNewlines) != initialPhone.trimmingCharacters(in: .whitespacesAndNewlines)
+        phone.trimmingCharacters(in: .whitespacesAndNewlines) != initialPhone.trimmingCharacters(in: .whitespacesAndNewlines) ||
+        selectedPhotoData != nil
     }
     
     // MARK: - Methods
@@ -642,36 +646,63 @@ struct AccountDetailsView: View {
     private func loadCurrentProfile() async {
         guard let session = svc.session else { return }
         
-        // Load current user data
+        // Load current user data from session
         email = session.user.email ?? ""
         
-        // Parse full name into first and last name
-        // Compose full name from available metadata
-        let metaFull = session.user.userMetadata["full_name"]?.description ?? ""
-        let metaName = session.user.userMetadata["name"]?.description ?? ""
-        let first = session.user.userMetadata["first_name"]?.description ?? ""
-        let last = session.user.userMetadata["last_name"]?.description ?? ""
-        let derivedFullName: String
-        if !metaFull.isEmpty {
-            derivedFullName = metaFull
-        } else if !metaName.isEmpty {
-            derivedFullName = metaName
-        } else if !first.isEmpty || !last.isEmpty {
-            derivedFullName = [first, last].filter { !$0.isEmpty }.joined(separator: " ")
-        } else {
-            derivedFullName = ""
+        // Fetch profile from backend API
+        let api = ApiService(supabaseService: svc)
+        do {
+            let profile = try await api.getProfile()
+            
+            // Build full name from first + last
+            let first = profile.firstName ?? ""
+            let last = profile.lastName ?? ""
+            fullName = [first, last].filter { !$0.isEmpty }.joined(separator: " ")
+            
+            // Load phone
+            phone = profile.phone ?? ""
+            
+            // Store initial values
+            initialFullName = fullName
+            initialPhone = phone
+            
+            // Load avatar from backend profile
+            if let avatarUrl = profile.avatarUrl {
+                await loadAvatarFromURL(avatarUrl)
+            }
+            
+            #if DEBUG
+            DLog("[PROFILE] Loaded from backend: name=\(fullName) phone=\(phone) avatar=\(profile.avatarUrl?.absoluteString ?? "none")")
+            #endif
+            
+        } catch {
+            #if DEBUG
+            DLog("[PROFILE] Failed to load from backend: \(error.localizedDescription)")
+            #endif
+            
+            // Fallback to session metadata
+            let metaFull = session.user.userMetadata["full_name"]?.description ?? ""
+            let metaName = session.user.userMetadata["name"]?.description ?? ""
+            let first = session.user.userMetadata["first_name"]?.description ?? ""
+            let last = session.user.userMetadata["last_name"]?.description ?? ""
+            let derivedFullName: String
+            if !metaFull.isEmpty {
+                derivedFullName = metaFull
+            } else if !metaName.isEmpty {
+                derivedFullName = metaName
+            } else if !first.isEmpty || !last.isEmpty {
+                derivedFullName = [first, last].filter { !$0.isEmpty }.joined(separator: " ")
+            } else {
+                derivedFullName = ""
+            }
+            fullName = derivedFullName
+            phone = session.user.userMetadata["phone"]?.description ?? ""
+            
+            initialFullName = fullName
+            initialPhone = phone
         }
-        fullName = derivedFullName
-        
-        // Load phone
-        phone = session.user.userMetadata["phone"]?.description ?? ""
-        
-        // Store initial values
-        initialFullName = fullName
-        initialPhone = phone
         
         // Check if user has home uploads (would require phone)
-        // For now, we'll assume false since we don't have the data structure
         hasHomeUploads = false
     }
     
@@ -680,28 +711,84 @@ struct AccountDetailsView: View {
         isLoading = true
         
         do {
+            let api = ApiService(supabaseService: svc)
+            
+            // Step 1: Upload photo if changed
+            var uploadedPhotoURL: String? = nil
+            if let photoData = selectedPhotoData {
+                #if DEBUG
+                DLog("[PROFILE] Uploading photo (\(photoData.count) bytes)")
+                #endif
+                
+                let photoURL = try await api.uploadProfilePhoto(photoData)
+                uploadedPhotoURL = photoURL.absoluteString
+                
+                #if DEBUG
+                DLog("[PROFILE] Photo uploaded: \(photoURL.absoluteString)")
+                #endif
+            }
+            
+            // Step 2: Parse name into first/last (max 50 chars each)
             let trimmedFullName = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
-            var parsedFirstName = ""
+            var parsedFirstName: String? = nil
             var parsedLastName: String? = nil
             if !trimmedFullName.isEmpty {
-                let parts = trimmedFullName.split(separator: " ")
+                let parts = trimmedFullName.split(separator: " ", maxSplits: 1)
                 if let firstPart = parts.first {
-                    parsedFirstName = String(firstPart)
+                    parsedFirstName = String(firstPart.prefix(50))
                 }
-                let remainder = parts.dropFirst().joined(separator: " ")
-                parsedLastName = remainder.isEmpty ? nil : remainder
+                if parts.count > 1 {
+                    parsedLastName = String(parts[1].prefix(50))
+                }
             }
-            let trimmedPhone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
             
-            try await svc.updateProfile(
+            // Step 3: Prepare phone (E.164 validation happens in backend)
+            let trimmedPhone = phone.trimmingCharacters(in: .whitespacesAndNewlines)
+            let phoneToSend = trimmedPhone.isEmpty ? nil : trimmedPhone
+            
+            // Step 4: Build PATCH body (only send changed fields)
+            let patch = ProfilePatch(
                 firstName: parsedFirstName,
                 lastName: parsedLastName,
-                phone: trimmedPhone
+                phone: phoneToSend,
+                city: nil,
+                avatarUrl: uploadedPhotoURL
             )
+            
+            #if DEBUG
+            DLog("[PROFILE] Updating profile: first=\(parsedFirstName ?? "nil") last=\(parsedLastName ?? "nil") phone=\(phoneToSend ?? "nil")")
+            #endif
+            
+            // Step 5: Send PATCH request
+            _ = try await api.updateProfile(patch)
+            
+            #if DEBUG
+            DLog("[PROFILE] Profile updated successfully, fetching fresh data from server")
+            #endif
+            
+            // Step 6: Fetch fresh profile from server to reflect server truth
+            let freshProfile = try await api.getProfile()
+            
+            // Update UI with server values
+            let freshFirst = freshProfile.firstName ?? ""
+            let freshLast = freshProfile.lastName ?? ""
+            fullName = [freshFirst, freshLast].filter { !$0.isEmpty }.joined(separator: " ")
+            phone = freshProfile.phone ?? ""
             
             // Update initial values after successful save
             initialFullName = fullName
             initialPhone = phone
+            selectedPhoto = nil
+            selectedPhotoData = nil
+            
+            // Update avatar if it was uploaded
+            if uploadedPhotoURL != nil, let avatarUrl = freshProfile.avatarUrl {
+                await loadAvatarFromURL(avatarUrl)
+            }
+            
+            #if DEBUG
+            DLog("[PROFILE] Refreshed from server: name=\(fullName) phone=\(phone)")
+            #endif
             
             // Show success toast
             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
@@ -719,17 +806,17 @@ struct AccountDetailsView: View {
             }
             
         } catch {
-            errorMessage = "Couldn't save your changes. Please try again."
-            
             #if DEBUG
             DLog("[PROFILE] Save error: \(error.localizedDescription)")
             #endif
             
-            // Show more specific error if available
+            // Show user-friendly error
             if let simpleError = error as? SimpleError {
                 errorMessage = simpleError.message
             } else if error.localizedDescription.contains("401") || error.localizedDescription.contains("unauthorized") {
                 errorMessage = "Please sign in again to continue."
+            } else {
+                errorMessage = "Couldn't save your changes. Please try again."
             }
             
             showingError = true
@@ -741,14 +828,67 @@ struct AccountDetailsView: View {
     @MainActor
     private func loadSelectedPhoto(_ photo: PhotosPickerItem) async {
         do {
-            if let data = try await photo.loadTransferable(type: Data.self),
-               let uiImage = UIImage(data: data) {
-                profileImage = Image(uiImage: uiImage)
+            if let data = try await photo.loadTransferable(type: Data.self) {
+                // Validate file size (5MB limit)
+                let maxSize = 5 * 1024 * 1024
+                if data.count > maxSize {
+                    errorMessage = "Image must be under 5MB."
+                    showingError = true
+                    selectedPhoto = nil
+                    return
+                }
+                
+                // Convert to JPEG if needed and compress
+                if let uiImage = UIImage(data: data) {
+                    // Compress to JPEG at 85% quality
+                    if let jpegData = uiImage.jpegData(compressionQuality: 0.85) {
+                        selectedPhotoData = jpegData
+                        profileImage = Image(uiImage: uiImage)
+                        
+                        #if DEBUG
+                        DLog("[PROFILE] Photo selected: \(jpegData.count) bytes")
+                        #endif
+                    } else {
+                        errorMessage = "Couldn't process that photo. Please try another."
+                        showingError = true
+                        selectedPhoto = nil
+                    }
+                } else {
+                    errorMessage = "Invalid image format. Please use JPEG, PNG, or WebP."
+                    showingError = true
+                    selectedPhoto = nil
+                }
             }
         } catch {
             errorMessage = "Couldn't load that photo. Please try another."
             showingError = true
+            selectedPhoto = nil
         }
+    }
+
+    @MainActor
+    private func loadAvatarFromURL(_ url: URL) async {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            if let uiImage = UIImage(data: data) {
+                profileImage = Image(uiImage: uiImage)
+            }
+        } catch {
+            #if DEBUG
+            DLog("[AVATAR] Failed to load avatar: \(error.localizedDescription)")
+            #endif
+        }
+    }
+
+    private func detectImageExtension(from data: Data) -> String {
+        guard data.count >= 12 else { return "jpg" }
+        // PNG: 89 50 4E 47
+        if data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 { return "png" }
+        // JPEG: FF D8 FF
+        if data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF { return "jpg" }
+        // WebP: "WEBP" at bytes 8-11
+        if data[8] == 0x57 && data[9] == 0x45 && data[10] == 0x42 && data[11] == 0x50 { return "webp" }
+        return "jpg"
     }
 }
 

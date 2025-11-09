@@ -36,12 +36,25 @@ final class SupabaseService: NSObject, ObservableObject {
     @Published private(set) var session: Session?
     @Published private(set) var isAuthenticated: Bool = false
     @Published private(set) var didCheckSession = false
+    
+    // Server-side profile (single source of truth for flow gating)
+    @Published private(set) var serverProfile: ProfileDTO?
+    @Published private(set) var profileLoadState: ProfileLoadState = .idle
+    private var cachedProfile: ProfileDTO? // Offline fallback only, never write back
+    
     // Single refresh guard to avoid concurrent refresh storms
     private let refreshGate = RefreshGate()
     // Shared single-flight gate for feed/map fetches
     private let feedGate = FeedSingleFlight()
     private var feedReqCounter: Int = 0
     private var pendingDeletionUserId: String?
+    
+    enum ProfileLoadState {
+        case idle
+        case loading
+        case loaded
+        case failed(Error)
+    }
     
     // User profile computed properties
     var displayName: String {
@@ -127,15 +140,33 @@ final class SupabaseService: NSObject, ObservableObject {
     private override init() {
         super.init()
         
-        // Prefer Keychain restore to avoid auth screen flash
-        // Run off-main to ensure no disk/Keychain I/O on the main actor
-        Task.detached { [weak self] in
-            await self?.restoreSessionIfPossible()
-        }
-        
-        // Also kick a background verification/refresh (non-blocking)
-        Task.detached { [weak self] in
-            await self?.bootstrapAuth()
+        // On a truly fresh install, force signed-out so Auth shows first
+        let defaults = UserDefaults.standard
+        let firstLaunchKey = "app.hasLaunchedBefore"
+        if defaults.bool(forKey: firstLaunchKey) == false {
+            defaults.set(true, forKey: firstLaunchKey)
+            Task {
+                try? await self.client.auth.signOut()
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.session = nil
+                    self.isAuthenticated = false
+                    self.userId = nil
+                    self.phase = .signedOut
+                    self.didCheckSession = true
+                }
+            }
+        } else {
+            // Prefer Keychain restore to avoid auth screen flash
+            // Run off-main to ensure no disk/Keychain I/O on the main actor
+            Task.detached { [weak self] in
+                await self?.restoreSessionIfPossible()
+            }
+            
+            // Also kick a background verification/refresh (non-blocking)
+            Task.detached { [weak self] in
+                await self?.bootstrapAuth()
+            }
         }
 
         // Load last-known feed cache (local-only Stage 0)
@@ -208,6 +239,8 @@ final class SupabaseService: NSObject, ObservableObject {
                 // AUDIT: after bootstrap failed
                 AuditLog.auth("bootstrapAuth failed → signedOut")
             }
+            // Mark session check complete so gates can route to Auth
+            self.didCheckSession = true
         }
         let ms = Int(Date().timeIntervalSince(bootStart) * 1000)
         Metrics.sessionRestoreMs(ms)
@@ -247,36 +280,78 @@ final class SupabaseService: NSObject, ObservableObject {
         applyAuthSession(s)
     }
 
-    /// Native Apple Sign-In (no Apple client secret needed on iOS).K
+    /// Native Apple Sign-In (no Apple client secret needed on iOS)
+    /// Persists fullName/email to profiles only on first sign-in
     func signInWithApple(on window: UIWindow?) async throws {
-        AuthLogger.appleSignInStart()
+        AppLogger.logAuth("Apple Sign-In started")
         let nonce = Self.randomNonceString()
         let request = ASAuthorizationAppleIDProvider().createRequest()
         request.requestedScopes = [.fullName, .email]
         request.nonce = Self.sha256(nonce)
-        AuthLogger.appleSignInRequestCreated(nonce: nonce)
 
         let cred = try await Self.performAppleSignIn(request: request, on: window)
-        AuthLogger.appleSignInCredentialReceived(hasToken: cred.identityToken != nil, hasNonce: true)
+        AppLogger.logAuth("Apple credential received")
 
         guard let tokenData = cred.identityToken,
               let idToken = String(data: tokenData, encoding: .utf8) else {
             let error = SimpleError(message: "No Apple identity token")
-            AuthLogger.appleSignInFailure(error: error)
+            AppLogger.logAuth("Apple Sign-In failed: no token", level: .error)
             throw error
         }
 
-        AuthLogger.appleSignInSupabaseExchange()
         do {
             let s = try await client.auth.signInWithIdToken(
                 credentials: OpenIDConnectCredentials(provider: .apple, idToken: idToken, nonce: nonce)
             )
-            applyAuthSession(s)
-            phase = .signedIn
-            AuthLogger.appleSignInSuccess(userId: s.user.id.uuidString)
+            await MainActor.run {
+                applyAuthSession(s)
+                phase = .signedIn
+            }
+            AppLogger.logAuth("Apple Sign-In successful, user=\(AppLogger.redactUserId(s.user.id.uuidString))")
+            
+            // Persist identity data only on first sign-in
+            await persistAppleIdentityIfFirstSignIn(credential: cred, userId: s.user.id.uuidString)
+            
         } catch {
-            AuthLogger.appleSignInFailure(error: error)
+            AppLogger.logAuth("Apple Sign-In failed: \(error.localizedDescription)", level: .error)
             throw error
+        }
+    }
+    
+    /// Persist Apple identity data to profiles only on first sign-in
+    private func persistAppleIdentityIfFirstSignIn(credential: ASAuthorizationAppleIDCredential, userId: String) async {
+        // Check if this is first sign-in by fetching profile
+        await fetchProfile()
+        
+        guard let profile = serverProfile else {
+            AppLogger.logProfile("No profile found after Apple sign-in, will be created by trigger", level: .notice)
+            return
+        }
+        
+        // If profile already has full_name, this is not first sign-in
+        if let existingName = profile.fullName, !existingName.isEmpty {
+            AppLogger.logProfile("Profile already has name, skipping Apple identity persistence")
+            return
+        }
+        
+        // First sign-in: persist fullName from credential if available
+        if let fullName = credential.fullName {
+            let nameComponents = [
+                fullName.givenName,
+                fullName.familyName
+            ].compactMap { $0 }.filter { !$0.isEmpty }
+            
+            if !nameComponents.isEmpty {
+                let combinedName = nameComponents.joined(separator: " ")
+                do {
+                    try await updateProfileWithOnboarding(fullName: combinedName)
+                    AppLogger.logProfile("Persisted Apple identity: name=\(combinedName)", level: .notice)
+                } catch {
+                    AppLogger.logProfile("Failed to persist Apple identity: \(error.localizedDescription)", level: .error)
+                }
+            }
+        } else {
+            AppLogger.logProfile("Apple credential has no fullName (expected after first sign-in)")
         }
     }
 
@@ -343,21 +418,75 @@ final class SupabaseService: NSObject, ObservableObject {
     
     // MARK: - Profile Management
     
+    /// Upload avatar image to Supabase storage
+    /// Returns the public URL of the uploaded image
+    @MainActor
+    func uploadAvatar(_ data: Data, fileExt: String = "jpg") async throws -> URL {
+        guard let userId = session?.user.id.uuidString else {
+            throw SimpleError(message: "Not signed in.")
+        }
+        
+        let filename = "avatar_\(Int(Date().timeIntervalSince1970)).\(fileExt)"
+        let path = "users/\(userId)/\(filename)"
+        
+        #if DEBUG
+        DLog("[AVATAR] Uploading to path: \(path)")
+        #endif
+        
+        // 1) Upload to storage
+        try await client.storage
+            .from("profile-photos")
+            .upload(
+                path: path,
+                file: data,
+                options: FileOptions(
+                    contentType: "image/\(fileExt == "jpg" ? "jpeg" : fileExt)",
+                    upsert: true
+                )
+            )
+        
+        // 2) Get public URL
+        let url = try client.storage
+            .from("profile-photos")
+            .getPublicURL(path: path)
+        
+        #if DEBUG
+        DLog("[AVATAR] Upload successful: \(url.absoluteString)")
+        #endif
+        
+        return url
+    }
+    
     /// Update user profile information
     /// Tries API endpoint first, falls back to direct SDK update
     @MainActor
-    func updateProfile(firstName: String?, lastName: String?, phone: String?) async throws {
+    func updateProfile(firstName: String?, lastName: String?, phone: String?, avatarUrl: URL? = nil) async throws {
         guard session != nil else {
             throw SimpleError(message: "No active session")
+        }
+        
+        // Normalize phone to E.164 if provided
+        let normalizedPhone: String?
+        if let rawPhone = phone?.trimmingCharacters(in: .whitespacesAndNewlines), !rawPhone.isEmpty {
+            do {
+                normalizedPhone = try PhoneNormalizer.normalizeToE164(rawInput: rawPhone)
+                #if DEBUG
+                DLog("[PROFILE] Phone normalized: \(rawPhone) → \(normalizedPhone!)")
+                #endif
+            } catch let error as PhoneNormalizationError {
+                throw SimpleError(message: error.userMessage)
+            }
+        } else {
+            normalizedPhone = nil
         }
         
         // Build patch object
         let patch = ProfilePatch(
             firstName: firstName?.trimmingCharacters(in: .whitespacesAndNewlines),
             lastName: lastName?.trimmingCharacters(in: .whitespacesAndNewlines),
-            phone: phone?.trimmingCharacters(in: .whitespacesAndNewlines),
+            phone: normalizedPhone,
             city: nil,
-            avatarUrl: nil
+            avatarUrl: avatarUrl?.absoluteString
         )
         
         // Try API endpoint first
@@ -371,6 +500,10 @@ final class SupabaseService: NSObject, ObservableObject {
             
             // Update session metadata to reflect changes
             try await updateSessionMetadata(firstName: firstName, lastName: lastName, phone: phone)
+            
+            // Refresh server profile to get updated avatar URL
+            try? await fetchProfile()
+            notifyProfileObservers()
             
         } catch ApiServiceError.notFound {
             // API endpoint doesn't exist, fall back to SDK
@@ -452,6 +585,9 @@ final class SupabaseService: NSObject, ObservableObject {
             lastName: patch.lastName,
             phone: patch.phone
         )
+
+        try? await fetchProfile()
+        await notifyProfileObservers()
     }
     
     /// Update session metadata after profile changes
@@ -474,6 +610,12 @@ final class SupabaseService: NSObject, ObservableObject {
         // Refresh session to get updated metadata
         let refreshedSession = try await client.auth.refreshSession()
         applyAuthSession(refreshedSession)
+    }
+
+    @MainActor
+    private func notifyProfileObservers() {
+        FeedViewModel.requestFeedRefresh()
+        NotificationCenter.default.post(name: .profileDidUpdate, object: nil)
     }
     
     /// Delete user account and all associated data
@@ -533,45 +675,111 @@ final class SupabaseService: NSObject, ObservableObject {
     
     @MainActor
     func applyAuthForGate(_ s: Session?) { applyAuthSession(s) }
-
-    // MARK: - Feed
-
-    func fetchFeed(
-        near: CLLocationCoordinate2D,
-        radiusKM: Double = 50,
-        category: String? = nil,
-        condition: String? = nil,
-        mode: String? = nil
-    ) async {
-        // Build key and debounce window
-        let key = FeedFetchKey(lat: near.latitude, lon: near.longitude, radiusKM: radiusKM, mode: mode ?? "all")
-        let debounceMs = Int.random(in: 300...500)
-        feedReqCounter &+= 1
-        let reqId = feedReqCounter
-
-        await feedGate.schedule(key: key, debounceMs: debounceMs) { [weak self] in
-            guard let self else { return }
-            let start = Date()
-            #if DEBUG
-            DLog("[FEED req] id=\(reqId) key=(lat=\(String(format: "%.5f", key.lat)), lon=\(String(format: "%.5f", key.lon)), mode=\(key.mode), r=\(key.radiusKM)) start")
-            #endif
-            do {
-                let count = try await self._performFetchFeed(near: near, radiusKM: radiusKM, category: category, condition: condition)
-                #if DEBUG
-                let ms = Int(Date().timeIntervalSince(start) * 1000)
-                DLog("[FEED req] id=\(reqId) done ms=\(ms) count=\(count)")
-                #endif
-            } catch {
-                // Silent on cancellations; otherwise fallback remains handled inside
-                if error.isCancellationLike {
-                    return
-                }
-                #if DEBUG
-                let ms = Int(Date().timeIntervalSince(start) * 1000)
-                DLog("[FEED req] id=\(reqId) fail ms=\(ms) error=\(error.localizedDescription)")
-                #endif
+    
+    // MARK: - Server Profile Management (Single Source of Truth)
+    
+    /// Fetch user profile from server (single source of truth for flow gating)
+    /// Uses 5-second timeout with offline fallback to cached profile
+    @MainActor
+    func fetchProfile() async {
+        guard let uid = userId?.uuidString else {
+            AppLogger.logProfile("fetchProfile called with no userId", level: .error)
+            profileLoadState = .failed(SimpleError(message: "No user ID"))
+            return
+        }
+        
+        profileLoadState = .loading
+        AppLogger.logProfile("Fetching profile for user=\(AppLogger.redactUserId(uid))")
+        
+        do {
+            let profile: ProfileDTO = try await withTimeout(seconds: 5.0) {
+                try await self.client.database
+                    .from("profiles")
+                    .select()
+                    .eq("id", value: uid)
+                    .single()
+                    .execute()
+                    .value
+            }
+            
+            serverProfile = profile
+            cachedProfile = profile // Cache for offline fallback
+            profileLoadState = .loaded
+            AppLogger.logProfile("Profile loaded: complete=\(profile.isComplete) onboarding=\(profile.onboardingCompleted)")
+            
+        } catch {
+            AppLogger.logProfile("Profile fetch failed: \(error.localizedDescription)", level: .error)
+            
+            // Offline fallback: use cached profile if available
+            if let cached = cachedProfile {
+                AppLogger.logProfile("Using cached profile as fallback", level: .notice)
+                serverProfile = cached
+                profileLoadState = .loaded
+            } else {
+                profileLoadState = .failed(error)
             }
         }
+    }
+    
+    /// Update profile with onboarding completion flag
+    /// This is the ONLY method that should set onboarding_completed on the server
+    @MainActor
+    func updateProfileWithOnboarding(
+        fullName: String? = nil,
+        firstName: String? = nil,
+        lastName: String? = nil,
+        phone: String? = nil,
+        avatarUrl: String? = nil,
+        onboardingCompleted: Bool? = nil
+    ) async throws {
+        // Normalize phone to E.164 if provided
+        let normalizedPhone: String?
+        if let rawPhone = phone?.trimmingCharacters(in: .whitespacesAndNewlines), !rawPhone.isEmpty {
+            do {
+                normalizedPhone = try PhoneNormalizer.normalizeToE164(rawInput: rawPhone)
+                #if DEBUG
+                DLog("[PROFILE] Phone normalized in onboarding: \(rawPhone) → \(normalizedPhone!)")
+                #endif
+            } catch let error as PhoneNormalizationError {
+                throw SimpleError(message: error.userMessage)
+            }
+        } else {
+            normalizedPhone = nil
+        }
+
+        // Build snake_case PATCH body for REST
+        struct LocalPatch: Encodable {
+            let first_name: String?
+            let last_name: String?
+            let phone: String?
+            let avatar_url: String?
+        }
+        let patchBody = LocalPatch(
+            first_name: firstName,
+            last_name: lastName,
+            phone: normalizedPhone,
+            avatar_url: avatarUrl
+        )
+
+        let api = ApiService(supabaseService: self)
+        let bodyData = try JSONEncoder().encode(patchBody)
+        _ = try await api.rawRequest("/me/profile", method: .PATCH, body: bodyData)
+
+        if onboardingCompleted == true {
+            // Call dedicated endpoint to mark onboarding complete
+            _ = try await api.rawRequest("/me/onboarding/complete", method: .POST)
+        }
+
+        // Refresh local profile from server
+        await fetchProfile()
+    }
+
+    /// Mark onboarding as complete on server (atomic operation)
+    @MainActor
+    func markOnboardingComplete() async throws {
+        let api = ApiService(supabaseService: self)
+        _ = try await api.rawRequest("/me/onboarding/complete", method: .POST)
+        await fetchProfile()
     }
 
     @MainActor
@@ -709,11 +917,35 @@ final class SupabaseService: NSObject, ObservableObject {
         resetLists()
         feedCacheStore.clear()
         DismissStore.shared.clear(for: userId)
+        LocationCache.shared.clear()
     }
     
     private func mapPostToDTO(_ post: Post, reservation: Reservation?) -> TrashDTO {
-        let exactCoord = post.exactLocation?.coordinate
-        let approxCoord = post.approxLocation?.coordinate
+        let exactCoord: CLLocationCoordinate2D? = {
+            if let coord = post.exactCoordinate {
+                return coord
+            }
+            if post.mode == .street {
+                return LocationCache.shared.coordinate(for: post.id, mode: .street)
+            }
+            return nil
+        }()
+
+        let approxCoord: CLLocationCoordinate2D? = {
+            if let coord = post.approxCoordinate {
+                return coord
+            }
+            if post.mode == .home {
+                return LocationCache.shared.coordinate(for: post.id, mode: .home)
+            }
+            return nil
+        }()
+        LocationCache.shared.store(
+            postId: post.id,
+            mode: post.mode,
+            exact: exactCoord,
+            approximate: approxCoord
+        )
         let createdAt = post.createdAt ?? Date()
         let expiresAt = post.expiresAt ?? createdAt
         let status = reservation?.status.rawValue ?? post.userReservation?.status ?? "available"
@@ -740,7 +972,7 @@ final class SupabaseService: NSObject, ObservableObject {
             title: post.title,
             description: post.description,
             category: post.category,
-            condition: post.condition.rawValue,
+            condition: post.condition.backendValue,
             mode: post.mode.rawValue,
             city: post.owner?.city,
             lat: exactCoord?.latitude,
@@ -859,9 +1091,9 @@ final class SupabaseService: NSObject, ObservableObject {
         try await api.approveReservation(reservationId.uuidString)
     }
 
-    func cancelReservation(_ item: TrashDTO) async {
+    func cancelReservation(_ reservationId: UUID) async {
         let api = ApiService(supabaseService: self)
-        do { _ = try await api.cancelReservation(item.id.uuidString) }
+        do { _ = try await api.cancelReservation(postId: reservationId.uuidString) }
         catch { /* swallow to keep UI responsive */ }
     }
 
@@ -1055,6 +1287,11 @@ private extension SupabaseService {
         #if DEBUG
         DLog("[AUTH] applyAuthSession on main actor")
         #endif
+        
+        #if DEBUG || RESERVATIONS_DIAGNOSTICS
+        let previousPhase = phase
+        #endif
+        
         self.session = session
         if let s = session {
             self.userId = s.user.id
@@ -1067,10 +1304,30 @@ private extension SupabaseService {
                 AuthLogger.sessionApplied(userId: s.user.id.uuidString, accessTokenPresent: true)
                 // AUDIT: session applied
                 AuditLog.auth("applyAuthSession: signedIn userId=\(s.user.id.uuidString)")
+                
+                #if DEBUG || RESERVATIONS_DIAGNOSTICS
+                if previousPhase != .signedIn {
+                    Diag.log(.auth, "auth.state.signin", fields: [
+                        "previousPhase": "\(previousPhase)",
+                        "newPhase": "signedIn",
+                        "userId": s.user.id.uuidString
+                    ])
+                }
+                #endif
             } else {
                 KeychainStore.clearSession()
                 if phase != .signedOut { phase = .signedOut }
                 AuditLog.auth("applyAuthSession: token missing → signedOut")
+                
+                #if DEBUG || RESERVATIONS_DIAGNOSTICS
+                if previousPhase != .signedOut {
+                    Diag.log(.auth, "auth.state.signout", fields: [
+                        "previousPhase": "\(previousPhase)",
+                        "newPhase": "signedOut",
+                        "reason": "token missing"
+                    ])
+                }
+                #endif
             }
         } else {
             self.userId = nil
@@ -1078,6 +1335,16 @@ private extension SupabaseService {
             KeychainStore.clearSession()
             if phase != .signedOut { phase = .signedOut }
             AuditLog.auth("applyAuthSession: nil → signedOut")
+            
+            #if DEBUG || RESERVATIONS_DIAGNOSTICS
+            if previousPhase != .signedOut {
+                Diag.log(.auth, "auth.state.signout", fields: [
+                    "previousPhase": "\(previousPhase)",
+                    "newPhase": "signedOut",
+                    "reason": "session nil"
+                ])
+            }
+            #endif
         }
     }
 

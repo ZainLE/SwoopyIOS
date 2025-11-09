@@ -3,10 +3,16 @@ import SwiftUI
 struct AppTabRootView: View {
     let tab: AppTab
     
+    // Create FeedViewModel for the feed tab
+    @StateObject private var feedViewModel = FeedViewModel(api: ApiService(supabaseService: SupabaseService.shared))
+    
     var body: some View {
         switch tab {
         case .feed:
-            NavigationStack { SwipeDeckView() }
+            NavigationStack { 
+                SwipeDeckView()
+                    .environmentObject(feedViewModel)
+            }
         case .reservations:
             NavigationStack { ReservationsView() }
         case .profile:

@@ -30,6 +30,26 @@ final class ApiServiceTests: XCTestCase {
         mockSession = nil
         apiService = nil
     }
+
+    func test_buildRequest_normalizesCustomApiPrefix() throws {
+        apiService = ApiService(supabaseService: mockSupabaseService, session: mockSession)
+
+        let duplicatedPathRequest = try apiService.buildRequest(
+            path: "/custom-api/my/notifications",
+            method: .GET
+        )
+
+        let normalizedURL = "\(SupabaseConfig.apiBaseURL)/my/notifications"
+        XCTAssertEqual(duplicatedPathRequest.url?.absoluteString, normalizedURL)
+
+        let barePathRequest = try apiService.buildRequest(
+            path: "my/notifications",
+            method: .GET
+        )
+
+        XCTAssertEqual(barePathRequest.url?.absoluteString, normalizedURL)
+        XCTAssertFalse(normalizedURL.contains("/custom-api/custom-api"))
+    }
     
     // MARK: - Health Check Tests
     

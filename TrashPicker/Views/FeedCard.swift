@@ -22,6 +22,7 @@ struct FeedCard: View {
 #if DEBUG
     @Environment(\.feedDebugContext) private var feedDebugContext
 #endif
+    @ObservedObject private var locationService = LocationService.shared
 
     // Local UI state
     @State private var dragOffset: CGSize = .zero
@@ -29,6 +30,7 @@ struct FeedCard: View {
     @State private var currentImageIndex = 0
     @State private var showDetailOverlay = false
     @State private var currentTime = Date() // For time remaining updates
+    @State private var distanceText: String?
     
     // Timer for updating time remaining every 60 seconds
     private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -77,7 +79,7 @@ struct FeedCard: View {
         if let ckItem = item as? CKTrashItem {
             return ckItem.condition
         } else if let post = item as? Post {
-            return post.condition.rawValue
+            return post.condition.displayName
         }
         return nil
     }
@@ -136,20 +138,20 @@ struct FeedCard: View {
         return []
     }
     
-    private var itemCoordinate: CLLocationCoordinate2D? {
+    private var itemExactCoordinate: CLLocationCoordinate2D? {
         if let ckItem = item as? CKTrashItem {
             return ckItem.coordinate
         } else if let post = item as? Post {
-            // For Post, we need to construct coordinate from exactLocation or approxLocation
-            if let exact = post.exactLocation, 
-               let lat = Double(exact.lat ?? ""), 
-               let lng = Double(exact.lng ?? "") {
-                return CLLocationCoordinate2D(latitude: lat, longitude: lng)
-            } else if let approx = post.approxLocation,
-                      let lat = Double(approx.lat ?? ""),
-                      let lng = Double(approx.lng ?? "") {
-                return CLLocationCoordinate2D(latitude: lat, longitude: lng)
-            }
+            return post.exactCoordinate
+        }
+        return nil
+    }
+
+    private var itemApproxCoordinate: CLLocationCoordinate2D? {
+        if let ckItem = item as? CKTrashItem {
+            return ckItem.coordinate
+        } else if let post = item as? Post {
+            return post.approxCoordinate
         }
         return nil
     }
@@ -188,16 +190,18 @@ struct FeedCard: View {
             return "Needs fixing"
         case "good":
             return "Good"
-        case "excellent":
-            return "Excellent"
-        case "like new", "like_new":
-            return "Like New"
+        case "excellent", "like new", "like_new":
+            return "Like new"
         default:
             return condition?.capitalized ?? "Unknown"
         }
     }
 
     private var distanceString: String {
+        distanceText ?? fallbackDistanceString
+    }
+
+    private var fallbackDistanceString: String {
         // Use real distance from Post or deterministic fake for CKTrashItem
         if let post = item as? Post, let distance = post.distance {
             return String(format: "%.1f km away", distance)
@@ -208,6 +212,16 @@ struct FeedCard: View {
         let key = itemId
         let hash = abs(key.hashValue)
         return distances[hash % distances.count]
+    }
+
+    private var pickupCoordinate: CLLocationCoordinate2D? {
+        if let post = item as? Post {
+            return post.exactCoordinate ?? post.approxCoordinate
+        }
+        if let ckItem = item as? CKTrashItem {
+            return ckItem.coordinate
+        }
+        return nil
     }
 
     private var postedAgoText: String? {
@@ -311,6 +325,12 @@ struct FeedCard: View {
         .overlay(reservingOverlayView())
         .fullScreenCover(isPresented: $showDetailOverlay) {
             expandedCardView()
+        }
+        .task {
+            await refreshDistance(forceRefresh: true)
+        }
+        .onReceive(locationService.$lastFix) { _ in
+            Task { await refreshDistance(forceRefresh: false) }
         }
     }
 
@@ -534,7 +554,8 @@ struct FeedCard: View {
                 statusColor: Color(hex: "#00513F"),
                 description: itemDescription,
                 mode: itemMode?.lowercased() == "street" ? .street : .home,
-                exactLocation: itemCoordinate,
+                exactCoordinate: itemExactCoordinate,
+                approxCoordinate: itemApproxCoordinate,
                 ownerName: itemOwnerName ?? "Anonymous User",
                 ownerAvatarUrl: itemOwnerAvatarUrl,
                 memberSince: itemCreatedAt,
@@ -576,5 +597,33 @@ struct FeedCard: View {
     }
 
     private func advancePhoto() { nextPhoto() }
+
+    private func refreshDistance(forceRefresh: Bool) async {
+        guard let coordinate = pickupCoordinate else {
+            await MainActor.run { distanceText = nil }
+            return
+        }
+
+        var userCoordinate: CLLocationCoordinate2D?
+        if forceRefresh {
+            if let fresh = try? await LocationService.shared.currentCoordinate() {
+                userCoordinate = fresh
+            }
+        }
+
+        if userCoordinate == nil {
+            userCoordinate = locationService.lastFix?.coordinate ?? LocationService.shared.lastKnownCoordinate
+        }
+
+        guard let userCoordinate else {
+            await MainActor.run { distanceText = nil }
+            return
+        }
+
+        let formatted = DistanceFormatterHelper.formattedDistance(from: userCoordinate, to: coordinate)
+        await MainActor.run {
+            distanceText = formatted
+        }
+    }
 
 }

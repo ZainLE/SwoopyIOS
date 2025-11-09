@@ -13,10 +13,12 @@
 			</array>
 		</dict>
 	</array>
-	<key>OneSignal_app_groups_key</key>
-	<string>group.Swoopy</string>
 	<key>OneSignalAppID</key>
 	<string>f22c666f-ed87-4d91-bcca-1c27f059987f</string>
+	<key>OneSignal_app_groups_key</key>
+	<string>group.Swoopy</string>
+	<key>SmartlookProjectKey</key>
+	<string>6ca49e4d5c6c098cd2aee92d68dc987c0f8fc8fa</string>
 	<key>SupabaseAnonKey</key>
 	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzU5NjE1MjAwLCJleHAiOjE5MTczODE2MDB9.mSliAqP3d591IW4i8INqPxKQ_aYIHDNAiU3eBRkqNx4</string>
 	<key>SupabaseUrl</key>
@@ -25,7 +27,7 @@
 	<array>
 		<string>remote-notification</string>
 	</array>
-	<key>UILaunchStoryboardName</key>
-	<string>Launch Screen</string>
+	<key>UILaunchScreen</key>
+	<false/>
 </dict>
 </plist>

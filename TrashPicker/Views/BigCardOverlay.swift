@@ -21,19 +21,22 @@ struct BigCardOverlay: View {
     let statusColor: Color
     let description: String?
     let mode: LocationMode
-    let exactLocation: CLLocationCoordinate2D?
+    let exactCoordinate: CLLocationCoordinate2D?
+    let approxCoordinate: CLLocationCoordinate2D?
     let ownerName: String
     let ownerAvatarUrl: URL?
     let memberSince: Date?
     let pickupsCount: Int?
     let variant: Variant
     let deadline: Date?
-    
+    let reservationActionConfig: ReservationActionBarConfiguration?
+
     // Actions
     let onDismiss: () -> Void
     let onPrimaryAction: () -> Void
     let onSecondaryAction: () -> Void
     let onTertiaryAction: (() -> Void)?
+    let onReservationAction: ((ReservationActionBar.Action) -> Void)?
 
     // State
     @State private var currentImageIndex = 0
@@ -45,9 +48,11 @@ struct BigCardOverlay: View {
     @State private var isReportPostSheetPresented = false
     @State private var isReportPostSuccessVisible = false
     @State private var reportSuccessTask: Task<Void, Never>? = nil
+    private let displayCoordinate: CLLocationCoordinate2D?
+    private let locationPrecision: CoordinatePrecision
 
     // Design tokens
-    private let overlayScale: CGFloat = 0.90
+    private let overlayScale: CGFloat = 0.86
     private let primaryColor = Color(hex: "00513F")
     private let accentColor = Color(hex: "B4DD4E")
     private let mutedColor = Color(hex: "656565")
@@ -71,11 +76,46 @@ struct BigCardOverlay: View {
         case feed
         
         enum ReservationButtonSet {
-            case streetActive // Pick up, Cancel, Directions
-            case homePending  // Contact (disabled), Cancel
-            case homeActive   // Contact, Cancel
-            case completed    // No actions, success message
+            case streetPending // Cancel only (no directions until approved)
+            case streetActive  // Pick up, Cancel, Directions
+            case homePending   // Contact (disabled), Cancel
+            case homeActive    // Contact, Cancel
+            case completed     // No actions, success message
         }
+    }
+
+    private static func resolveCoordinate(
+        mode: LocationMode,
+        variant: Variant,
+        exactCoordinate: CLLocationCoordinate2D?,
+        approxCoordinate: CLLocationCoordinate2D?
+    ) -> (coordinate: CLLocationCoordinate2D?, precision: CoordinatePrecision) {
+        switch mode {
+        case .street:
+            if let exactCoordinate { return (exactCoordinate, .exact) }
+            if let approxCoordinate { return (approxCoordinate, .approximate) }
+            return (nil, .approximate)
+        case .home:
+            switch variant {
+            case .feed:
+                if let approxCoordinate { return (approxCoordinate, .approximate) }
+                return (nil, .approximate)
+            case .reservations(let buttonSet):
+                if buttonSet == .homePending {
+                    if let approxCoordinate { return (approxCoordinate, .approximate) }
+                    return (nil, .approximate)
+                } else {
+                    if let exactCoordinate { return (exactCoordinate, .exact) }
+                    if let approxCoordinate { return (approxCoordinate, .approximate) }
+                    return (nil, .approximate)
+                }
+            }
+        }
+    }
+    
+    private enum CoordinatePrecision {
+        case exact
+        case approximate
     }
 
     // Live status text for reservations overlay
@@ -96,17 +136,20 @@ struct BigCardOverlay: View {
         statusColor: Color,
         description: String?,
         mode: LocationMode,
-        exactLocation: CLLocationCoordinate2D?,
+        exactCoordinate: CLLocationCoordinate2D?,
+        approxCoordinate: CLLocationCoordinate2D?,
         ownerName: String,
         ownerAvatarUrl: URL?,
         memberSince: Date?,
         pickupsCount: Int?,
         variant: Variant,
         deadline: Date? = nil,
+        reservationActionConfig: ReservationActionBarConfiguration? = nil,
         onDismiss: @escaping () -> Void,
         onPrimaryAction: @escaping () -> Void,
         onSecondaryAction: @escaping () -> Void,
-        onTertiaryAction: (() -> Void)?
+        onTertiaryAction: (() -> Void)?,
+        onReservationAction: ((ReservationActionBar.Action) -> Void)? = nil
     ) {
         self.postID = postID
         self.images = images
@@ -115,18 +158,36 @@ struct BigCardOverlay: View {
         self.statusColor = statusColor
         self.description = description
         self.mode = mode
-        self.exactLocation = exactLocation
+        self.exactCoordinate = exactCoordinate
+        self.approxCoordinate = approxCoordinate
         self.ownerName = ownerName
         self.ownerAvatarUrl = ownerAvatarUrl
         self.memberSince = memberSince
         self.pickupsCount = pickupsCount
         self.variant = variant
         self.deadline = deadline
+        self.reservationActionConfig = reservationActionConfig
         self.onDismiss = onDismiss
         self.onPrimaryAction = onPrimaryAction
         self.onSecondaryAction = onSecondaryAction
         self.onTertiaryAction = onTertiaryAction
-        _locationViewModel = StateObject(wrappedValue: LocationDescriptionViewModel(postID: postID, coordinate: exactLocation, mode: mode))
+        self.onReservationAction = onReservationAction
+        
+        let resolved = BigCardOverlay.resolveCoordinate(
+            mode: mode,
+            variant: variant,
+            exactCoordinate: exactCoordinate,
+            approxCoordinate: approxCoordinate
+        )
+        self.displayCoordinate = resolved.coordinate
+        self.locationPrecision = resolved.precision
+        _locationViewModel = StateObject(
+            wrappedValue: LocationDescriptionViewModel(
+                postID: postID,
+                coordinate: resolved.coordinate,
+                mode: mode
+            )
+        )
     }
 
     var body: some View {
@@ -134,21 +195,24 @@ struct BigCardOverlay: View {
             let cardWidth = min(outerGeometry.size.width * 0.92, 600)
             let isSmall = outerGeometry.size.height < 700
             let cardHeight = outerGeometry.size.height * (isSmall ? 0.82 : 0.85)
-            
+            let safeTop = outerGeometry.safeAreaInsets.top
+           
             // Exact 50/50 split for image/details
             GeometryReader { innerGeometry in
-                let imageHeight = floor(innerGeometry.size.height * 0.5)
-                let detailsHeight = innerGeometry.size.height - imageHeight
+                let showHero = shouldShowHeroCarousel
+                let heroHeight = showHero ? min(200, floor(innerGeometry.size.height * 0.45)) : 0
+                let detailsHeight = innerGeometry.size.height - (showHero ? heroHeight : 0)
                 
                 VStack(spacing: 0) {
-                    // Image carousel - non-cropping, rounded top corners
-                    imageCarousel(height: imageHeight)
-                        .frame(height: imageHeight)
+                    if showHero {
+                        imageCarousel(height: heroHeight)
+                            .frame(maxWidth: .infinity, maxHeight: heroHeight)
+                    }
                     
                     // Content area - NOT scrollable overall
                     VStack(spacing: 0) {
                         ScrollView {
-                            VStack(alignment: .leading, spacing: 20) {
+                            VStack(alignment: .leading, spacing: 16) {
                                 // Meta block
                                 metaSection
                                 
@@ -164,8 +228,8 @@ struct BigCardOverlay: View {
                                     reportPostSection(buttonWidth: (cardWidth - 48 - 12) / 2)
                                 }
                             }
-                            .padding(.horizontal, 24)
-                            .padding(.top, 16)
+                            .padding(.horizontal, 20)
+                            .padding(.top, 14)
                             .padding(.bottom, 8)
                         }
                         .frame(maxHeight: .infinity)
@@ -176,7 +240,7 @@ struct BigCardOverlay: View {
                             .padding(.vertical, 16)
                             .background(Color(.systemBackground))
                     }
-                    .frame(height: detailsHeight)
+                    .frame(height: max(detailsHeight, 0))
                 }
             }
             .frame(width: cardWidth, height: cardHeight)
@@ -184,7 +248,8 @@ struct BigCardOverlay: View {
             .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
             .shadow(color: .black.opacity(0.12), radius: 24, x: 0, y: 8)
             .offset(y: dragOffset.height)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(.top, safeTop + (isSmall ? 32 : 44))
             .gesture(
                 DragGesture()
                     .onChanged { value in
@@ -250,6 +315,9 @@ struct BigCardOverlay: View {
 
 extension BigCardOverlay {
     
+    private var shouldShowHeroCarousel: Bool {
+        !images.isEmpty
+    }
     
     @ViewBuilder
     private func imageCarousel(height: CGFloat) -> some View {
@@ -275,6 +343,7 @@ extension BigCardOverlay {
             }
             .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
             .frame(height: height)
+            .frame(maxWidth: .infinity)
             .clipShape(
                 UnevenRoundedRectangle(
                     topLeadingRadius: 28,
@@ -336,16 +405,6 @@ extension BigCardOverlay {
                 .font(.system(size: 12, weight: .regular))
                 .foregroundColor(statusColor)
 
-            // Line 3: Address (street only), reuse friendlyText if available and meaningful
-            if mode == .street,
-               !locationViewModel.friendlyText.isEmpty,
-               locationViewModel.friendlyText != "Nearby" {
-                Text(locationViewModel.friendlyText)
-                    .font(.footnote)
-                    .foregroundStyle(Color("SwoopyDeepGreen"))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.9)
-            }
         }
     }
     
@@ -379,36 +438,43 @@ extension BigCardOverlay {
     
     @ViewBuilder
     private var locationSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(mode == .street ? "Location" : "Pickup Area")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.primary)
+        if mode == .street {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Location")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.primary)
 
-            if let coordinate = exactLocation {
-                let span = MKCoordinateSpan(latitudeDelta: mode == .street ? 0.005 : 0.015,
-                                            longitudeDelta: mode == .street ? 0.005 : 0.015)
-                Map(position: .constant(.region(MKCoordinateRegion(center: coordinate, span: span)))) {
-                    if #available(iOS 17.0, *) {
-                        MapCircle(center: coordinate, radius: mode == .street ? 35 : 120)
-                            .foregroundStyle(primaryColor.opacity(0.12))
+                if let coordinate = displayCoordinate {
+                    let span = MKCoordinateSpan(
+                        latitudeDelta: locationPrecision == .exact ? 0.005 : 0.015,
+                        longitudeDelta: locationPrecision == .exact ? 0.005 : 0.015
+                    )
+                    Map(position: .constant(.region(MKCoordinateRegion(center: coordinate, span: span)))) {
+                        if #available(iOS 17.0, *) {
+                            let radius: CLLocationDistance = locationPrecision == .exact ? 35 : 120
+                            MapCircle(center: coordinate, radius: radius)
+                                .foregroundStyle(primaryColor.opacity(0.12))
+                        }
+                        Annotation("", coordinate: coordinate) {
+                            Image(systemName: "mappin.circle.fill")
+                                .font(.system(size: 24))
+                                .foregroundColor(primaryColor)
+                        }
                     }
-                    Annotation("", coordinate: coordinate) {
-                        Image(systemName: "mappin.circle.fill")
-                            .font(.system(size: 24))
-                            .foregroundColor(primaryColor)
-                    }
+                    .frame(height: 120)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .allowsHitTesting(false)
                 }
-                .frame(height: 140)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .allowsHitTesting(false)
-            }
 
-            if !locationViewModel.friendlyText.isEmpty && locationViewModel.friendlyText != "Nearby" {
-                Text(locationViewModel.friendlyText)
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.ColorToken.muted)
-                    .multilineTextAlignment(.leading)
+                if !locationViewModel.friendlyText.isEmpty && locationViewModel.friendlyText != "Nearby" {
+                    Text(locationViewModel.friendlyText)
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.ColorToken.muted)
+                        .multilineTextAlignment(.leading)
+                }
             }
+        } else {
+            EmptyView()
         }
     }
     
@@ -538,30 +604,42 @@ extension BigCardOverlay {
     @ViewBuilder
     private func reservationButtons(_ buttonSet: Variant.ReservationButtonSet) -> some View {
         switch buttonSet {
-        case .streetActive:
-            HStack(spacing: 8) {
-                Button("Pick up", action: onPrimaryAction)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.9)
-                    .layoutPriority(1)
-                    .buttonStyle(SwoopyPrimaryButtonStyle())
-                
+        case .streetPending, .streetActive:
+            if let config = reservationActionConfig, let handler = onReservationAction {
+                ReservationActionBar(configuration: config, onAction: handler)
+                    .padding(.top, 4)
+            } else if buttonSet == .streetPending {
                 Button("Cancel", action: onSecondaryAction)
                     .lineLimit(1)
                     .minimumScaleFactor(0.9)
-                    .layoutPriority(1)
                     .buttonStyle(SwoopyOutlineButtonStyle())
-                
-                Button("Directions", action: onTertiaryAction ?? {})
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.9)
-                    .layoutPriority(1)
-                    .buttonStyle(SwoopyPillSecondaryStyle())
-                    .disabled(onTertiaryAction == nil)
-                    .opacity(onTertiaryAction == nil ? 0.6 : 1.0)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 4)
+            } else {
+                HStack(spacing: 8) {
+                    Button("Pick up", action: onPrimaryAction)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.9)
+                        .layoutPriority(1)
+                        .buttonStyle(SwoopyPrimaryButtonStyle())
+
+                    Button("Cancel", action: onSecondaryAction)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.9)
+                        .layoutPriority(1)
+                        .buttonStyle(SwoopyOutlineButtonStyle())
+
+                    Button("Directions", action: onTertiaryAction ?? {})
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.9)
+                        .layoutPriority(1)
+                        .buttonStyle(SwoopyPillSecondaryStyle())
+                        .disabled(onTertiaryAction == nil)
+                        .opacity(onTertiaryAction == nil ? 0.6 : 1.0)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 4)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.top, 4)
             
         case .homePending:
             HStack(spacing: 12) {
@@ -864,13 +942,12 @@ private extension BigCardOverlay {
         Button(action: onDismiss) {
             Image(systemName: "xmark")
                 .font(.system(size: 18, weight: .semibold))
-                .foregroundColor(primaryColor)
-                .frame(width: 44, height: 44)
-                .background(.ultraThinMaterial, in: Circle())
-                .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 3)
+                .foregroundColor(.white)
+                .padding(10)
+                .background(Color.black.opacity(0.55), in: Circle())
+                .shadow(color: .black.opacity(0.2), radius: 6, x: 0, y: 3)
         }
-        .padding(.top, 9)
-        .padding(.trailing, 16)
+        .padding(12)
         .accessibilityLabel("Close")
     }
 }
@@ -883,7 +960,8 @@ private final class LocationDescriptionViewModel: ObservableObject {
     private static var cache: [String: String] = [:]
 
     init(postID: String?, coordinate: CLLocationCoordinate2D?, mode: BigCardOverlay.LocationMode) {
-        if let postID, let cached = Self.cache[postID] {
+        if let cacheKey = Self.cacheKey(postID: postID, coordinate: coordinate),
+           let cached = Self.cache[cacheKey] {
             friendlyText = cached
             return
         }
@@ -896,46 +974,27 @@ private final class LocationDescriptionViewModel: ObservableObject {
         friendlyText = "Locating…"
 
         Task.detached { [weak self] in
-            let description = await Self.reverseGeocode(coordinate: coordinate, mode: mode)
+            let description = await Self.reverseGeocode(postID: postID, coordinate: coordinate, mode: mode)
             await MainActor.run {
-                if let postID {
-                    Self.cache[postID] = description
+                if let cacheKey = Self.cacheKey(postID: postID, coordinate: coordinate) {
+                    Self.cache[cacheKey] = description
                 }
                 self?.friendlyText = description
             }
         }
     }
 
-    private static func reverseGeocode(coordinate: CLLocationCoordinate2D, mode: BigCardOverlay.LocationMode) async -> String {
-        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        let geocoder = CLGeocoder()
+    private static func reverseGeocode(postID: String?, coordinate: CLLocationCoordinate2D, mode: BigCardOverlay.LocationMode) async -> String {
+        guard mode == .street else { return "Near you" }
+        let cacheKey = postID ?? UUID().uuidString
+        let address = await ReverseGeocoder.shared.address(for: coordinate, cacheKey: cacheKey)
+        return address
+    }
 
-        do {
-            let placemarks = try await geocoder.reverseGeocodeLocation(location, preferredLocale: Locale.current)
-            if let placemark = placemarks.first {
-                var components: [String] = []
-                if let neighborhood = placemark.subLocality, !neighborhood.isEmpty {
-                    components.append(neighborhood)
-                }
-                if mode == .street {
-                    if let street = placemark.thoroughfare, !street.isEmpty {
-                        components.append(street)
-                    }
-                }
-                if let city = placemark.locality, !city.isEmpty, !components.contains(city) {
-                    components.append(city)
-                }
-                if components.isEmpty, let region = placemark.administrativeArea, !region.isEmpty {
-                    components.append(region)
-                }
-                if !components.isEmpty {
-                    return components.joined(separator: ", ")
-                }
-            }
-        } catch {
-            // Ignore errors, fallback below
-        }
-
-        return mode == .home ? "Near you" : "Nearby"
+    private static func cacheKey(postID: String?, coordinate: CLLocationCoordinate2D?) -> String? {
+        guard let postID, let coordinate else { return nil }
+        let lat = String(format: "%.5f", coordinate.latitude)
+        let lng = String(format: "%.5f", coordinate.longitude)
+        return "\(postID)|\(lat)|\(lng)"
     }
 }

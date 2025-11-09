@@ -1,47 +1,45 @@
 import SwiftUI
 import UIKit
+import Combine
 
 // MARK: - NotificationsViewNew
 
 struct NotificationsViewNew: View {
-    @EnvironmentObject var svc: SupabaseService
+    @StateObject private var viewModel: NotificationsScreenViewModel
+    @EnvironmentObject private var svc: SupabaseService
+    @EnvironmentObject private var reservationNotificationService: ReservationNotificationService
     @Environment(AppRouter.self) private var router
-    @ObservedObject private var notificationService: NotificationService
+    @Environment(\.scenePhase) private var scenePhase
     
-    @State private var selectedTab: Tab = .requests
-    @State private var requests: [IncomingRequestItem] = []
-    @State private var notifications: [NotificationRecord] = []
-    @State private var isLoading = false
-    @State private var errorMessage: String?
+    @State private var selectedTab: Tab = .actionRequired
     @State private var toastMessage: String?
     @State private var showPhoneAlert = false
     @State private var phoneInput = ""
-    @State private var pendingApprovalRequest: IncomingRequestItem?
+    @State private var pendingApprovalNotification: AppNotification?
     @State private var showApprovalPrompt = false
     @State private var pendingContactPhone: String?
     @State private var showContactOptions = false
-    @State private var processedReservationContactIds: Set<String> = []
+    @State private var processedReservationContactIds: Set<UUID> = []
     @State private var inFlightReadIds: Set<String> = []
     @State private var processingRequestIds: Set<String> = []
     
-    enum Tab: String, CaseIterable {
-        case requests = "Requests"
-        case notifications = "Notifications"
+    init(viewModel: NotificationsScreenViewModel) {
+        _viewModel = StateObject(wrappedValue: viewModel)
     }
     
-    init(notificationService: NotificationService) {
-        _notificationService = ObservedObject(wrappedValue: notificationService)
+    enum Tab: String, CaseIterable {
+        case actionRequired = "Action Required"
+        case updates = "Updates"
     }
     
     var body: some View {
         VStack(spacing: 0) {
-            // Segmented Control
             Picker("Tab", selection: $selectedTab) {
                 ForEach(Tab.allCases, id: \.self) { tab in
                     HStack(spacing: 4) {
                         Text(tab.rawValue)
-                        if tab == .requests && notificationService.requestsCount > 0 {
-                            Text("\(notificationService.requestsCount)")
+                        if tab == .actionRequired && viewModel.actionable.count > 0 {
+                            Text("\(viewModel.actionable.count)")
                                 .font(.caption2.bold())
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 6)
@@ -49,8 +47,8 @@ struct NotificationsViewNew: View {
                                 .background(Color.red)
                                 .clipShape(Capsule())
                         }
-                        if tab == .notifications && notificationService.unreadCount > 0 {
-                            Text("\(notificationService.unreadCount)")
+                        if tab == .updates && viewModel.unreadCount > 0 {
+                            Text("\(viewModel.unreadCount)")
                                 .font(.caption2.bold())
                                 .foregroundColor(.white)
                                 .padding(.horizontal, 6)
@@ -65,39 +63,35 @@ struct NotificationsViewNew: View {
             .pickerStyle(.segmented)
             .padding()
             
-            // Content
-            if isLoading {
-                loadingView
-            } else if let error = errorMessage {
-                errorView(message: error)
-            } else {
-                switch selectedTab {
-                case .requests:
-                    requestsListView
-                case .notifications:
-                    notificationsListView
-                }
+            switch selectedTab {
+            case .actionRequired:
+                actionRequiredContent
+            case .updates:
+                updatesContent
             }
         }
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.large)
+        .onAppear {
+            CameraSessionManager.shared.stop()
+        }
         .task {
-            await loadData()
+            await refreshAndLogCurrentTab()
         }
         .refreshable {
-            await loadData()
+            await refreshAndLogCurrentTab(force: true)
         }
         .alert(
             "Share your phone number with the requester?",
             isPresented: $showApprovalPrompt,
-            presenting: pendingApprovalRequest
-        ) { request in
+            presenting: pendingApprovalNotification
+        ) { notification in
             Button("Cancel", role: .cancel) {
-                pendingApprovalRequest = nil
+                pendingApprovalNotification = nil
             }
             Button("Approve") {
-                pendingApprovalRequest = nil
-                Task { await approveRequest(request) }
+                pendingApprovalNotification = nil
+                Task { await approveNotification(notification) }
             }
         } message: { _ in
             Text("Approving will share your saved phone number with the requester.")
@@ -140,6 +134,49 @@ struct NotificationsViewNew: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .refreshReservations)) { _ in
+            Task { await refreshAndLogCurrentTab() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                Task { await refreshAndLogCurrentTab() }
+            }
+        }
+        .onChange(of: selectedTab) { _, _ in
+            Task { await refreshAndLogCurrentTab() }
+        }
+    }
+    
+    @ViewBuilder
+    private var actionRequiredContent: some View {
+        if viewModel.isLoading {
+            loadingView
+        } else if let message = viewModel.error {
+            errorView(message: message)
+        } else if viewModel.actionable.isEmpty {
+            emptyRequestsView
+        } else {
+            requestsListView(viewModel.actionable)
+                .onAppear {
+                    Task { await viewModel.refresh() }
+                }
+        }
+    }
+    
+    @ViewBuilder
+    private var updatesContent: some View {
+        if viewModel.isLoading {
+            loadingView
+        } else if let message = viewModel.error {
+            errorView(message: message)
+        } else if viewModel.informational.isEmpty {
+            emptyUpdatesView
+        } else {
+            notificationsListView(viewModel.informational)
+                .onAppear {
+                    Task { await viewModel.refresh() }
+                }
+        }
     }
     
     // MARK: - Loading View
@@ -165,7 +202,7 @@ struct NotificationsViewNew: View {
                 description: Text(message)
             )
             Button("Retry") {
-                Task { await loadData() }
+                Task { await refreshAndLogCurrentTab() }
             }
             .buttonStyle(.bordered)
             .tint(AppTheme.ColorToken.primary)
@@ -175,194 +212,219 @@ struct NotificationsViewNew: View {
     
     // MARK: - Requests List
     
-    private var requestsListView: some View {
-        Group {
-            if requests.isEmpty {
-                ContentUnavailableView(
-                    "No pending requests",
-                    systemImage: "tray",
-                    description: Text("Home pickup requests will appear here.")
-                )
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 16) {
-                        ForEach(requests) { request in
-                            RequestRow(
-                                request: request,
-                                timeAgo: relativeTime(from: request.createdAt),
-                                isProcessing: processingRequestIds.contains(request.id),
-                                onApprove: {
-                                    pendingApprovalRequest = request
-                                    showApprovalPrompt = true
-                                },
-                                onSkip: {
-                                    Task { await skipRequest(request) }
-                                }
-                            )
-                            .padding(.horizontal, 16)
+    private func requestsListView(_ notifications: [AppNotification]) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 16) {
+                ForEach(notifications) { notification in
+                    RequestRow(
+                        notification: notification,
+                        timeAgo: relativeTime(from: notification.createdAt),
+                        isProcessing: processingRequestIds.contains(notification.id),
+                        onApprove: {
+                            pendingApprovalNotification = notification
+                            showApprovalPrompt = true
+                        },
+                        onSkip: {
+                            Task { await skipNotification(notification) }
                         }
-                    }
-                    .padding(.top, 16)
-                    .padding(.bottom, 12)
+                    )
+                    .padding(.horizontal, 16)
                 }
             }
+            .padding(.top, 16)
+            .padding(.bottom, 12)
         }
+    }
+    
+    private var emptyRequestsView: some View {
+        ContentUnavailableView(
+            "No pending requests",
+            systemImage: "tray",
+            description: Text("Home pickup requests will appear here.")
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     
     // MARK: - Notifications List
     
-    private var notificationsListView: some View {
-        Group {
-            if notifications.isEmpty {
-                ContentUnavailableView(
-                    "No notifications yet",
-                    systemImage: "bell.badge",
-                    description: Text("Updates will appear here.")
-                )
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 16) {
-                        ForEach(notifications) { notification in
-                            NotificationRow(
-                                notification: notification,
-                                timeAgo: relativeTime(from: notification.createdAt),
-                                onTap: { handleNotificationTap(notification) },
-                                onContact: notification.contactPhone?.isEmpty == false ? {
-                                    pendingContactPhone = notification.contactPhone
-                                    showContactOptions = true
-                                } : nil
-                            )
-                            .padding(.horizontal, 16)
-                            .onAppear {
-                                handleNotificationAppear(notification)
-                            }
+    private func notificationsListView(_ notifications: [AppNotification]) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 16) {
+                ForEach(notifications) { notification in
+                    let contactAction: (() -> Void)? = {
+                        guard let phone = notification.exposedContactPhone,
+                              !phone.isEmpty else { return nil }
+                        return {
+                            pendingContactPhone = phone
+                            showContactOptions = true
                         }
+                    }()
+                    let deleteAction: (() -> Void)? = notification.category == .informational ? {
+                        Task { await deleteNotification(notification) }
+                    } : nil
+                    NotificationRow(
+                        notification: notification,
+                        timeAgo: relativeTime(from: notification.createdAt),
+                        onTap: { handleNotificationTap(notification) },
+                        onContact: contactAction,
+                        onDelete: deleteAction
+                    )
+                    .padding(.horizontal, 16)
+                    .onAppear {
+                        handleNotificationAppear(notification)
                     }
-                    .padding(.top, 16)
-                    .padding(.bottom, 12)
                 }
             }
+            .padding(.top, 16)
+            .padding(.bottom, 12)
         }
+    }
+    
+    private var emptyUpdatesView: some View {
+        ContentUnavailableView(
+            "No notifications yet",
+            systemImage: "bell.badge",
+            description: Text("Updates will appear here.")
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     
     // MARK: - Actions
     
     @MainActor
-    private func loadData() async {
-        isLoading = true
-        errorMessage = nil
-        
-        do {
-            async let requestsTask = notificationService.fetchIncomingRequests()
-            async let notificationsTask = notificationService.fetchNotifications()
-            
-            let (fetchedRequests, fetchedNotifications) = try await (requestsTask, notificationsTask)
-            
-            requests = fetchedRequests.sorted { $0.createdAt > $1.createdAt }
-            notifications = fetchedNotifications.items.sorted { $0.createdAt > $1.createdAt }
-            isLoading = false
-        } catch {
-            errorMessage = "Couldn't load data. Please try again."
-            isLoading = false
+    private func approveNotification(_ notification: AppNotification) async {
+        guard let reservationId = notification.reservationId else {
+            showToast("Missing reservation")
+            return
         }
-    }
-    
-    @MainActor
-    private func approveRequest(_ request: IncomingRequestItem) async {
-        processingRequestIds.insert(request.id)
-        defer { processingRequestIds.remove(request.id) }
-        
+        Metrics.notificationsApproveTap(
+            reservationId: reservationId.uuidString,
+            postId: notification.postId?.uuidString ?? "unknown"
+        )
+        processingRequestIds.insert(notification.id)
+        defer { processingRequestIds.remove(notification.id) }
+
         do {
-            try await notificationService.approveRequest(reservationId: request.reservationId)
+            try await viewModel.approve(notification)
             showToast("Approved — your contact was shared")
-            requests.removeAll { $0.id == request.id }
-            
-            // Refresh reservations
-            NotificationCenter.default.post(name: .refreshReservations, object: request.reservationId)
+            NotificationCenter.default.post(name: .refreshReservations, object: reservationId.uuidString)
+            await refreshAndLogCurrentTab()
         } catch {
-            if let apiError = error as? ApiServiceError, case .serverError(let msg) = apiError {
-                if msg.lowercased().contains("phone") {
-                    showPhoneAlert = true
-                    return
-                }
+            #if DEBUG
+            DLog("[NOTIFICATIONS] Approve error: \(error.localizedDescription)")
+            #endif
+            if shouldPromptForPhone(error) {
+                showPhoneAlert = true
+                return
+            }
+            if isAlreadyHandled(error) {
+                showToast("Already approved")
+                NotificationCenter.default.post(name: .refreshReservations, object: reservationId.uuidString)
+                await refreshAndLogCurrentTab()
+                return
             }
             showToast("Couldn't approve request")
         }
     }
     
     @MainActor
-    private func skipRequest(_ request: IncomingRequestItem) async {
-        processingRequestIds.insert(request.id)
-        defer { processingRequestIds.remove(request.id) }
-        
+    private func skipNotification(_ notification: AppNotification) async {
+        guard let reservationId = notification.reservationId else { return }
+        Metrics.notificationsDeclineTap(
+            reservationId: reservationId.uuidString,
+            postId: notification.postId?.uuidString ?? "unknown"
+        )
+        processingRequestIds.insert(notification.id)
+        defer { processingRequestIds.remove(notification.id) }
         do {
-            try await notificationService.skipRequest(reservationId: request.reservationId)
+            try await viewModel.skip(notification)
             showToast("Request declined")
-            requests.removeAll { $0.id == request.id }
+            await refreshAndLogCurrentTab()
         } catch {
+#if DEBUG
+            DLog("[NOTIFICATIONS] Skip error: \(error.localizedDescription)")
+#endif
             showToast("Couldn't decline request")
         }
     }
+    
+    @MainActor
+    private func deleteNotification(_ notification: AppNotification) async {
+        do {
+            try await viewModel.deleteInformational(notification)
+            showToast("Notification removed")
+            await refreshAndLogCurrentTab()
+        } catch let serviceError as NotificationServiceError {
+            showToast(serviceError.localizedDescription ?? "Only informational notifications can be deleted.")
+        } catch let apiError as ApiHTTPError {
+            if apiError.statusCode == 403 {
+                showToast("Only informational notifications can be deleted.")
+            } else {
+                showToast(apiError.message ?? "Couldn't remove notification")
+            }
+        } catch {
+#if DEBUG
+            DLog("[NOTIFICATIONS] Delete error: \(error.localizedDescription)")
+#endif
+            showToast("Couldn't remove notification")
+        }
+    }
 
-    private func handleNotificationTap(_ notification: NotificationRecord) {
+    private func handleNotificationTap(_ notification: AppNotification) {
         applyContactUpdateIfNeeded(notification)
 
         switch notification.type {
-        case "new_request":
+        case .home_pickup_request:
             withAnimation(.spring(response: 0.35, dampingFraction: 0.88)) {
-                selectedTab = .requests
+                selectedTab = .actionRequired
             }
-        case "request_approved":
+        case .street_pickup_confirmed, .request_declined, .request_cancelled_after_acceptance:
             openReservation(for: notification)
         default:
             break
         }
 
-        Task { await markNotificationAsRead(notification) }
+        markNotificationAsReadIfNeeded(notification)
     }
 
-    private func handleNotificationAppear(_ notification: NotificationRecord) {
+    private func handleNotificationAppear(_ notification: AppNotification) {
         applyContactUpdateIfNeeded(notification)
-        guard notification.readAt == nil else { return }
-        Task { await markNotificationAsRead(notification) }
+        markNotificationAsReadIfNeeded(notification)
     }
-
-    @MainActor
-    private func markNotificationAsRead(_ notification: NotificationRecord) async {
-        guard notification.readAt == nil else { return }
+    
+    private func markNotificationAsReadIfNeeded(_ notification: AppNotification) {
+        guard notification.isUnread else { return }
         guard inFlightReadIds.insert(notification.id).inserted else { return }
-        defer { inFlightReadIds.remove(notification.id) }
-        do {
-            try await notificationService.markRead(id: notification.id)
-            if let index = notifications.firstIndex(where: { $0.id == notification.id }) {
-                notifications[index].readAt = Date()
+        Task {
+            await viewModel.markNotificationAsRead(notification)
+            await MainActor.run {
+                inFlightReadIds.remove(notification.id)
+                logTabViewed(selectedTab)
             }
-        } catch {
-            #if DEBUG
-            DLog("[NOTIFICATIONS] markRead failed: \(error.localizedDescription)")
-            #endif
         }
     }
 
     @MainActor
-    private func applyContactUpdateIfNeeded(_ notification: NotificationRecord) {
-        guard notification.type == "request_approved",
-              let phone = notification.contactPhone?.trimmingCharacters(in: .whitespacesAndNewlines),
+    private func applyContactUpdateIfNeeded(_ notification: AppNotification) {
+        guard let phone = notification.exposedContactPhone?.trimmingCharacters(in: .whitespacesAndNewlines),
               !phone.isEmpty,
-              processedReservationContactIds.insert(notification.reservationId).inserted else { return }
+              let reservationId = notification.reservationId,
+              processedReservationContactIds.insert(reservationId).inserted else { return }
 
+        let reservationIdString = reservationId.uuidString
         NotificationCenter.default.post(
             name: .reservationContactUpdated,
             object: nil,
-            userInfo: ["reservationId": notification.reservationId, "contactPhone": phone]
+            userInfo: ["reservationId": reservationIdString, "contactPhone": phone]
         )
-        NotificationCenter.default.post(name: .refreshReservations, object: notification.reservationId)
+        NotificationCenter.default.post(name: .refreshReservations, object: reservationIdString)
     }
 
-    private func openReservation(for notification: NotificationRecord) {
+    private func openReservation(for notification: AppNotification) {
+        guard let reservationId = notification.reservationId else { return }
         router.selectedTab = .reservations
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            NotificationCenter.default.post(name: .openReservation, object: notification.reservationId)
+            NotificationCenter.default.post(name: .openReservation, object: reservationId.uuidString)
         }
     }
 
@@ -415,6 +477,25 @@ struct NotificationsViewNew: View {
         }
     }
     
+    private func shouldPromptForPhone(_ error: Error) -> Bool {
+        let lower = error.localizedDescription.lowercased()
+        return lower.contains("phone")
+    }
+    
+    private func isAlreadyHandled(_ error: Error) -> Bool {
+        let lower = error.localizedDescription.lowercased()
+        return lower.contains("not pending") || lower.contains("already") || lower.contains("approved")
+    }
+    
+    private func refreshAndLogCurrentTab(force: Bool = false) async {
+        await viewModel.refresh(force: force)
+        logTabViewed(selectedTab)
+    }
+
+    private func logTabViewed(_ tab: Tab) {
+        Metrics.notificationsTabViewed(tabName: tab.rawValue)
+    }
+
     private func relativeTime(from date: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
@@ -425,7 +506,7 @@ struct NotificationsViewNew: View {
 // MARK: - Request Row
 
 private struct RequestRow: View {
-    let request: IncomingRequestItem
+    let notification: AppNotification
     let timeAgo: String
     let isProcessing: Bool
     let onApprove: () -> Void
@@ -434,26 +515,16 @@ private struct RequestRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
-                AsyncImage(url: thumbnailURL) { image in
-                    image.resizable().scaledToFill()
-                } placeholder: {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.gray.opacity(0.15))
-                        .overlay(
-                            Image(systemName: "photo")
-                                .foregroundColor(.gray)
-                        )
-                }
-                .frame(width: 64, height: 64)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                avatarView
+                    .frame(width: 52, height: 52)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text((request.post.title?.isEmpty ?? true) ? "Untitled listing" : (request.post.title ?? "Untitled listing"))
+                    Text(notification.itemTitle ?? "Home pickup request")
                         .font(.headline)
                         .foregroundColor(.primary)
                         .lineLimit(1)
 
-                    Text(request.requester.displayName)
+                    Text(notification.counterpartyName ?? "Someone")
                         .font(.subheadline.weight(.semibold))
                         .foregroundColor(AppTheme.ColorToken.primary)
 
@@ -469,17 +540,19 @@ private struct RequestRow: View {
                         .scaleEffect(0.75)
                         .tint(AppTheme.ColorToken.primary)
                 }
+
+                modePill(label: "Home pickup")
             }
 
             HStack(spacing: 12) {
                 Button("Approve", action: onApprove)
                     .buttonStyle(SwoopyPrimaryButtonStyle(minHeight: 44))
-                    .disabled(isProcessing)
+                    .disabled(isProcessing || notification.reservationId == nil)
                     .opacity(isProcessing ? 0.6 : 1.0)
 
-                Button("Skip", action: onSkip)
+                Button("Reject", action: onSkip)
                     .buttonStyle(SwoopyOutlineButtonStyle(minHeight: 44))
-                    .disabled(isProcessing)
+                    .disabled(isProcessing || notification.reservationId == nil)
                     .opacity(isProcessing ? 0.6 : 1.0)
             }
         }
@@ -490,22 +563,53 @@ private struct RequestRow: View {
         )
         .shadow(color: .black.opacity(0.05), radius: 12, y: 4)
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(notification.counterpartyName ?? "Someone") requesting \(notification.itemTitle ?? "a pickup")")
+        .accessibilityHint("Approve or reject request")
     }
 
-    private var thumbnailURL: URL? {
-        guard let raw = request.post.imageUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
-              let url = URL(string: raw), !raw.isEmpty else { return nil }
-        return url
+    @ViewBuilder
+    private var avatarView: some View {
+        if let url = notification.counterpartyAvatarURL {
+            AsyncImage(url: url) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                Circle().fill(Color.gray.opacity(0.2))
+                    .overlay(Image(systemName: "person.fill").foregroundColor(.gray))
+            }
+            .clipShape(Circle())
+        } else {
+            Circle()
+                .fill(Color.gray.opacity(0.2))
+                .overlay(Image(systemName: "person.fill").foregroundColor(.gray))
+        }
+    }
+    
+    @ViewBuilder
+    private func modePill(label: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "house.fill")
+                .font(.system(size: 12, weight: .semibold))
+            Text(label)
+                .font(.caption)
+                .fontWeight(.semibold)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(AppTheme.ColorToken.primary.opacity(0.12))
+        .foregroundColor(AppTheme.ColorToken.primary)
+        .clipShape(Capsule())
     }
 }
 
 // MARK: - Notification Row
 
 private struct NotificationRow: View {
-    let notification: NotificationRecord
+    let notification: AppNotification
     let timeAgo: String
     let onTap: () -> Void
     let onContact: (() -> Void)?
+    let onDelete: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -532,7 +636,18 @@ private struct NotificationRow: View {
 
                 Spacer()
 
-                if notification.readAt == nil {
+                if let onDelete {
+                    Button(role: .destructive, action: onDelete) {
+                        Image(systemName: "trash")
+                            .font(.callout)
+                    }
+                    .buttonStyle(.plain)
+                    if notification.isUnread {
+                        Circle()
+                            .fill(AppTheme.ColorToken.primary)
+                            .frame(width: 8, height: 8)
+                    }
+                } else if notification.isUnread {
                     Circle()
                         .fill(AppTheme.ColorToken.primary)
                         .frame(width: 8, height: 8)
@@ -570,77 +685,51 @@ private struct NotificationRow: View {
 
     private var iconName: String {
         switch notification.type {
-        case "street_reserved": return "mappin.circle.fill"
-        case "new_request": return "hand.raised.fill"
-        case "request_approved": return "checkmark.circle.fill"
-        case "request_rejected": return "xmark.octagon.fill"
-        case "request_withdrawn": return "arrow.uturn.backward.circle.fill"
-        case "pickup_completed": return "checkmark.seal.fill"
-        case "request_expired": return "clock.fill"
+        case .home_pickup_request: return "hand.raised.fill"
+        case .street_pickup_confirmed: return "mappin.circle.fill"
+        case .request_declined: return "xmark.octagon.fill"
+        case .request_cancelled_after_acceptance: return "arrow.uturn.backward.circle.fill"
         default: return "bell.fill"
         }
     }
 
     private var iconColor: Color {
         switch notification.type {
-        case "street_reserved": return Color.blue
-        case "new_request": return Color.orange
-        case "request_approved": return Color.green
-        case "request_rejected": return Color.red
-        case "request_withdrawn": return Color.gray
-        case "pickup_completed": return Color.green
-        case "request_expired": return Color.orange
-        default: return Color.gray
+        case .home_pickup_request: return Color.orange
+        case .street_pickup_confirmed: return Color.green
+        case .request_declined: return Color.red
+        case .request_cancelled_after_acceptance: return Color.gray
+        default: return Color.blue
         }
     }
 
     private var titleText: String {
         switch notification.type {
-        case "street_reserved":
-            return "Someone reserved your street listing"
-        case "new_request":
-            return "Pickup request for your home listing"
-        case "request_approved":
-            return "Request approved"
-        case "request_rejected":
+        case .home_pickup_request:
+            return "Home pickup request"
+        case .street_pickup_confirmed:
+            return "Street pickup confirmed"
+        case .request_declined:
             return "Request declined"
-        case "request_withdrawn":
-            return "Request withdrawn"
-        case "request_expired":
-            return "Request expired"
-        case "pickup_completed":
-            return "Pickup completed"
+        case .request_cancelled_after_acceptance:
+            return "Request canceled"
         default:
             return "Notification"
         }
     }
 
     private var detailText: String? {
-        let title = notification.post.title?.isEmpty == false ? notification.post.title! : nil
-
         switch notification.type {
-        case "street_reserved":
-            return title
-        case "new_request":
-            if let title {
-                return "\(notification.counterparty.displayName) • \(title)"
-            }
-            return notification.counterparty.displayName
-        case "request_approved":
-            if let phone = notification.contactPhone, !phone.isEmpty {
-                return "Contact: \(phone)"
-            }
-            return title
-        case "request_rejected":
-            return "The owner declined your request."
-        case "request_withdrawn":
-            return "The requester withdrew their reservation."
-        case "request_expired":
-            return "The reservation expired."
-        case "pickup_completed":
-            return title ?? "Pick up completed"
+        case .home_pickup_request:
+            return notification.itemTitle ?? notification.counterpartyName ?? "New request"
+        case .street_pickup_confirmed:
+            return notification.itemTitle ?? "Pickup confirmed"
+        case .request_declined:
+            return notification.itemTitle ?? "Your request was declined."
+        case .request_cancelled_after_acceptance:
+            return notification.itemTitle ?? "The requester canceled."
         default:
-            return title
+            return notification.itemTitle ?? notification.counterpartyName
         }
     }
 }

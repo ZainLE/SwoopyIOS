@@ -27,13 +27,7 @@ struct AddTrashView: View {
     @State private var showCamera = false
     @State private var showLibrary = false
 
-    enum ItemCondition: String, CaseIterable, Codable {
-        case needsFixing = "Needs fixing"
-        case good = "Good"
-        case excellent = "Excellent"
-        case likeNew = "Like New"
-    }
-    @State private var condition: ItemCondition = .good            // required
+    @State private var condition: ConditionUI = .good            // required
 
     @State private var descriptionText: String = ""                // optional (≤100)
     @State private var showDescriptionExpanded = false             // description chip state
@@ -276,7 +270,7 @@ struct AddTrashView: View {
                 }
             }
             .fullScreenCover(isPresented: $showCamera) {
-                CameraOverlay(
+                CameraScreen(
                     onCaptured: { image in
                         if let idx = slotMenuIndex {
                             slots[idx] = image
@@ -368,7 +362,8 @@ struct AddTrashView: View {
             descriptionText = ""
             pickupMode = nil
             coord = nil
-            await ck.fetchFeed()
+            // Trigger feed refresh after successful item creation
+            FeedViewModel.requestFeedRefresh()
 
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             withAnimation { showSuccess = true }
@@ -477,16 +472,16 @@ private struct PhotoTileView: View {
 // MARK: - Condition Pills
 
 private struct ConditionPillsView: View {
-    @Binding var selection: AddTrashView.ItemCondition
+    @Binding var selection: ConditionUI
 
     var body: some View {
         FlowLayout(spacing: AppTheme.Spacing.s) {
-            ForEach(AddTrashView.ItemCondition.allCases, id: \.self) { item in
+            ForEach(ConditionUI.allCases, id: \.self) { item in
                 Button {
                     selection = item
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 } label: {
-                    Text(item.rawValue)
+                    Text(item.displayName)
                         .font(AppTheme.Typography.body.weight(.medium))
                         .padding(.horizontal, AppTheme.Spacing.m)
                         .padding(.vertical, AppTheme.Spacing.s)

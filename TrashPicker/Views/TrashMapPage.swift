@@ -207,4 +207,3 @@ struct TrashMapPage: View {
         return lastRegion?.center ?? regionFallback.center
     }
 }
-

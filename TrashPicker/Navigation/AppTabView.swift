@@ -8,6 +8,7 @@ struct AppTabView: View {
 
     @State private var showUpload = false
     @State private var showCamera = false
+    @State private var lastSelectedTab: AppTab = .feed
 
     // App green
     private let appGreen = Color(red: 0/255.0, green: 81/255.0, blue: 63/255.0)
@@ -34,17 +35,17 @@ struct AppTabView: View {
                 }
             }
             .tint(appGreen)
-            .onChange(of: router.selectedTab) { oldTab, newTab in
+            .onChange(of: router.selectedTab) { newTab in
                 if newTab == .camera {
                     handleCameraTab()
-                    router.selectedTab = oldTab // Stay on previous tab
-                } else if oldTab == newTab {
-                    // Re-tapping the same tab
+                    // Revert to previous tab
+                    router.selectedTab = lastSelectedTab
+                } else if lastSelectedTab == newTab {
                     Haptics.play(.tabReselect)
                 } else {
-                    // Switching to a different tab
                     Haptics.play(.tabSelect)
                 }
+                lastSelectedTab = newTab
             }
         } else {
             // Fallback for earlier iOS versions
@@ -58,17 +59,16 @@ struct AppTabView: View {
                 }
             }
             .tint(appGreen)
-            .onChange(of: router.selectedTab) { oldTab, newTab in
+            .onChange(of: router.selectedTab) { newTab in
                 if newTab == .camera {
                     handleCameraTab()
-                    router.selectedTab = .feed // Return to feed
-                } else if oldTab == newTab {
-                    // Re-tapping the same tab
+                    router.selectedTab = lastSelectedTab
+                } else if lastSelectedTab == newTab {
                     Haptics.play(.tabReselect)
                 } else {
-                    // Switching to a different tab
                     Haptics.play(.tabSelect)
                 }
+                lastSelectedTab = newTab
             }
         }
     }
@@ -78,7 +78,7 @@ struct AppTabView: View {
             tabsContent(selectedTab: selectedTabBinding)
         }
         .fullScreenCover(isPresented: $showCamera) {
-            CameraOverlay(
+            CameraScreen(
                 onCaptured: { image in
                     draftStore.insertPrimary(image)
                     showCamera = false
@@ -89,7 +89,7 @@ struct AppTabView: View {
             )
             .ignoresSafeArea()
         }
-        .onChange(of: draftStore.lastCaptureTick) {
+        .onChange(of: draftStore.lastCaptureTick) { _ in
             // Show upload form when new photo is captured
             if !draftStore.photos.isEmpty && !showUpload {
                 showUpload = true
@@ -105,13 +105,8 @@ struct AppTabView: View {
             .onDisappear {
                 // Clean up after upload form dismisses
                 router.selectedTab = .feed
-                var coord = loc.userLocation?.coordinate
-                if !LocationReadiness.isUsable(coord) {
-                    coord = LocationService.shared.lastKnownCoordinate
-                }
-                if let c = coord, LocationReadiness.isUsable(c) {
-                    Task { await svc.fetchFeed(near: c) }
-                }
+                // Trigger feed refresh
+                FeedViewModel.requestFeedRefresh()
             }
         }
     }

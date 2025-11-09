@@ -145,7 +145,7 @@ class MockApiService: ApiService {
         return mockReservations
     }
     
-    override func reservePost(_ postId: String) async throws {
+    override func reservePost(_ postId: String, requestId: String = UUID().uuidString) async throws {
         // Simulate network delay
         try? await Task.sleep(nanoseconds: 200_000_000) // 0.2 seconds
         // Success - no error

@@ -304,6 +304,52 @@ final class CameraSessionManager: NSObject, ObservableObject {
         
         return discovery.devices.first
     }
+
+    /// Select front camera with preference order
+    private func selectFrontCamera() -> AVCaptureDevice? {
+        let types: [AVCaptureDevice.DeviceType] = [
+            .builtInTrueDepthCamera,
+            .builtInWideAngleCamera
+        ]
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: types,
+            mediaType: .video,
+            position: .front
+        )
+        return discovery.devices.first
+    }
+
+    /// Toggle between front and back camera by replacing the active input
+    func switchCamera() {
+        sessionQueue.async { [weak self] in
+            guard let self = self else { return }
+            self.session.beginConfiguration()
+            defer { self.session.commitConfiguration() }
+
+            // Current position
+            let currentPosition = self.deviceInput?.device.position
+
+            // Determine next device
+            let nextDevice: AVCaptureDevice?
+            if currentPosition == .front {
+                nextDevice = self.selectBackCamera()
+            } else {
+                nextDevice = self.selectFrontCamera()
+            }
+            guard let device = nextDevice, let newInput = try? AVCaptureDeviceInput(device: device) else {
+                return
+            }
+
+            // Remove old input, add new input
+            if let oldInput = self.deviceInput {
+                self.session.removeInput(oldInput)
+            }
+            if self.session.canAddInput(newInput) {
+                self.session.addInput(newInput)
+                self.deviceInput = newInput
+            }
+        }
+    }
 }
 
 // MARK: - AVCapturePhotoCaptureDelegate

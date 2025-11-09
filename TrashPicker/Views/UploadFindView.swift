@@ -90,7 +90,7 @@ struct UploadFindView: View {
             }
         }
             .fullScreenCover(isPresented: $showCamera) {
-                CameraOverlay(
+                CameraScreen(
                     onCaptured: { image in
                         applyPickedImage(image)
                         withAnimation(.easeInOut(duration: 0.2)) {
@@ -490,9 +490,8 @@ struct UploadFindView: View {
             try await api.createPost(token: token, payload: payload)
         }
 
-        if let coord = vm.currentCoordinate ?? loc.userLocation?.coordinate {
-            await svc.fetchFeed(near: coord, mode: modeValue)
-        }
+        // Trigger feed refresh after successful upload
+        FeedViewModel.requestFeedRefresh()
 
         return createdPostId
     }
@@ -801,29 +800,6 @@ enum UploadError: Error {
     case authenticationFailed
     case notAuthenticated
     case imageProcessingFailed
-}
-
-enum Condition: CaseIterable, Hashable, Identifiable {
-    case needsFixing, good, excellent, likeNew
-    var id: Self { self }
-    var title: String {
-        switch self {
-        case .needsFixing: return "Needs fixing"
-        case .good:        return "Good"
-        case .excellent:   return "Excellent"
-        case .likeNew:     return "Like New"
-        }
-    }
-    
-    // Backend mapping - matches Flask API spec
-    var backendValue: String {
-        switch self {
-        case .needsFixing: return "bad"
-        case .good:        return "good"
-        case .excellent:   return "excellent"
-        case .likeNew:     return "like_new"
-        }
-    }
 }
 
 enum PickupMode: CaseIterable, Hashable, Identifiable {

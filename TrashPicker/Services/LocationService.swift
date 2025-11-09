@@ -28,6 +28,16 @@ private func dbg(_ tag: String, _ items: Any...) {
 }
 
 /// A power-efficient, singleton location service that provides both one-shot and continuous updates.
+struct LocationFixResult {
+    enum FixSource { case fresh, cached }
+    let location: CLLocation
+    let source: FixSource
+    
+    var coordinate: CLLocationCoordinate2D { location.coordinate }
+    var hdop: Double { location.horizontalAccuracy }
+    var age: TimeInterval { max(0, Date().timeIntervalSince(location.timestamp)) }
+}
+
 final class LocationService: NSObject, ObservableObject, CLLocationManagerDelegate {
     static let shared = LocationService()
 
@@ -83,6 +93,66 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         return lastKnownFromSystem()?.coordinate
     }
 
+    /// Returns a reasonably fresh coordinate, requesting a new fix when needed.
+    func currentCoordinate(
+        minFreshnessSeconds: Int = 30,
+        minHorizontalAccuracy: CLLocationAccuracy = 50
+    ) async throws -> CLLocationCoordinate2D {
+        requestWhenInUseIfNeeded()
+
+        if let fix = lastFix,
+           Date().timeIntervalSince(fix.timestamp) <= TimeInterval(minFreshnessSeconds),
+           fix.horizontalAccuracy <= minHorizontalAccuracy {
+            return fix.coordinate
+        }
+
+        let refreshed = try await firstFix(timeout: 10)
+        lastFix = refreshed
+        saveLastKnownCoordinate(refreshed)
+        return refreshed.coordinate
+    }
+    
+    func firstFix(preferFreshWithin milliseconds: Int) async throws -> LocationFixResult {
+        let waitSeconds = Double(milliseconds) / 1000.0
+        let cachedLocation = lastKnownFromSystem()
+        let cachedResult = cachedLocation.map { LocationFixResult(location: $0, source: .cached) }
+        let shouldForceFresh = isSeverelyStale(cachedResult)
+        
+        if shouldForceFresh || cachedResult == nil {
+            do {
+                let fresh = try await firstFix(timeout: waitSeconds, forceFresh: true)
+                return LocationFixResult(location: fresh, source: .fresh)
+            } catch {
+                if let cachedResult {
+                    return cachedResult
+                }
+                throw error
+            }
+        } else {
+            let freshTask = Task<LocationFixResult?, Never> {
+                do {
+                    let fresh = try await self.firstFix(timeout: waitSeconds, forceFresh: true)
+                    return LocationFixResult(location: fresh, source: .fresh)
+                } catch {
+                    return nil
+                }
+            }
+            if let freshResult = await freshTask.value {
+                return freshResult
+            }
+            if let cachedResult {
+                return cachedResult
+            }
+            let fallback = try await firstFix(timeout: max(waitSeconds, 2.0), forceFresh: true)
+            return LocationFixResult(location: fallback, source: .fresh)
+        }
+    }
+    
+    private func isSeverelyStale(_ cached: LocationFixResult?) -> Bool {
+        guard let cached else { return true }
+        return cached.age > 21_600 && cached.hdop > 80
+    }
+
     /// One-shot: asks CoreLocation for the *current* fix, then stops.
     func fetchOnce() {
         dbg("APP", "LocationService: fetching location once.")
@@ -90,10 +160,10 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
         mgr.requestLocation() // This calls didUpdateLocations or didFailWithError once.
     }
 
-    /// Await the first accurate fix, or throw on timeout. Returns immediately if we already have a cached fix.
-    func firstFix(timeout: TimeInterval) async throws -> CLLocation {
-        // If we already have a fix, return quickly
-        if let cached = lastFix {
+    /// Await the first accurate fix, or throw on timeout.
+    func firstFix(timeout: TimeInterval, forceFresh: Bool = false) async throws -> CLLocation {
+        // If we already have a fix and forceFresh is false, return quickly
+        if !forceFresh, let cached = lastFix {
             #if DEBUG
             logLocationAudit(cached, source: "first-fix-cached")
             #endif

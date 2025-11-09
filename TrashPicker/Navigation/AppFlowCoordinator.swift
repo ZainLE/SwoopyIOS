@@ -1,14 +1,7 @@
-// AUDIT REPORT:
-// After you run a DEBUG build and reproduce the issue, paste [FLOW]/[GATE]/[AUTH] logs here.
-// Summary:
-// - Single source of truth: AppFlowCoordinator.phase, driven by SupabaseService.phase & didCheckSession
-// - Gating: hasCompletedProfile (per-user defaults), hasCompletedIntro (per-user defaults)
-// - Next steps: capture logs around launch and first navigation decision
-//
-// Acceptance Criteria:
-// - Returning user who finished onboarding goes straight to feed (Phase.main)
-// - New user: profile capture → onboarding (once) → feed
-// - Reinstalls/bundle ID changes don’t auto-skip unless using server-side flag (optional)
+// AppFlowCoordinator: Server-driven flow routing
+// Single source of truth: SupabaseService.serverProfile
+// Routing order: Auth → LoadingProfile → ProfileCapture → IntroShowcase → Loading → Main
+// No local UserDefaults gating; all decisions based on server profile state
 
 import Combine
 import Foundation
@@ -29,14 +22,8 @@ final class AppFlowCoordinator: ObservableObject {
 
     private let supabase: SupabaseService
     private let boot: BootCoordinator
-    private let defaults: UserDefaults
     private var cancellables: Set<AnyCancellable> = []
-    private var profileLoadDone: Bool = false
-    private var serverProfileHasName: Bool = false
-
-    private var profileCompletionByUser: [String: Bool]
-    private var introCompletionByUser: [String: Bool]
-    private var currentUserKey: String?
+    private var hasMigratedLegacyFlags = false
 
     private var loadingTask: Task<Void, Never>?
     private var loadingStartedAt: Date?
@@ -44,63 +31,74 @@ final class AppFlowCoordinator: ObservableObject {
 
     init(
         supabase: SupabaseService = .shared,
-        bootCoordinator: BootCoordinator = .shared,
-        defaults: UserDefaults = .standard
+        bootCoordinator: BootCoordinator = .shared
     ) {
         self.supabase = supabase
         self.boot = bootCoordinator
-        self.defaults = defaults
-        self.profileCompletionByUser = defaults.dictionary(forKey: Keys.profileCompletion) as? [String: Bool] ?? [:]
-        self.introCompletionByUser = defaults.dictionary(forKey: Keys.introCompletion) as? [String: Bool] ?? [:]
-        self.currentUserKey = supabase.userId?.uuidString.lowercased()
-
-        migrateLegacyFlagsIfNeeded(userKey: currentUserKey)
         bind()
         evaluatePhase(reason: "init")
     }
 
+    // Computed properties for DEBUG HUD only - real gating uses serverProfile
     var hasCompletedProfile: Bool {
-        guard let key = currentUserKey else { return false }
-        return profileCompletionByUser[key] == true
+        supabase.serverProfile?.isComplete ?? false
     }
 
     var hasCompletedIntro: Bool {
-        // AUDIT: gating variable read (onboarding completion, centralized)
-        let v = OnboardingStorage.isComplete()
-        AuditLog.gate("read onboarding_completed_v1 = \(v)")
-        return v
+        supabase.serverProfile?.onboardingCompleted ?? false
     }
 
     func markProfileComplete() {
-        guard let key = currentUserKey else { return }
-        let alreadyComplete = profileCompletionByUser[key] == true
-        profileCompletionByUser[key] = true
-        saveProfileFlags()
-
-        if introCompletionByUser[key] != true {
-            setIntroCompletion(false, for: key)
+        // Profile completion is now determined by server profile fields
+        // This method triggers re-evaluation after profile update
+        Task {
+            await supabase.fetchProfile()
+            await MainActor.run {
+                loadingTask?.cancel()
+                loadingTask = nil
+                loadingStartedAt = nil
+                evaluatePhase(reason: "profileComplete")
+            }
         }
-
-        if alreadyComplete == false {
-            loadingTask?.cancel()
-            loadingTask = nil
-            loadingStartedAt = nil
-        }
-
-        evaluatePhase(reason: "profileComplete")
     }
 
-    func markIntroComplete() {
-        OnboardingStorage.markComplete()
-        // AUDIT: onboarding completion set
-        AuditLog.gate("onboarding_completed_v1 set → true")
-        evaluatePhase(reason: "introComplete_new")
+    func markIntroComplete() async -> Bool {
+        do {
+            try await supabase.markOnboardingComplete()
+            AppLogger.logFlow("Onboarding marked complete on server")
+            await MainActor.run {
+                evaluatePhase(reason: "introComplete")
+            }
+            return true
+        } catch {
+            AppLogger.logProfile("Failed to mark onboarding complete: \(error.localizedDescription)", level: .error)
+            // Retry once after a short delay
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            do {
+                try await supabase.markOnboardingComplete()
+                await MainActor.run {
+                    evaluatePhase(reason: "introComplete_retry")
+                }
+                return true
+            } catch {
+                AppLogger.logProfile("Retry failed to mark onboarding complete: \(error.localizedDescription)", level: .fault)
+                return false
+            }
+        }
     }
 
     func resetIntroForCurrentUser() {
-        guard let key = currentUserKey else { return }
-        setIntroCompletion(false, for: key)
-        evaluatePhase(reason: "introReset")
+        Task {
+            do {
+                try await supabase.updateProfileWithOnboarding(onboardingCompleted: false)
+                AppLogger.logFlow("Onboarding reset on server")
+                await MainActor.run {
+                    evaluatePhase(reason: "introReset")
+                }
+            } catch {
+                AppLogger.logProfile("Failed to reset onboarding: \(error.localizedDescription)", level: .error)
+            }
+        }
     }
 
     private enum Keys {
@@ -117,16 +115,25 @@ final class AppFlowCoordinator: ObservableObject {
             .store(in: &cancellables)
 
         supabase.$userId
-            .map { $0?.uuidString.lowercased() }
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] userKey in self?.handleUserChange(userKey) }
+            .sink { [weak self] userId in self?.handleUserChange(userId) }
             .store(in: &cancellables)
 
         supabase.$didCheckSession
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.evaluatePhase(reason: "didCheckSession") }
+            .store(in: &cancellables)
+        
+        supabase.$serverProfile
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.evaluatePhase(reason: "serverProfileChanged") }
+            .store(in: &cancellables)
+        
+        supabase.$profileLoadState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.evaluatePhase(reason: "profileLoadStateChanged") }
             .store(in: &cancellables)
 
         boot.$stage
@@ -141,46 +148,28 @@ final class AppFlowCoordinator: ObservableObject {
             loadingTask?.cancel()
             loadingTask = nil
             loadingStartedAt = nil
-            profileLoadDone = false
         }
         evaluatePhase(reason: "authPhase")
     }
 
-    private func handleUserChange(_ key: String?) {
-        if currentUserKey == key { return }
-        currentUserKey = key
-        migrateLegacyFlagsIfNeeded(userKey: key)
+    private func handleUserChange(_ userId: UUID?) {
+        // Fetch profile when user changes
+        if supabase.phase == .signedIn, userId != nil {
+            Task {
+                await supabase.fetchProfile()
+                if !hasMigratedLegacyFlags {
+                    await migrateLegacyFlagsToServer()
+                    hasMigratedLegacyFlags = true
+                }
+            }
+        }
         evaluatePhase(reason: "userChange")
     }
 
-    private func migrateLegacyFlagsIfNeeded(userKey: String?) {
-        guard let userKey else { return }
-        let legacyProfile = defaults.object(forKey: Keys.legacyProfile) as? Bool
-        let legacyIntro = defaults.object(forKey: Keys.legacyIntro) as? Bool
-
-        if profileCompletionByUser[userKey] == nil, legacyProfile == true {
-            profileCompletionByUser[userKey] = true
-            saveProfileFlags()
-        }
-
-        if introCompletionByUser[userKey] == nil, legacyIntro == true {
-            introCompletionByUser[userKey] = true
-            saveIntroFlags()
-        }
-
-        if (legacyProfile ?? false) || (legacyIntro ?? false) {
-            defaults.removeObject(forKey: Keys.legacyProfile)
-            defaults.removeObject(forKey: Keys.legacyIntro)
-        }
-    }
-
     private func evaluatePhase(reason: String) {
-        // AUDIT: launch → decide
-        AuditLog.flow("launch → decide (reason=\(reason))")
-        let sessionOK = supabase.phase == .signedIn
-        let profileOK = hasCompletedProfile
-        let introOK = hasCompletedIntro
-        AuditLog.gate("session=\(sessionOK) profile=\(profileOK) onboarding=\(introOK) didCheckSession=\(supabase.didCheckSession)")
+        AppLogger.logFlow("evaluatePhase(reason: \(reason))")
+        
+        // Step 1: Check session
         guard supabase.didCheckSession else {
             updatePhase(.launching, reason: reason)
             return
@@ -191,24 +180,54 @@ final class AppFlowCoordinator: ObservableObject {
             return
         }
 
-        // Ensure profile info is loaded/checked before deciding capture
-        if profileLoadDone == false {
-            enterLoadingProfile(reason: reason)
+        // Step 2: Check profile load state
+        switch supabase.profileLoadState {
+        case .idle:
+            // Profile not yet fetched, trigger fetch
+            updatePhase(.loadingProfile, reason: reason)
+            Task {
+                await supabase.fetchProfile()
+                if !hasMigratedLegacyFlags {
+                    await migrateLegacyFlagsToServer()
+                    hasMigratedLegacyFlags = true
+                }
+            }
+            return
+            
+        case .loading:
+            // Profile fetch in progress
+            updatePhase(.loadingProfile, reason: reason)
+            return
+            
+        case .failed:
+            // Profile fetch failed, show auth (user can retry)
+            AppLogger.logProfile("Profile load failed, returning to auth", level: .error)
+            updatePhase(.auth, reason: "profileLoadFailed")
+            return
+            
+        case .loaded:
+            break // Continue to gate checks
+        }
+
+        // Step 3: Gate on server profile
+        guard let profile = supabase.serverProfile else {
+            updatePhase(.loadingProfile, reason: "noProfile")
             return
         }
 
-        // Consider server metadata name as a signal of profile completeness
-        let effectiveProfileComplete = hasCompletedProfile || serverProfileHasName
-        guard effectiveProfileComplete else {
-            updatePhase(.profileCapture, reason: reason)
+        // Step 4: Check profile completeness
+        guard profile.isComplete else {
+            updatePhase(.profileCapture, reason: "profileIncomplete")
             return
         }
 
-        guard hasCompletedIntro else {
-            updatePhase(.introShowcase, reason: reason)
+        // Step 5: Check onboarding completion
+        guard profile.onboardingCompleted else {
+            updatePhase(.introShowcase, reason: "onboardingIncomplete")
             return
         }
 
+        // Step 6: All gates passed, proceed to main
         if phase == .main {
             return
         }
@@ -216,24 +235,47 @@ final class AppFlowCoordinator: ObservableObject {
         enterLoadingFlow(reason: reason)
     }
 
-    private func enterLoadingProfile(reason: String) {
-        if phase != .loadingProfile {
-            updatePhase(.loadingProfile, reason: reason)
-        }
-        Task { [weak self] in
-            guard let self else { return }
-            // Read session metadata as current source of truth for profile name
-            let nameMeta = supabase.session?.user.userMetadata["full_name"]?.description
-                ?? supabase.session?.user.userMetadata["name"]?.description
-                ?? ""
-            let trimmed = nameMeta.trimmingCharacters(in: .whitespacesAndNewlines)
-            self.serverProfileHasName = !trimmed.isEmpty
-            self.profileLoadDone = true
-            AuditLog.gate("profile fetch: name='\(trimmed)' → hasName=\(self.serverProfileHasName)")
-            await MainActor.run { [weak self] in
-                self?.evaluatePhase(reason: "profileLoaded")
+    /// One-time migration from local UserDefaults flags to server profile
+    private func migrateLegacyFlagsToServer() async {
+        guard let userId = supabase.userId?.uuidString else { return }
+        guard let profile = supabase.serverProfile else { return }
+        
+        // Check if server onboarding_completed is false but local flag indicates completion
+        if !profile.onboardingCompleted {
+            let legacyKeys = [
+                "onboarding_completed_v2:\(userId)",
+                "onboardingComplete",
+                "didFinishShowcase"
+            ]
+            
+            let hasLocalCompletion = legacyKeys.contains { key in
+                UserDefaults.standard.bool(forKey: key)
+            }
+            
+            if hasLocalCompletion {
+                do {
+                    try await supabase.markOnboardingComplete()
+                    AppLogger.logProfile("Migrated local onboarding flag to server", level: .notice)
+                } catch {
+                    AppLogger.logProfile("Failed to migrate onboarding flag: \(error.localizedDescription)", level: .error)
+                }
             }
         }
+        
+        // Delete all legacy keys
+        let allLegacyKeys = [
+            "onboarding_completed_v2:\(userId)",
+            "appflow.profileCompletionByUser",
+            "appflow.introCompletionByUser",
+            "onboardingComplete",
+            "didFinishShowcase"
+        ]
+        
+        for key in allLegacyKeys {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
+        
+        AppLogger.logStorage("Deleted legacy UserDefaults keys")
     }
 
     private func enterLoadingFlow(reason: String) {
@@ -291,23 +333,7 @@ final class AppFlowCoordinator: ObservableObject {
             loadingStartedAt = nil
         }
 
-        DLog("[AppFlow] \(phase) → \(newPhase) (\(reason))")
-
+        AppLogger.logFlow("state \(phase) → \(newPhase) (reason: \(reason))")
         phase = newPhase
-    }
-
-    private func saveProfileFlags() {
-        defaults.set(profileCompletionByUser, forKey: Keys.profileCompletion)
-    }
-
-    private func saveIntroFlags() {
-        defaults.set(introCompletionByUser, forKey: Keys.introCompletion)
-    }
-
-    private func setIntroCompletion(_ value: Bool, for key: String) {
-        // Kept for legacy migration compatibility; now centralized in OnboardingStorage
-        if value { introCompletionByUser[key] = true } else { introCompletionByUser.removeValue(forKey: key) }
-        saveIntroFlags()
-        AuditLog.gate("persist introCompletion[\(key)] = \(value)")
     }
 }

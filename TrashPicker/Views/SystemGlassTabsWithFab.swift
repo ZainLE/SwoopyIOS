@@ -79,13 +79,7 @@ struct SystemGlassTabsWithFab: View {
             }
             .onDisappear {
                 // Refresh feed after upload
-                var coord = loc.userLocation?.coordinate
-                if !LocationReadiness.isUsable(coord) {
-                    coord = LocationService.shared.lastKnownCoordinate
-                }
-                if let c = coord, LocationReadiness.isUsable(c) {
-                    Task { await svc.fetchFeed(near: c) }
-                }
+                FeedViewModel.requestFeedRefresh()
             }
         }
         .onChange(of: draftStore.lastCaptureTick) { _ in
@@ -95,7 +89,7 @@ struct SystemGlassTabsWithFab: View {
             }
         }
         .fullScreenCover(isPresented: $showCamera) {
-            CameraOverlay(
+            CameraScreen(
                 onCaptured: { image in
                     // Deliver to draft store (same pipeline as before)
                     draftStore.insertPrimary(image)
@@ -190,11 +184,4 @@ private extension UIApplication {
 
 private extension CGFloat {
     func max(_ v: CGFloat) -> CGFloat { Swift.max(self, v) }
-}
-
-#Preview {
-    SystemGlassTabsWithFab()
-        .environmentObject(SupabaseService.shared)
-        .environmentObject(LocationManager())
-        .environmentObject(UploadDraftStore())
 }

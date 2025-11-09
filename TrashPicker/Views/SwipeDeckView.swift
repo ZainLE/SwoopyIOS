@@ -12,6 +12,15 @@ import UIKit
 import SmartlookAnalytics
 
 
+private func postOptimisticReservationInsert(_ row: ReservationRow) {
+    NotificationCenter.default.post(name: .reservationOptimisticInsert, object: row)
+}
+
+private func postOptimisticReservationRemove(_ reservationId: String) {
+    NotificationCenter.default.post(name: .reservationOptimisticRemove, object: reservationId)
+}
+
+
 private let VERBOSE_LOGS = true
 
 @inline(__always)
@@ -162,11 +171,11 @@ struct SwipeDeckView: View {
     @EnvironmentObject private var ck: CKTrashService
     @EnvironmentObject private var svc: SupabaseService
     @EnvironmentObject private var draftStore: UploadDraftStore
+    @EnvironmentObject private var feedVM: FeedViewModel
 
     // API Service for feed data
     @State private var api: ApiService?
     @State private var didKickOff = false
-    @State private var posts: [Post] = []
     @State private var lastServerPayload: Set<String> = [] // Track server IDs for stray detection
 
     // Deck state management - single source of truth
@@ -188,6 +197,9 @@ struct SwipeDeckView: View {
     // Single-flight tracking
     @State private var inFlightCoordKey: String?
     @State private var authStatusAtLastFetch: Int?
+    @State private var lastGateFix: LocationFixResult?
+    @State private var pendingBetterFixTask: Task<Void, Never>?
+    @State private var lastFeedFetchAt: Date?
 
 #if DEBUG
     @State private var feedDebugContext: FeedDistanceDebugContext?
@@ -215,7 +227,7 @@ struct SwipeDeckView: View {
 
     // Convert Post objects to visible feed items
     private var visible: [Post] {
-        return posts.filter { post in
+        return feedVM.items.filter { post in
             !dismissedIds.contains(post.id) && !reservedIds.contains(post.id)
         }
     }
@@ -237,6 +249,22 @@ struct SwipeDeckView: View {
         deckState.completeCardTransition()
     }
 
+    private func trackReservationMade(post: Post) {
+        guard ConsentManager.shared.analytics == .provided else { return }
+
+        let userId = svc.userId?.uuidString ?? "unknown"
+        let properties = Properties()
+            .setProperty("postId", to: post.id)
+            .setProperty("mode", to: post.mode.rawValue)
+            .setProperty("userId", to: userId)
+
+        Smartlook.instance.track(event: "ReservationMade", properties: properties)
+
+        #if DEBUG
+        DLog("[ANALYTICS] 📊 ReservationMade event tracked - postId: \(post.id)")
+        #endif
+    }
+
     // Use global helper on service: svc.hasAuthToken
 
     var body: some View {
@@ -252,7 +280,7 @@ struct SwipeDeckView: View {
             }
 #endif
             .fullScreenCover(isPresented: $showCamera) {
-                CameraOverlay(
+                CameraScreen(
                     onCaptured: { image in
                         presentUploadImmediately(with: image)
                     },
@@ -287,30 +315,49 @@ struct SwipeDeckView: View {
     }
     
     private var baseView: some View {
+        baseViewWithModifiers
+    }
+
+    private var baseViewWithModifiers: some View {
+        navigationStackView
+            .toolbar { toolbarContent }
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear { handleViewAppear() }
+            .task {
+                if api == nil { api = ApiService(supabaseService: svc) }
+                await maybeLoadFeed()
+            }
+            .onChange(of: svc.isAuthenticated) { _, _ in
+                Task { await maybeLoadFeed() }
+            }
+            .onChange(of: svc.session) { _, _ in
+                Task { await maybeLoadFeed() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("LocationAuthorizationChanged"))) { _ in
+                handleLocationAuthChange()
+            }
+    }
+
+    private var navigationStackView: some View {
         NavigationStack {
             contentView
-        }
-        .toolbar { toolbarContent }
-        .navigationBarTitleDisplayMode(.inline)
-        .onAppear { handleViewAppear() }
-        .task {
-            if api == nil { api = ApiService(supabaseService: svc) }
-            await maybeLoadFeed()
-        }
-        .onChange(of: svc.isAuthenticated) { _, _ in
-            Task { await maybeLoadFeed() }
-        }
-        .onChange(of: svc.session) { _, _ in
-            Task { await maybeLoadFeed() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("LocationAuthorizationChanged"))) { _ in
-            handleLocationAuthChange()
         }
         .onChange(of: navState) { oldValue, newValue in
             handleNavigationChange(from: oldValue, to: newValue)
         }
+        .onChange(of: feedVM.items) { _, newItems in
+            // Update deck when FeedViewModel finishes loading
+            let visiblePosts = newItems.filter { post in
+                !dismissedIds.contains(post.id) && !reservedIds.contains(post.id)
+            }
+            deckState.updateItems(visiblePosts)
+        }
+        .onChange(of: feedVM.isLoading) { _, loading in
+            // Sync loading state with FeedViewModel
+            isLoading = loading
+        }
     }
-    
+
     @MainActor
     private func handleMapDismiss() {
         DLog("🔵 [NAV] map_dismissed callback")
@@ -320,7 +367,7 @@ struct SwipeDeckView: View {
             animateNavStateToFeed()
         }
     }
-    
+
     private var contentView: some View {
         VStack(spacing: 0) {
             headerSegment
@@ -330,20 +377,27 @@ struct SwipeDeckView: View {
             }
         }
     }
-    
+
     private var headerSegment: some View {
         GlassSegmented(selection: $navState)
             .padding(.top, 16)
             .padding(.horizontal, 16)
             .zIndex(1000)
     }
-    
+
     private func handleLocationAuthChange() {
         Task {
             let currentAuth = LocationService.shared.mgr.authorizationStatus.rawValue
             let lastAuth = authStatusAtLastFetch ?? -1
             if lastAuth != currentAuth && (currentAuth == 3 || currentAuth == 4) {
                 authStatusAtLastFetch = Int(currentAuth)
+                let now = Date()
+                if let lastFetch = lastFeedFetchAt, now.timeIntervalSince(lastFetch) < 1.5 {
+                    #if DEBUG
+                    DLog("[FEED gate] auth change ignored (recent fetch <1.5s)")
+                    #endif
+                    return
+                }
                 #if DEBUG
                 DLog("[FEED gate] auth changed to authorized → refetch")
                 #endif
@@ -351,7 +405,7 @@ struct SwipeDeckView: View {
             }
         }
     }
-    
+
     private func handleNavigationChange(from oldValue: NavigationState, to newValue: NavigationState) {
         navStateWriteCount += 1
         let writeCount = navStateWriteCount
@@ -387,15 +441,22 @@ struct SwipeDeckView: View {
             navState = target
         }
     }
-    
+
     @MainActor
     private func animateNavStateToFeed() {
         animateNavState(to: .feed)
     }
 
-
+    // MARK: - Fix: Break up the complex conditional into a separate view
     private var mainContentArea: some View {
         ZStack {
+            mainContentConditional
+            reservationSheetView
+        }
+    }
+
+    private var mainContentConditional: some View {
+        Group {
             if isLoading {
                 loadingView
             } else if showAuthError {
@@ -407,9 +468,6 @@ struct SwipeDeckView: View {
             } else {
                 feedContentView
             }
-
-            // Present the reservation sheet within the same ZStack so the property returns a single view
-            reservationSheetView
         }
     }
 
@@ -597,6 +655,7 @@ struct SwipeDeckView: View {
     private var feedMapView: some View {
         FeedMapScreen(onBack: animateNavStateToFeed)
             .environmentObject(svc)
+            .environmentObject(feedVM)
             .ignoresSafeArea()
     }
 
@@ -612,48 +671,47 @@ struct SwipeDeckView: View {
     }
 
     @MainActor private func handleReservationConfirm() async {
-        // Use the active card from deck state
         guard let post = deckState.activeCard as? Post else { return }
         guard let api else { return }
-        
+
+        let requestId = UUID().uuidString
+        let tempId = "optimistic-\(requestId)"
+        let placeholderRow = ReservationRow(optimisticFrom: post, reservationId: tempId)
+        postOptimisticReservationInsert(placeholderRow)
+        var didRemovePlaceholder = false
+
         do {
-            // Call real API to reserve the post
-            _ = try await fetchWithRetry(svc: svc) {
-                try await api.reservePost(post.id)
+            let reservationId = try await fetchWithRetry(svc: svc) {
+                try await api.reservePost(post.id, requestId: requestId)
             }
-            
-            // Add to reserved set
+
+            if !didRemovePlaceholder {
+                postOptimisticReservationRemove(tempId)
+                didRemovePlaceholder = true
+            }
+
+            let optimisticRow = ReservationRow(optimisticFrom: post, reservationId: reservationId)
+            postOptimisticReservationInsert(optimisticRow)
+            NotificationCenter.default.post(name: .refreshReservations, object: reservationId)
+
             reservedIds.insert(post.id)
             HiddenPostsStore.shared.saveReserved(reservedIds)
-            
-            // Analytics: ReservationMade (consent-gated)
-            if ConsentManager.shared.analytics == .provided {
-                let userId = svc.userId?.uuidString ?? "unknown"
-                let properties = Properties()
-                    .setProperty("postId", to: String(describing: post.id))
-                    .setProperty("mode", to: post.mode.rawValue)
-                    .setProperty("userId", to: userId)
+            trackReservationMade(post: post)
 
-                Smartlook.instance.track(event: "ReservationMade", properties: properties)
-
-                #if DEBUG
-                DLog("[ANALYTICS] 📊 ReservationMade event tracked - postId: \(post.id)")
-                #endif
-            }
-
-            // Refresh feed and show success
             await fetchFeedBridge()
             withAnimation(.easeOut(duration: 0.18)) {
                 sheetMode = .info
             }
         } catch {
-            // Handle error - could show an alert or error state
+            if !didRemovePlaceholder {
+                postOptimisticReservationRemove(tempId)
+            }
         }
     }
 
     private func handleOpenMaps() {
         guard let post = deckState.activeCard as? Post,
-              let coord = post.exactLocation?.coordinate else { return }
+              let coord = post.exactCoordinate ?? post.approxCoordinate else { return }
         let mi = MKMapItem(placemark: MKPlacemark(coordinate: coord))
         mi.name = post.title
         mi.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeTransit])
@@ -681,12 +739,28 @@ struct SwipeDeckView: View {
         dismissedIds.insert(post.id)
         HiddenPostsStore.shared.saveDismissed(dismissedIds)
     }
-    
+
     @MainActor
     private func handleReserveAction() async {
         guard let post = deckState.activeCard as? Post else { return }
         guard let api else { return }
         guard !isReserving else { return } // Prevent double-tap
+        
+        #if DEBUG || RESERVATIONS_DIAGNOSTICS
+        let corr = Diag.generateCorrelationId()
+        Diag.log(.action, "reserve.tap", fields: [
+            "corr": corr,
+            "postId": post.id,
+            "mode": post.mode.rawValue,
+            "condition": post.condition.rawValue
+        ])
+        
+        Diag.log(.action, "reserve.preconditions", fields: [
+            "corr": corr,
+            "isReserving": isReserving,
+            "onMain": Thread.isMainThread
+        ])
+        #endif
         
         dbg("ACTION", "reserve start \(post.id.prefix(8))")
         
@@ -696,13 +770,40 @@ struct SwipeDeckView: View {
         isReserving = true
         deckState.isActing = true
         
+        let requestId = UUID().uuidString
+        let tempId = "optimistic-\(requestId)"
+        let placeholderRow = ReservationRow(optimisticFrom: post, reservationId: tempId)
+        postOptimisticReservationInsert(placeholderRow)
+        var didRemovePlaceholder = false
+
         do {
             // Reserve: call real API
             let reservationId = try await fetchWithRetry(svc: svc) {
-                try await api.reservePost(post.id)
+                #if DEBUG || RESERVATIONS_DIAGNOSTICS
+                try await api.reservePost(post.id, requestId: requestId, corr: corr)
+                #else
+                try await api.reservePost(post.id, requestId: requestId)
+                #endif
             }
             
             dbg("ACTION", "reserve ok \(reservationId.prefix(8))")
+
+            #if DEBUG || RESERVATIONS_DIAGNOSTICS
+            Diag.log(.store, "reserve.success", fields: [
+                "corr": corr,
+                "reservationId": reservationId,
+                "postId": post.id
+            ])
+            Diag.assertMainThread(corr: corr, context: "reserve.state_update")
+            #endif
+
+            if !didRemovePlaceholder {
+                postOptimisticReservationRemove(tempId)
+                didRemovePlaceholder = true
+            }
+            let optimisticRow = ReservationRow(optimisticFrom: post, reservationId: reservationId)
+            postOptimisticReservationInsert(optimisticRow)
+            NotificationCenter.default.post(name: .refreshReservations, object: reservationId)
             
             // Trigger card animation
             try await deckState.triggerReserve()
@@ -710,23 +811,11 @@ struct SwipeDeckView: View {
             // Mark locally (2h TTL) and remove card
             markReserved(postId: post.id)
             
-            // Optional: background refresh; do not block UI
-            Task { await fetchFeedBridge() }
-            
             // Analytics: ReservationMade (consent-gated)
-            if ConsentManager.shared.analytics == .provided {
-                let userId = svc.userId?.uuidString ?? "unknown"
-                let properties = Properties()
-                    .setProperty("postId", to: String(describing: post.id))
-                    .setProperty("mode", to: post.mode.rawValue)
-                    .setProperty("userId", to: userId)
-
-                Smartlook.instance.track(event: "ReservationMade", properties: properties)
-
-                #if DEBUG
-                DLog("[ANALYTICS] 📊 ReservationMade event tracked - postId: \(post.id)")
-                #endif
-            }
+            trackReservationMade(post: post)
+            
+            // Trigger feed refresh via notification
+            FeedViewModel.requestFeedRefresh()
 
             // Show success toast
             successMessage = "Reserved for 2h 🎉"
@@ -747,6 +836,19 @@ struct SwipeDeckView: View {
         } catch let error as ReserveError {
             dbg("ACTION", "reserve fail \(error.localizedDescription)")
             
+            #if DEBUG || RESERVATIONS_DIAGNOSTICS
+            Diag.log(.error, "reserve.failed", fields: [
+                "corr": corr,
+                "errorType": "ReserveError",
+                "error": error.localizedDescription
+            ])
+            #endif
+            
+            if !didRemovePlaceholder {
+                postOptimisticReservationRemove(tempId)
+                didRemovePlaceholder = true
+            }
+            
             isReserving = false
             deckState.isActing = false
             
@@ -759,6 +861,9 @@ struct SwipeDeckView: View {
             case .expired:
                 errorMessage = "This post has expired"
             case .unauthorized:
+                #if DEBUG || RESERVATIONS_DIAGNOSTICS
+                Diag.logAuthStateChange(corr: corr, event: "auth.unauthorized", reason: "reserve failed with 401")
+                #endif
                 errorMessage = "Please sign in again to continue."
                 showAuthError = true
             case .notFound:
@@ -776,6 +881,18 @@ struct SwipeDeckView: View {
             
         } catch {
             dbg("ACTION", "reserve fail \(error.localizedDescription)")
+            
+            #if DEBUG || RESERVATIONS_DIAGNOSTICS
+            Diag.log(.error, "reserve.failed", fields: [
+                "corr": corr,
+                "errorType": "unknown",
+                "error": error.localizedDescription
+            ])
+            #endif
+            
+            if !didRemovePlaceholder {
+                postOptimisticReservationRemove(tempId)
+            }
             
             isReserving = false
             deckState.isActing = false
@@ -911,7 +1028,7 @@ CATransaction.commit()
             dbg("FEED", "self-filter removed=\(fetchedPosts.count - filtered.count)")
 
             lastServerPayload = Set(filtered.map { $0.id })
-            posts = filtered
+            feedVM.items = filtered
             let visiblePosts = visible
             deckState.updateItems(visiblePosts)
 
@@ -924,10 +1041,10 @@ CATransaction.commit()
                 let myCoordString = "\(String(format: "%.5f", userCLLocation.coordinate.latitude)),\(String(format: "%.5f", userCLLocation.coordinate.longitude))"
                 let accuracyString = Int(userCLLocation.horizontalAccuracy.rounded())
                 let coordinateForPost: (Post) -> (CLLocationCoordinate2D?, String) = { post in
-                    if let exact = post.exactLocation?.coordinate {
+                    if let exact = post.exactCoordinate {
                         return (exact, "exact")
                     }
-                    if let approx = post.approxLocation?.coordinate {
+                    if let approx = post.approxCoordinate {
                         return (approx, "approx")
                     }
                     return (nil, "none")
@@ -975,7 +1092,7 @@ CATransaction.commit()
             isLoading = false
         } catch {
             dbg("FEED", "error=\(error.localizedDescription)")
-            posts = []
+            feedVM.items = []
             deckState.updateItems([])
             isLoading = false
 
@@ -1002,55 +1119,34 @@ CATransaction.commit()
 
     @MainActor
     private func loadFeedWithOneShotLocation() async {
-        guard !isLoading else { return } // Don't re-fetch if already loading
-        isLoading = true
+        guard !feedVM.isLoading else { return } // Don't re-fetch if FeedViewModel is already loading
         showError = false
         showAuthError = false
 
-        // Try cached coordinate first (instant)
-        if let cached = LocationService.shared.lastKnownFromSystem() {
-            let coord = cached.coordinate
-            if LocationReadiness.isUsable(coord) {
-                let age = max(0, Date().timeIntervalSince(cached.timestamp))
+        do {
+            let fix = try await LocationService.shared.firstFix(preferFreshWithin: 1_000)
+            let coord = fix.coordinate
+            guard LocationReadiness.isUsable(coord) else {
                 #if DEBUG
-                DLog("[FEED gate] using cached coord=(\(coord.latitude),\(coord.longitude)) age=\(String(format: "%.1f", age))s")
+                DLog("[FEED gate] skip (reason=unusable coord lat=\(coord.latitude) lng=\(coord.longitude))")
                 #endif
-                await fetchFeed(using: cached)
-                
-                // Optionally refetch with fresh fix in background if cache is old
-                if age > 60 {
-                    Task {
-                        do {
-                            let fresh = try await LocationService.shared.firstFix(timeout: 2.5)
-                            if LocationReadiness.isUsable(fresh.coordinate) {
-                                #if DEBUG
-                                DLog("[FEED gate] refreshing with fresh coord=(\(fresh.coordinate.latitude),\(fresh.coordinate.longitude))")
-                                #endif
-                                await fetchFeed(using: fresh)
-                            }
-                        } catch {
-                            // Silent fail - we already have cached data
-                        }
-                    }
-                }
                 return
             }
-        }
-        
-        // No cached coordinate - wait for fresh fix
-        do {
-            let loc = try await LocationService.shared.firstFix(timeout: 2.5)
-            if LocationReadiness.isUsable(loc.coordinate) {
-                await fetchFeed(using: loc)
+            #if DEBUG
+            let sourceLabel = fix.source == .fresh ? "fresh" : "cached"
+            DLog("[FEED gate] strategy=preferFreshWithin(1000ms) result=\(sourceLabel) age=\(String(format: "%.1f", fix.age))s hdop=\(String(format: "%.1f", fix.hdop))m")
+            #endif
+            feedVM.refresh(currentLocation: coord)
+            lastFeedFetchAt = Date()
+            lastGateFix = fix
+            authStatusAtLastFetch = Int(LocationService.shared.mgr.authorizationStatus.rawValue)
+            if fix.source == .cached {
+                scheduleMaterialImprovementCheck(baseline: fix)
             } else {
-                #if DEBUG
-                DLog("[FEED gate] skip (reason=invalid-fix lat=\(loc.coordinate.latitude) lng=\(loc.coordinate.longitude))")
-                #endif
-                isLoading = false
+                pendingBetterFixTask?.cancel()
+                pendingBetterFixTask = nil
             }
-            return
         } catch {
-            // No fix available - skip request
             #if DEBUG
             DLog("[FEED gate] skip (reason=no-usable-location error=\(error.localizedDescription))")
             #endif
@@ -1064,6 +1160,50 @@ CATransaction.commit()
     @MainActor
     private func fetchFeedBridge() async {
         await loadFeedWithOneShotLocation()
+    }
+
+    private func scheduleMaterialImprovementCheck(baseline: LocationFixResult) {
+        pendingBetterFixTask?.cancel()
+        pendingBetterFixTask = Task {
+            defer { pendingBetterFixTask = nil }
+            do {
+                let freshLocation = try await LocationService.shared.firstFix(timeout: 5.0, forceFresh: true)
+                let candidate = LocationFixResult(location: freshLocation, source: .fresh)
+                await MainActor.run {
+                    if let reason = materialImprovementReason(new: candidate, previous: baseline) {
+                        #if DEBUG
+                        DLog("[FEED gate] refetch reason=\(reason.reason) delta=\(String(format: "%.1f", reason.delta))")
+                        #endif
+                        feedVM.refresh(currentLocation: candidate.coordinate)
+                        lastFeedFetchAt = Date()
+                        lastGateFix = candidate
+                    } else {
+                        #if DEBUG
+                        DLog("[FEED gate] refetch suppressed (no material improvement)")
+                        #endif
+                    }
+                }
+            } catch {
+                // Ignore - no follow-up needed
+            }
+        }
+    }
+    
+    private func materialImprovementReason(new: LocationFixResult, previous: LocationFixResult) -> (reason: String, delta: Double)? {
+        let oldLocation = previous.location
+        let newLocation = new.location
+        let distanceDelta = oldLocation.distance(from: newLocation)
+        if distanceDelta >= 150 {
+            return ("distance", distanceDelta)
+        }
+        let hdopImprovement = previous.hdop - new.hdop
+        if hdopImprovement >= 40 {
+            return ("hdop", hdopImprovement)
+        }
+        if previous.age >= 600 && new.age <= 30 {
+            return ("age", previous.age)
+        }
+        return nil
     }
 
     @MainActor
@@ -1335,6 +1475,7 @@ extension SwipeDeckView {
     private struct FeedMapScreen: View {
         let onBack: @MainActor () -> Void
         @EnvironmentObject private var svc: SupabaseService
+        @EnvironmentObject private var feedVM: FeedViewModel
         @StateObject private var loc = LocationService.shared
 
         @State private var api: ApiService?
@@ -1548,7 +1689,7 @@ extension SwipeDeckView {
             posts.compactMap { post in
                 guard post.mode == .street,
                       let uuid = UUID(uuidString: post.id),
-                      let coordinate = post.exactLocation?.coordinate ?? post.approxLocation?.coordinate
+                      let coordinate = post.exactCoordinate ?? post.approxCoordinate
                 else { return nil }
 
                 let thumbnail = post.images.sorted { $0.orderIndex < $1.orderIndex }.first?.url
@@ -1827,7 +1968,8 @@ extension SwipeDeckView {
                     statusColor: Color(hex: "#00513F"),
                     description: post.description,
                     mode: locationMode(for: post),
-                    exactLocation: locationCoordinate(for: post),
+                    exactCoordinate: post.exactCoordinate,
+                    approxCoordinate: post.approxCoordinate,
                     ownerName: ownerName(for: post),
                     ownerAvatarUrl: post.owner?.avatarUrl,
                     memberSince: post.createdAt,
@@ -1870,10 +2012,6 @@ extension SwipeDeckView {
         
         private func locationMode(for post: Post) -> BigCardOverlay.LocationMode {
             post.mode == .home ? .home : .street
-        }
-        
-        private func locationCoordinate(for post: Post) -> CLLocationCoordinate2D? {
-            post.exactLocation?.coordinate ?? post.approxLocation?.coordinate
         }
         
         private func ownerName(for post: Post) -> String {
@@ -2042,7 +2180,7 @@ extension SwipeDeckView {
                         let result = try await withTimeout(seconds: 18.0) {
                             try await api.getFeed(query: query)
                         }
-                        posts = result
+                        feedVM.items = result
                         mapError = nil
                         pruneSelectionIfNeeded()
                         dbg("MAP", "loaded \(result.count) posts")
@@ -2119,19 +2257,40 @@ extension SwipeDeckView {
             reserveInFlight = true
             defer { reserveInFlight = false }
 
+            let requestId = UUID().uuidString
+            let tempId = "optimistic-\(requestId)"
+            let placeholderRow = ReservationRow(optimisticFrom: post, reservationId: tempId)
+            postOptimisticReservationInsert(placeholderRow)
+            var didRemovePlaceholder = false
+
             do {
-                _ = try await fetchWithRetry(svc: svc) {
-                    try await api.reservePost(post.id)
+                let reservationId = try await fetchWithRetry(svc: svc) {
+                    try await api.reservePost(post.id, requestId: requestId)
                 }
+
+                if !didRemovePlaceholder {
+                    postOptimisticReservationRemove(tempId)
+                    didRemovePlaceholder = true
+                }
+                let optimisticRow = ReservationRow(optimisticFrom: post, reservationId: reservationId)
+                postOptimisticReservationInsert(optimisticRow)
+                NotificationCenter.default.post(name: .refreshReservations, object: reservationId)
                 let successMessage = "Reserved for 2h 🎉"
                 mapError = successMessage
                 collapseAll(reason: .dismiss)
                 scheduleBannerDismiss(for: successMessage)
                 await fetchPosts()
             } catch let authError as AuthError {
+                if !didRemovePlaceholder {
+                    postOptimisticReservationRemove(tempId)
+                    didRemovePlaceholder = true
+                }
                 mapError = authError.localizedDescription
                 scheduleBannerDismiss(for: authError.localizedDescription)
             } catch {
+                if !didRemovePlaceholder {
+                    postOptimisticReservationRemove(tempId)
+                }
                 let message = "Couldn't reserve right now. Please try again."
                 mapError = message
                 scheduleBannerDismiss(for: message)
@@ -2148,4 +2307,3 @@ extension SwipeDeckView {
         }
     }
 }
-

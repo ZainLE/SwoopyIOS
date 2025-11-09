@@ -33,7 +33,7 @@ final class MapVM: ObservableObject {
     private let fallback = CLLocationCoordinate2D(latitude: 41.3874, longitude: 2.1686)
     let recenterHelper = MapRecenterHelper()
     
-    func refresh(center: CLLocationCoordinate2D?, svc: SupabaseService) async {
+    func refresh(center: CLLocationCoordinate2D?, feedVM: FeedViewModel, currentUserId: String?) async {
         let start = Date()
         
         // Gate: use cached location if center is invalid
@@ -42,9 +42,9 @@ final class MapVM: ObservableObject {
             targetCenter = LocationService.shared.lastKnownCoordinate
             #if DEBUG
             if let cached = targetCenter {
-                DLog("[FEED gate] map using cached coord=(\(cached.latitude),\(cached.longitude))")
+                print("[FEED gate] map using cached coord=(\(cached.latitude),\(cached.longitude))")
             } else {
-                DLog("[FEED gate] map using fallback coord=(\(fallback.latitude),\(fallback.longitude))")
+                print("[FEED gate] map using fallback coord=(\(fallback.latitude),\(fallback.longitude))")
             }
             #endif
         }
@@ -54,44 +54,47 @@ final class MapVM: ObservableObject {
         // Skip request if still invalid (e.g., fallback is 0,0)
         guard LocationReadiness.isUsable(finalCenter) else {
             #if DEBUG
-            DLog("[FEED gate] map skip (reason=no-usable-location)")
+            print("[FEED gate] map skip (reason=no-usable-location)")
             #endif
             return
         }
         
-        await svc.fetchFeed(near: finalCenter, mode: "street")
+        feedVM.refresh(currentLocation: finalCenter)
+
+        // Build pins from street posts provided by FeedViewModel
+        let posts = feedVM.items
+        let myIdLower = currentUserId?.lowercased()
+        let streetPosts = posts.filter { $0.mode == .street }
         
-        let now = Date()
-        let candidates = svc.feed.filter { isLive($0, now: now, userId: svc.userId) && isStreetPost($0) }
-        
-        self.pins = candidates.compactMap { t in
-            let coord = t.exactCoordinate ?? t.approxCoordinate
-            guard let c = coord else { return nil }
+        self.pins = streetPosts.compactMap { (post) -> MapPin? in
+            if let myId = myIdLower, post.ownerId.lowercased() == myId {
+                return nil
+            }
+            
+            guard let coordinate = post.exactCoordinate ?? post.approxCoordinate else {
+                #if DEBUG
+                DLog("[MAP] Skipping post \(post.id.prefix(8)) - no coordinate for pin")
+                #endif
+                return nil
+            }
+            
+            guard let uuid = UUID(uuidString: post.id) else { return nil }
+            let createdDate = post.createdAt ?? Date()
+            
             return MapPin(
-                id: t.id,
-                title: t.title,
-                mode: t.mode,
-                coord: c,
-                approxRadius: nil,       // never show circles on FEED map
-                createdAt: t.createdAt,
-                photoURL: t.firstPhotoURL
+                id: uuid,
+                title: post.title,
+                mode: post.mode.rawValue,
+                coord: coordinate,
+                approxRadius: nil,
+                createdAt: createdDate,
+                photoURL: nil
             )
         }
         let ms = Int(Date().timeIntervalSince(start) * 1000)
         Metrics.mapFetchMs(ms, count: self.pins.count)
     }
     
-    private func isLive(_ i: TrashDTO, now: Date = .now, userId: UUID?) -> Bool {
-        let notMine = i.uploader != userId
-        let notExpired = i.expiresAt > now
-        let notReserved = (i.reservedUntil ?? .distantPast) <= now && i.status != "reserved"
-        let notPending = i.status != "pending"
-        return notMine && notExpired && notReserved && notPending
-    }
-    
-    private func isStreetPost(_ t: TrashDTO) -> Bool {
-        t.mode.lowercased() == "street"
-    }
 }
 
 // MARK: - FullScreenMapView
@@ -99,6 +102,7 @@ final class MapVM: ObservableObject {
 struct FullScreenMapView: View {
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var loc: LocationManager
+    @EnvironmentObject var feedVM: FeedViewModel
     @StateObject private var vm = MapVM()
     @Environment(\.dismiss) private var sysDismiss
     
@@ -108,6 +112,37 @@ struct FullScreenMapView: View {
     private let appGreen = Color(red: 0/255, green: 81/255, blue: 63/255)
 
     var body: some View {
+        mapView
+            .ignoresSafeArea()
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    backButton
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                recenterButton
+            }
+            .overlay(alignment: .top) {
+                permissionBannerView
+            }
+            .task {
+                if loc.authorization == .notDetermined { loc.request() }
+                let center = loc.userLocation?.coordinate ?? vm.userCenter ?? fallback
+                vm.userCenter = center
+                vm.camera = .region(.init(center: center, span: .init(latitudeDelta: 0.05, longitudeDelta: 0.05)))
+                await vm.refresh(center: center, feedVM: feedVM, currentUserId: svc.userId?.uuidString)
+            }
+            .onChange(of: feedVM.items.count) { _, _ in
+                Task { await vm.refresh(center: vm.userCenter, feedVM: feedVM, currentUserId: svc.userId?.uuidString) }
+            }
+            .onChange(of: loc.userLocation) { _, newLoc in
+                guard let c = newLoc?.coordinate else { return }
+                vm.userCenter = c
+            }
+    }
+
+    // MARK: - Subviews
+    private var mapView: some View {
         Map(position: $vm.camera, interactionModes: .all) {
             UserAnnotation()
             
@@ -117,73 +152,56 @@ struct FullScreenMapView: View {
                         .font(.title2)
                         .foregroundStyle(.red)
                 }
+            }
+        }
     }
+
+    private var backButton: some View {
+        Button {
+            sysDismiss()
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 17, weight: .semibold))
         }
-        .ignoresSafeArea()
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    // Prefer system dismiss; fallback to injected closure
-                    sysDismiss()
-                    // dismiss() // keep closure available if needed
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 17, weight: .semibold))
-                }
-            }
-        }
-        .overlay(alignment: .topTrailing) {
-            Button {
-                recenterToUser()
-            } label: {
-                ZStack {
-                    Circle()
-                        .fill(Color.black.opacity(0.08))
-                        .frame(width: 44, height: 44)
-                    Image(systemName: "location.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(12)
-                        .background(AppTheme.ColorToken.primary)
-                        .clipShape(Circle())
-                }
-                .shadow(color: Color.black.opacity(0.2), radius: 4, y: 2)
-            }
-            .accessibilityLabel("Center on my location")
-            .padding(.top, 8)
-            .padding(.trailing, 12)
-        }
-        .overlay(alignment: .top) {
-            if let banner = vm.permissionBanner {
-                Text(banner)
-                    .font(.footnote)
+    }
+
+    private var recenterButton: some View {
+        Button {
+            recenterToUser()
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(Color.black.opacity(0.08))
+                    .frame(width: 44, height: 44)
+                Image(systemName: "location.fill")
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.black.opacity(0.8))
-                    .clipShape(Capsule())
-                    .padding(.top, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(12)
+                    .background(AppTheme.ColorToken.primary)
+                    .clipShape(Circle())
             }
+            .shadow(color: Color.black.opacity(0.2), radius: 4, y: 2)
         }
-        .task {
-            if loc.authorization == .notDetermined { loc.request() }
-            let center = loc.userLocation?.coordinate ?? vm.userCenter ?? fallback
-            vm.userCenter = center
-            vm.camera = .region(.init(center: center, span: .init(latitudeDelta: 0.05, longitudeDelta: 0.05)))
-            await vm.refresh(center: center, svc: svc)
-        }
-        .onChange(of: svc.feed) { _, _ in
-            Task { await vm.refresh(center: vm.userCenter, svc: svc) }
-        }
-        .onChange(of: svc.userId) { _, _ in
-            Task { await vm.refresh(center: vm.userCenter, svc: svc) }
-        }
-        .onChange(of: loc.userLocation) { _, newLoc in
-            guard let c = newLoc?.coordinate else { return }
-            vm.userCenter = c
+        .accessibilityLabel("Center on my location")
+        .padding(.top, 8)
+        .padding(.trailing, 12)
+    }
+
+    @ViewBuilder
+    private var permissionBannerView: some View {
+        if let banner = vm.permissionBanner {
+            Text(banner)
+                .font(.footnote)
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.black.opacity(0.8))
+                .clipShape(Capsule())
+                .padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
         }
     }
+
 
     // MARK: - Actions
     private func recenterToUser() {

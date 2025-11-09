@@ -11,8 +11,10 @@
 	<key>com.apple.developer.associated-domains</key>
 	<array>
 		<string>webcredentials:api.swoopy.eu</string>
-		<string>webcredentials:swoopy.eu
-webcredentials:api.swoopy.eu</string>
+	<array>
+		<string>webcredentials:api.swoopy.eu</string>
+		<string>webcredentials:swoopy.eu</string>
+	</array>
 	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>

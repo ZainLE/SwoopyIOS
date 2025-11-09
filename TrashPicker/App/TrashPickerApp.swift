@@ -8,6 +8,11 @@ struct TrashPickerApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
     init() {
+        let sharedSupabase = SupabaseService.shared
+        let sharedApi = ApiService(supabaseService: sharedSupabase)
+        _svc = StateObject(wrappedValue: sharedSupabase)
+        _api = StateObject(wrappedValue: sharedApi)
+        _notificationService = StateObject(wrappedValue: ReservationNotificationService(api: sharedApi))
         // Install runtime debug guards (e.g., ban system image picker usage in DEBUG)
         #if DEBUG
         _CameraGuard.install()
@@ -30,8 +35,9 @@ struct TrashPickerApp: App {
         Haptics.prewarm()
     }
 
-    @StateObject private var svc = SupabaseService.shared
-    @StateObject private var api = ApiService(supabaseService: SupabaseService.shared)
+    @StateObject private var svc: SupabaseService
+    @StateObject private var api: ApiService
+    @StateObject private var notificationService: ReservationNotificationService
     @StateObject private var ck  = CKTrashService()
     @StateObject private var draftStore = UploadDraftStore()
     @StateObject private var loc = LocationManager()
@@ -44,6 +50,7 @@ struct TrashPickerApp: App {
             RootGateView()
                 .environmentObject(svc)
                 .environmentObject(api)
+                .environmentObject(notificationService)
                 .environmentObject(ck)
                 .environmentObject(draftStore)
                 .environmentObject(loc)
@@ -81,6 +88,7 @@ struct TrashPickerApp: App {
 private struct RootGateView: View {
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var api: ApiService
+    @EnvironmentObject var notificationService: ReservationNotificationService
     @StateObject private var boot = BootCoordinator.shared
     @StateObject private var appFlow = AppFlowCoordinator()
     @Environment(\.scenePhase) private var scenePhase
@@ -100,11 +108,21 @@ private struct RootGateView: View {
             }
             if newPhase == .signedIn {
                 AppBoot.markShellToSignedIn()
+                Task {
+                    try? await notificationService.fetchNotifications()
+                }
+            } else if newPhase == .signedOut {
+                notificationService.reset()
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 startBootSequenceIfNeeded()
+                if svc.phase == .signedIn {
+                    Task {
+                        try? await notificationService.fetchNotifications()
+                    }
+                }
             }
         }
     }
@@ -251,7 +269,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
         // Smartlook Analytics initialization
         // NOTE: Mask sensitive fields (addresses, precise location) in Smartlook recordings.
-        Smartlook.instance.preferences.projectKey = "6ca49e4d5c6c098cd2aee92d68dc987c0f8fc8fa"
+        if let projectKey = Bundle.main.object(forInfoDictionaryKey: "SmartlookProjectKey") as? String,
+           projectKey.isEmpty == false {
+            Smartlook.instance.preferences.projectKey = projectKey
+            #if DEBUG
+            DLog("[ANALYTICS] Smartlook initialized with Info.plist key (length=\(projectKey.count))")
+            #endif
+        } else {
+            #if DEBUG
+            DLog("[ANALYTICS] ⚠️ SmartlookProjectKey missing/empty in Info.plist — skipping Smartlook init")
+            #endif
+        }
         
         // Apply current consent state at boot (native consent system)
         Task { @MainActor in

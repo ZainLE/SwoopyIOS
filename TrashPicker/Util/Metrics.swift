@@ -35,4 +35,23 @@ enum Metrics {
     static func reservationAction(screen: String, role: String, postId: String, reservationId: String, mode: ItemMode, statusBefore: String, statusAfter: String) {
         DLog("[METRIC] reservationAction screen=\(screen) role=\(role) postId=\(postId) reservationId=\(reservationId) mode=\(mode.rawValue) statusBefore=\(statusBefore) statusAfter=\(statusAfter)")
     }
+    static func notificationsTabViewed(tabName: String) {
+        DLog("[METRIC] notifications_tab_viewed tab=\(tabName)")
+    }
+    static func notificationsBadgeCountUpdated(count: Int) {
+        DLog("[METRIC] notifications_badge_count_updated count=\(count)")
+    }
+    static func notificationsApproveTap(reservationId: String, postId: String) {
+        DLog("[METRIC] notifications_approve_tap reservationId=\(reservationId) postId=\(postId)")
+    }
+    static func notificationsDeclineTap(reservationId: String, postId: String) {
+        DLog("[METRIC] notifications_decline_tap reservationId=\(reservationId) postId=\(postId)")
+    }
+    static func contactButtonState(reservationId: String, postId: String, enabled: Bool) {
+        let state = enabled ? "enabled" : "disabled"
+        DLog("[METRIC] contact_button_state reservationId=\(reservationId) postId=\(postId) state=\(state)")
+    }
+    static func contactButtonTap(reservationId: String, postId: String) {
+        DLog("[METRIC] contact_button_tap reservationId=\(reservationId) postId=\(postId)")
+    }
 }

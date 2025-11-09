@@ -67,12 +67,12 @@ final class ItemsService {
                 title: p.title,
                 description: p.description,
                 category: p.category,
-                condition: p.condition.rawValue,
+                condition: p.condition.backendValue,
                 mode: p.mode.rawValue,
-                lat: p.exactLocation?.coordinate?.latitude,
-                lon: p.exactLocation?.coordinate?.longitude,
-                approx_lat: p.approxLocation?.coordinate?.latitude,
-                approx_lon: p.approxLocation?.coordinate?.longitude,
+                lat: p.exactCoordinate?.latitude,
+                lon: p.exactCoordinate?.longitude,
+                approx_lat: p.approxCoordinate?.latitude,
+                approx_lon: p.approxCoordinate?.longitude,
                 photo_urls: p.images.sorted { $0.orderIndex < $1.orderIndex }.map { $0.url.absoluteString },
                 
                 created_at: p.createdAt ?? Date(),   // fallback to now
@@ -93,7 +93,7 @@ final class ItemsService {
 
     func reservePost(itemId: UUID, hours: Int = 6) async throws {
         // Domain reserve is via ApiService.reservePost
-        _ = try await api.reservePost(itemId.uuidString)
+        let requestId = UUID().uuidString
+        _ = try await api.reservePost(itemId.uuidString, requestId: requestId)
     }
 }
-

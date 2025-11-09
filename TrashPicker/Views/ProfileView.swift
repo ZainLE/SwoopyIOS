@@ -164,8 +164,9 @@ final class ProfileVM: ObservableObject {
 
 struct ProfileView: View {
     @EnvironmentObject var svc: SupabaseService
+    @EnvironmentObject var api: ApiService
     @StateObject private var viewModel: ProfileVM
-    @StateObject private var notificationService = NotificationService(api: ApiService(supabaseService: SupabaseService.shared))
+    @EnvironmentObject var notificationService: ReservationNotificationService
     @State private var showingSignOutError = false
     @State private var reportCategory: String?
     @State private var reportMessage: String = ""
@@ -211,7 +212,7 @@ struct ProfileView: View {
             }
         }
         .fullScreenCover(isPresented: $reportShowCamera) {
-            CameraOverlay(
+            CameraScreen(
                 onCaptured: { image in
                     applyReportImage(image)
                     reportShowCamera = false
@@ -423,7 +424,7 @@ struct ProfileView: View {
     private var notificationsSection: some View {
         let totalBadge = max(0, notificationService.requestsCount + notificationService.unreadCount)
         Section {
-            NavigationLink(destination: NotificationsViewNew(notificationService: notificationService)) {
+            NavigationLink(destination: NotificationsView()) {
                 HStack(spacing: 12) {
                     Image(systemName: "bell")
                         .font(.system(size: 20))
@@ -510,10 +511,14 @@ struct ProfileView: View {
             notificationService.unreadCount = 0
             return
         }
+        
+        let service = NotificationService(api: api)
         do {
-            async let reqs = notificationService.fetchIncomingRequests()
-            async let notes = notificationService.fetchNotifications()
-            _ = try await (reqs, notes)
+            let notifications = try await service.fetchAll()
+            let actionable = notifications.filter { $0.category == .actionable }
+            let unread = notifications.filter { !$0.isRead }
+            notificationService.requestsCount = actionable.count
+            notificationService.unreadCount = unread.count
         } catch {
 #if DEBUG
             DLog("[PROFILE] notifications refresh failed: \(error.localizedDescription)")
@@ -1080,7 +1085,7 @@ private struct UploadPostRow: View {
                 Text(post.title)
                     .font(AppFont.h3)
 
-                Text(post.condition.rawValue.capitalized)
+                Text(post.condition.displayName)
                     .font(AppFont.sub)
                     .foregroundColor(AppColor.muted)
 
@@ -1191,6 +1196,10 @@ private struct UploadsHistoryView: View {
         .onDisappear {
             loadTask?.cancel()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .profileDidUpdate)) { _ in
+            loadTask?.cancel()
+            loadTask = Task { await loadMyPosts() }
+        }
         .refreshable { 
             await loadMyPosts()
         }
@@ -1204,9 +1213,10 @@ private struct UploadsHistoryView: View {
         
         do {
             try Task.checkCancellation()
-            let posts = try await fetchWithRetry(svc: svc) {
+            var posts = try await fetchWithRetry(svc: svc) {
                 try await api.getMyPosts()
             }
+            posts = await hydrateLocationsIfNeeded(for: posts, api: api)
             myPosts = posts
         } catch {
             // Silently ignore cancellations
@@ -1218,6 +1228,26 @@ private struct UploadsHistoryView: View {
         }
     }
     
+}
+
+extension UploadsHistoryView {
+    private func hydrateLocationsIfNeeded(for posts: [Post], api: ApiService) async -> [Post] {
+        var updated = posts
+        for index in posts.indices where posts[index].mode == .street && posts[index].exactCoordinate == nil {
+            do {
+                let hydrated = try await fetchWithRetry(svc: svc) {
+                    try await api.getPost(posts[index].id)
+                }
+                LocationCache.shared.store(post: hydrated)
+                updated[index] = hydrated
+            } catch {
+                #if DEBUG
+                DLog("[PROFILE] hydrate post \(posts[index].id) error=\(error.localizedDescription)")
+                #endif
+            }
+        }
+        return updated
+    }
 }
 //
 //private struct ReservationHistoryView: View {
@@ -1256,4 +1286,3 @@ extension CKTrashItem {
     var cityText: String { city }
     var mapCoordinate: CLLocationCoordinate2D? { coordinate }
 }
-
