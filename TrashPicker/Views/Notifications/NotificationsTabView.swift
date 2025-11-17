@@ -49,48 +49,7 @@ struct NotificationsTabView: View {
         .refreshable {
             await viewModel.refresh()
         }
-        .confirmationDialog(
-            "Share your phone number?",
-            isPresented: Binding(
-                get: { pendingAccept != nil },
-                set: { value in if !value { pendingAccept = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Share & Accept", role: .none) {
-                guard let notification = pendingAccept else { return }
-                Task {
-                    await viewModel.accept(notification)
-                    pendingAccept = nil
-                }
-            }
-            Button("Cancel", role: .cancel) {
-                pendingAccept = nil
-            }
-        } message: {
-            Text("Your phone number will be shared with \(pendingAccept?.counterpartyName ?? "the requester").")
-        }
-        .confirmationDialog(
-            "Cancel this pickup?",
-            isPresented: Binding(
-                get: { pendingCancel != nil },
-                set: { value in if !value { pendingCancel = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Cancel Pickup", role: .destructive) {
-                guard let notification = pendingCancel else { return }
-                Task {
-                    await viewModel.cancelAccepted(notification)
-                    pendingCancel = nil
-                }
-            }
-            Button("Keep Reservation", role: .cancel) {
-                pendingCancel = nil
-            }
-        } message: {
-            Text("This will notify \(pendingCancel?.counterpartyName ?? "the requester").")
-        }
+        // Inline, instant actions (no confirmation dialogs per spec)
     }
     
     private func relativeDateString(_ date: Date) -> String {
@@ -113,26 +72,27 @@ struct NotificationsTabView: View {
     private var actionRequiredSection: some View {
         Section("Action Required") {
             if viewModel.actionRequired.isEmpty {
-                Label("No pending requests", systemImage: "checkmark.circle")
+                Label("No home requests right now.", systemImage: "checkmark.circle")
                     .foregroundColor(.secondary)
                     .padding(.vertical, 8)
             } else {
-                ForEach(viewModel.actionRequired, id: \.id) { notification in
+                ForEach(viewModel.actionRequired, id: \ .id) { notification in
                     let isPerforming = viewModel.performingActionIDs.contains(notification.id)
                     ActionableNotificationRow(
                         notification: notification,
                         relativeTime: relativeDateString(notification.createdAt),
                         isPerformingAction: isPerforming,
-                        onAccept: { pendingAccept = notification },
-                        onSkip: { viewModel.skip(notification) },
-                        onConfirmPickup: { Task { await viewModel.confirmPickup(notification) } },
+                        onApprove: {
+                            Task { await viewModel.accept(notification) }
+                        },
+                        onReject: { viewModel.skip(notification) },
                         onContact: { contact(notification) },
-                        onCancelAccepted: { pendingCancel = notification }
+                        onCancel: {
+                            Task { await viewModel.cancelAccepted(notification) }
+                        }
                     )
                     .contentShape(Rectangle())
-                    .onTapGesture {
-                        openReservation(for: notification)
-                    }
+                    // No navigation on tap per spec
                 }
             }
         }
@@ -151,9 +111,7 @@ struct NotificationsTabView: View {
                         relativeTime: relativeDateString(notification.createdAt)
                     )
                     .contentShape(Rectangle())
-                    .onTapGesture {
-                        openReservation(for: notification)
-                    }
+                    // No navigation on tap per spec
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
                             viewModel.swipeToDismiss(notification)
@@ -170,18 +128,10 @@ struct NotificationsTabView: View {
         guard let phone = notification.exposedContactPhone,
               let url = URL(string: "tel://\(phone.filter { $0.isNumber || $0 == "+" })")
         else {
-            viewModel.toastMessage = "Phone number unavailable"
+            viewModel.toastMessage = "Contact not available yet"
             return
         }
         UIApplication.shared.open(url, options: [:], completionHandler: nil)
-    }
-    
-    private func openReservation(for notification: AppNotification) {
-        guard let reservationId = notification.reservationId else { return }
-        router.selectedTab = .reservations
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            NotificationCenter.default.post(name: .openReservation, object: reservationId.uuidString)
-        }
     }
 }
 

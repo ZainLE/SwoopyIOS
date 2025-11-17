@@ -1,5 +1,27 @@
 import Foundation
 
+/// Actor-based cache for offline resilience
+actor NotificationCache {
+    private var cached: (items: [AppNotification], unreadCount: Int, timestamp: Date)?
+    private let maxAge: TimeInterval = 60 // 1 minute cache
+    
+    func get() -> (items: [AppNotification], unreadCount: Int)? {
+        guard let cached,
+              Date().timeIntervalSince(cached.timestamp) < maxAge else {
+            return nil
+        }
+        return (cached.items, cached.unreadCount)
+    }
+    
+    func set(items: [AppNotification], unreadCount: Int) {
+        cached = (items, unreadCount, Date())
+    }
+    
+    func clear() {
+        cached = nil
+    }
+}
+
 @MainActor
 final class NotificationsScreenViewModel: ObservableObject {
     @Published private(set) var actionable: [AppNotification] = []
@@ -15,18 +37,60 @@ final class NotificationsScreenViewModel: ObservableObject {
     private var lastRefreshAt: Date?
     private var refreshEpoch: Int = 0
     private let refreshCooldown: TimeInterval = 2
+    
+    // Task cancellation support
+    private var fetchTask: Task<Void, Never>?
+    private let cache = NotificationCache()
+    private let maxRetries = 2
 
     init(notificationService: NotificationProviding, reservationService: ReservationNotificationService? = nil) {
         self.notificationService = notificationService
         self.reservationService = reservationService
     }
 
-    func refresh(force: Bool = false) async {
+    /// Refresh notifications with proper cancellation, caching, and retry logic
+    func refresh(force: Bool = false) {
         let now = Date()
-        if isRefreshing { return }
+        
+        // Cancel any existing fetch
+        fetchTask?.cancel()
+        
+        // Debounce non-forced refreshes
         if !force, let last = lastRefreshAt, now.timeIntervalSince(last) < refreshCooldown {
+            #if DEBUG
+            DLog("[NOTIF] debounced refresh (last=\(now.timeIntervalSince(last))s ago)")
+            #endif
             return
         }
+        
+        // Try to load from cache first for instant UI
+        fetchTask = Task { @MainActor in
+            // Show cached data immediately if available
+            if let cached = await cache.get() {
+                #if DEBUG
+                DLog("[NOTIF] showing cached data (\(cached.items.count) items)")
+                #endif
+                apply(notifications: cached.items)
+                self.unreadCount = cached.unreadCount
+            }
+            
+            // Then fetch fresh data
+            await performRefresh()
+        }
+    }
+    
+    /// Cancel any pending notification requests
+    func cancelPendingRequests() {
+        #if DEBUG
+        DLog("[NOTIF] cancelling pending requests")
+        #endif
+        fetchTask?.cancel()
+        fetchTask = nil
+    }
+    
+    private func performRefresh() async {
+        guard !isRefreshing else { return }
+        
         isRefreshing = true
         isLoading = true
         error = nil
@@ -35,42 +99,117 @@ final class NotificationsScreenViewModel: ObservableObject {
         refreshEpoch += 1
         let currentEpoch = refreshEpoch
         
+        #if DEBUG
+        let startTime = Date()
+        DLog("[NOTIF] fetch started epoch=\(currentEpoch)")
+        #endif
+        
         do {
-            let result = try await notificationService.getUnifiedNotifications(since: nil, limit: 100)
-            lastRefreshAt = Date()
+            // Fetch with exponential backoff retry
+            let result = try await fetchWithRetry(attempt: 0)
             
-            // Discard stale responses
-            guard currentEpoch == refreshEpoch else {
+            // Check if cancelled or superseded
+            guard !Task.isCancelled, currentEpoch == refreshEpoch else {
                 #if DEBUG
-                DLog("[NOTIF] discarding stale response epoch=\(currentEpoch) current=\(refreshEpoch)")
+                DLog("[NOTIF] discarding response (cancelled=\(Task.isCancelled) epoch=\(currentEpoch) current=\(refreshEpoch))")
                 #endif
+                isRefreshing = false
+                isLoading = false
                 return
             }
             
-            // Ensure we're on main thread for @Published updates
-            await MainActor.run {
-                apply(notifications: result.notifications)
-                self.unreadCount = result.unreadCount
-                isLoading = false
-                
-                #if DEBUG
-                DLog("[NOTIF] state-updated (main) actionable=\(actionable.count) updates=\(informational.count) badge=\(unreadCount)")
-                #endif
-            }
-        } catch {
-            // Only show error if this is still the current request
-            guard currentEpoch == refreshEpoch else { return }
+            lastRefreshAt = Date()
             
             #if DEBUG
-            DLog("[NOTIF][ERROR] refresh failed: \(error.localizedDescription)")
+            let duration = Date().timeIntervalSince(startTime)
+            DLog("[NOTIF] fetch succeeded in \(String(format: "%.2f", duration))s")
             #endif
-            // Ensure we're on main thread for @Published updates
-            await MainActor.run {
-                self.error = "Could not load notifications"
+            
+            // Update cache
+            await cache.set(items: result.notifications, unreadCount: result.unreadCount)
+            
+            // Update UI on main thread
+            apply(notifications: result.notifications)
+            self.unreadCount = result.unreadCount
+            self.error = nil
+            isLoading = false
+            
+            #if DEBUG
+            DLog("[NOTIF] state-updated actionable=\(actionable.count) updates=\(informational.count) badge=\(unreadCount)")
+            #endif
+            
+        } catch is CancellationError {
+            #if DEBUG
+            DLog("[NOTIF] fetch cancelled")
+            #endif
+            isLoading = false
+            
+        } catch {
+            // Only show error if this is still the current request
+            guard currentEpoch == refreshEpoch else {
+                isRefreshing = false
                 isLoading = false
+                return
             }
+            
+            #if DEBUG
+            let duration = Date().timeIntervalSince(startTime)
+            DLog("[NOTIF][ERROR] fetch failed after \(String(format: "%.2f", duration))s: \(error.localizedDescription)")
+            #endif
+            
+            // Try to show cached data on error
+            if let cached = await cache.get() {
+                #if DEBUG
+                DLog("[NOTIF] falling back to cached data")
+                #endif
+                apply(notifications: cached.items)
+                self.unreadCount = cached.unreadCount
+                self.error = "Using cached data"
+            } else {
+                self.error = "Could not load notifications"
+            }
+            isLoading = false
         }
+        
         isRefreshing = false
+    }
+    
+    /// Fetch with exponential backoff retry logic
+    private func fetchWithRetry(attempt: Int) async throws -> (notifications: [AppNotification], unreadCount: Int) {
+        do {
+            // Check for cancellation before each attempt
+            try Task.checkCancellation()
+            
+            #if DEBUG
+            if attempt > 0 {
+                DLog("[NOTIF] retry attempt \(attempt)/\(maxRetries)")
+            }
+            #endif
+            
+            return try await notificationService.getUnifiedNotifications(since: nil, limit: 100)
+            
+        } catch is CancellationError {
+            throw CancellationError()
+            
+        } catch {
+            // Don't retry if we've hit max attempts
+            guard attempt < maxRetries else {
+                #if DEBUG
+                DLog("[NOTIF] max retries reached, giving up")
+                #endif
+                throw error
+            }
+            
+            // Exponential backoff: 1s, 2s, 4s (capped at 5s)
+            let delay = min(pow(2.0, Double(attempt)), 5.0)
+            
+            #if DEBUG
+            DLog("[NOTIF] retrying in \(delay)s after error: \(error.localizedDescription)")
+            #endif
+            
+            try await Task.sleep(for: .seconds(delay))
+            return try await fetchWithRetry(attempt: attempt + 1)
+        }
     }
 
     func markNotificationAsRead(_ notification: AppNotification) async {
@@ -90,14 +229,39 @@ final class NotificationsScreenViewModel: ObservableObject {
 
     func approve(_ notification: AppNotification) async throws {
         guard let reservationId = notification.reservationId else { return }
+        
+        // Call backend
         try await notificationService.approve(reservationId: reservationId)
-        await refresh(force: true)
+        
+        // Optimistically update state to .accepted
+        if let index = cachedNotifications.firstIndex(where: { $0.id == notification.id }) {
+            cachedNotifications[index] = cachedNotifications[index].updating(state: .accepted)
+            apply(notifications: cachedNotifications)
+        }
+        
+        // Background refresh to get contact_phone and reconcile
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000) // 150ms delay
+            await refresh(force: true)
+        }
+    }
+    
+    func reject(_ notification: AppNotification) async throws {
+        guard let reservationId = notification.reservationId else { return }
+        
+        // Call backend
+        try await notificationService.cancel(reservationId: reservationId)
+        
+        // Immediately remove from list
+        removeNotification(id: notification.id)
     }
 
     func cancel(_ notification: AppNotification) async throws {
         guard let reservationId = notification.reservationId else { return }
         try await notificationService.cancel(reservationId: reservationId)
-        await refresh(force: true)
+        
+        // Remove from list immediately
+        removeNotification(id: notification.id)
     }
 
     func complete(_ notification: AppNotification) async throws {
@@ -107,7 +271,7 @@ final class NotificationsScreenViewModel: ObservableObject {
     }
 
     func skip(_ notification: AppNotification) async throws {
-        try await cancel(notification)
+        try await reject(notification)
     }
 
     func deleteInformational(_ notification: AppNotification) async throws {
@@ -118,8 +282,30 @@ final class NotificationsScreenViewModel: ObservableObject {
     private func apply(notifications: [AppNotification]) {
         assertMainThread("NotificationsScreenViewModel.apply")
         cachedNotifications = notifications
-        actionable = notifications.filter { $0.category == .actionable }
-        informational = notifications.filter { $0.category == .informational }
+        
+        // CRITICAL FIX: Filter actionable to ONLY home pickups (exclude street pickups)
+        // Include both pending_approval AND accepted states (for Contact/Cancel buttons)
+        actionable = notifications.filter { notification in
+            // NEVER show street pickups in Action Required
+            guard notification.mode?.lowercased() != "street" else { return false }
+            
+            // Only show if actionable category AND (pending OR accepted)
+            return notification.category == .actionable &&
+                   (notification.state == .pending_approval || notification.state == .accepted)
+        }
+        
+        // Informational: Everything else (including ALL street pickups)
+        informational = notifications.filter { notification in
+            // All street pickups go to informational
+            if notification.mode?.lowercased() == "street" {
+                return true
+            }
+            
+            // Home pickups: informational if not pending/accepted
+            return notification.category == .informational ||
+                   (notification.state != .pending_approval && notification.state != .accepted)
+        }
+        
         reservationService?.apply(notifications: notifications)
     }
 

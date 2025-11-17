@@ -653,17 +653,8 @@ struct ReservationsView: View {
                 hydrateMissingLocations(for: rows)
                 isLoading = false
 
-                if let pendingId = pendingContactRefreshId {
-                    if let refreshed = rows.first(where: { $0.id == pendingId }) {
-                        if refreshed.canContact {
-                            contactReservation = refreshed
-                            showContactOptions = true
-                        } else {
-                            showToastMessage("Contact will appear after approval.")
-                        }
-                    } else {
-                        showToastMessage("Contact will appear after approval.")
-                    }
+                if pendingContactRefreshId != nil {
+                    // Do not auto-present any contact dialog or toast on first load
                     pendingContactRefreshId = nil
                 }
 

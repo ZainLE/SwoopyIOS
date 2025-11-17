@@ -155,6 +155,9 @@ struct AccountDetailsView: View {
                 }
             }
         }
+        .onAppear {
+            Task { await loadCurrentProfile() }
+        }
         .task {
             await loadCurrentProfile()
             updateBiometricAvailability()
@@ -178,6 +181,9 @@ struct AccountDetailsView: View {
         }
         .onChange(of: confirmPassword) { _ in
             passwordError = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .profileDidUpdate)) { _ in
+            Task { await loadCurrentProfile() }
         }
     }
 
@@ -789,6 +795,9 @@ struct AccountDetailsView: View {
             #if DEBUG
             DLog("[PROFILE] Refreshed from server: name=\(fullName) phone=\(phone)")
             #endif
+            
+            // Notify other views that profile was updated
+            NotificationCenter.default.post(name: .profileDidUpdate, object: nil)
             
             // Show success toast
             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {

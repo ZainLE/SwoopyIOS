@@ -763,11 +763,13 @@ final class SupabaseService: NSObject, ObservableObject {
 
         let api = ApiService(supabaseService: self)
         let bodyData = try JSONEncoder().encode(patchBody)
-        _ = try await api.rawRequest("/me/profile", method: .PATCH, body: bodyData)
-
+        let patchResult = try await api.rawRequest("/me/profile", method: .PATCH, body: bodyData)
+        try ensureSuccess(patchResult, action: "update profile")
+        
         if onboardingCompleted == true {
             // Call dedicated endpoint to mark onboarding complete
-            _ = try await api.rawRequest("/me/onboarding/complete", method: .POST)
+            let onboardingResult = try await api.rawRequest("/me/onboarding/complete", method: .POST)
+            try ensureSuccess(onboardingResult, action: "complete onboarding")
         }
 
         // Refresh local profile from server
@@ -778,8 +780,19 @@ final class SupabaseService: NSObject, ObservableObject {
     @MainActor
     func markOnboardingComplete() async throws {
         let api = ApiService(supabaseService: self)
-        _ = try await api.rawRequest("/me/onboarding/complete", method: .POST)
+        let result = try await api.rawRequest("/me/onboarding/complete", method: .POST)
+        try ensureSuccess(result, action: "complete onboarding")
         await fetchProfile()
+    }
+
+    private func ensureSuccess(_ result: RawHTTPResult, action: String) throws {
+        guard (200...299).contains(result.statusCode) else {
+            let detail = (result.message?.isEmpty == false) ? result.message : nil
+            throw ApiHTTPError(
+                statusCode: result.statusCode,
+                message: detail ?? "Failed to \(action)."
+            )
+        }
     }
 
     @MainActor

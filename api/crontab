@@ -1,6 +1,0 @@
-# Cron configuration for Swoopy API
-# Run street post expiration handler every 5 minutes
-*/5 * * * * cd /app && python -m app.tasks.expire_street_posts >> /var/log/swoopy_expiration.log 2>&1
-
-# Optional: Clean up old logs every day at 2 AM
-0 2 * * * find /var/log -name "swoopy_*.log" -mtime +7 -delete

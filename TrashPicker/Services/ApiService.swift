@@ -2,6 +2,7 @@ import Foundation
 import CoreLocation
 import SwiftUI
 import os.log
+import UIKit
 
 // MARK: - Debug Logging
 
@@ -403,6 +404,19 @@ struct Profile: Codable {
         try container.encodeIfPresent(pickedCount, forKey: .pickedCount)
         try container.encodeIfPresent(phone, forKey: .phone)
     }
+    
+    /// Computed full name from first and last name
+    var fullName: String? {
+        let first = firstName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let last = lastName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let combined = [first, last].filter { !$0.isEmpty }.joined(separator: " ")
+        return combined.isEmpty ? nil : combined
+    }
+    
+    /// Display name with fallback
+    var displayName: String {
+        fullName ?? "User"
+    }
 }
 
 // Profile update request/response models
@@ -425,16 +439,6 @@ struct ProfilePatch: Codable {
 struct ProfileResponse: Codable {
     let profile: Profile
 }
-
-extension Profile {
-    var fullName: String {
-        let fn = (firstName ?? "").trimmingCharacters(in: .whitespaces)
-        let ln = (lastName ?? "").trimmingCharacters(in: .whitespaces)
-        let combined = [fn, ln].filter { !$0.isEmpty }.joined(separator: " ")
-        return combined.isEmpty ? "Unknown" : combined
-    }
-}
-
 // Full reservation with post included
 struct Reservation: Codable, Identifiable {
     enum Status: String, Codable {
@@ -702,7 +706,7 @@ private struct ReserveResponse: Decodable {
 
 class ApiService: ObservableObject {
     private let baseURL: String = SupabaseConfig.apiBaseURL
-    private let session: URLSession
+    private var session: URLSession
     private let supabaseService: SupabaseService
     
     @Published var isAuthenticated = false
@@ -714,11 +718,11 @@ class ApiService: ObservableObject {
             // Use provided session (for testing)
             self.session = session
         } else {
-            // Create default session
+            // Create default session with Apple-compliant timeouts
             let configuration = URLSessionConfiguration.default
-            configuration.waitsForConnectivity = false
-            configuration.timeoutIntervalForRequest = 10 // seconds
-            configuration.timeoutIntervalForResource = 20 // seconds
+            configuration.waitsForConnectivity = true // Allow brief connectivity wait
+            configuration.timeoutIntervalForRequest = 5.0 // Apple guideline compliance
+            configuration.timeoutIntervalForResource = 10.0 // Total resource timeout
             self.session = URLSession(configuration: configuration)
         }
         
@@ -734,6 +738,33 @@ class ApiService: ObservableObject {
         // Start observing auth changes
         Task {
             await observeAuthChanges()
+        }
+
+        // Recreate URLSession on foreground to avoid stale connections
+        setupBackgroundHandling()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func setupBackgroundHandling() {
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.session.invalidateAndCancel()
+            let configuration = URLSessionConfiguration.default
+            configuration.waitsForConnectivity = true
+            configuration.timeoutIntervalForRequest = 30.0
+            configuration.timeoutIntervalForResource = 60.0
+            configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+            self.session = URLSession(configuration: configuration)
+            #if DEBUG
+            DLog("[API] URLSession recreated after foreground")
+            #endif
         }
     }
     
@@ -1237,98 +1268,116 @@ class ApiService: ObservableObject {
     }()
 
     func fetchNotifications(since: Date? = nil, limit: Int = 50) async throws -> NotificationListResponse {
+        // Proactively refresh auth to avoid stale-token timeouts
+        do {
+            try await supabaseService.refreshSession()
+            #if DEBUG
+            DLog("[NOTIF] session refreshed before fetch")
+            #endif
+        } catch {
+            #if DEBUG
+            DLog("[NOTIF] session refresh failed (continuing): \(error.localizedDescription)")
+            #endif
+        }
+
         var query: [URLQueryItem] = [URLQueryItem(name: "limit", value: String(limit))]
         if let since {
             let isoString = ApiService.notificationsDateFormatter.string(from: since)
             query.append(URLQueryItem(name: "since", value: isoString))
         }
-        var headers = try await authHeaders()
-        let requestId = UUID().uuidString
-        headers["X-Request-ID"] = requestId
-        let request = try buildRequest(
-            path: "/custom-api/my/notifications",
-            method: .GET,
-            query: query,
-            headers: headers
-        )
-        if let url = request.url?.absoluteString {
-            os_log("[NOTIF] GET %{public}@", log: notificationsLog, type: .info, url)
-        }
-        let (data, response) = try await send(request)
-        if let http = response as? HTTPURLResponse {
-            os_log("[NOTIF] status=%{public}d reqId=%{public}@", log: notificationsLog, type: .info, http.statusCode, requestId)
-        }
-        os_log("[NOTIF] bytes=%{public}d", log: notificationsLog, type: .info, data.count)
-        guard let http = response as? HTTPURLResponse else {
-            throw ApiServiceError.unknownError
-        }
-        guard (200...299).contains(http.statusCode) else {
-            if http.statusCode == 401 { throw ApiServiceError.unauthorized }
-            let message = extractErrorMessage(from: data)
-            throw ApiHTTPError(statusCode: http.statusCode, message: message)
+
+        // Retry with exponential backoff
+        let maxRetries = 2
+        let delays: [TimeInterval] = [2.0, 5.0]
+
+        for attempt in 0...maxRetries {
+            do {
+                var headers = try await authHeaders()
+                let requestId = UUID().uuidString
+                headers["X-Request-ID"] = requestId
+                let request = try buildRequest(
+                    path: "/custom-api/my/notifications",
+                    method: .GET,
+                    query: query,
+                    headers: headers
+                )
+                if let url = request.url?.absoluteString {
+                    os_log("[NOTIF] GET %{public}@ (attempt %d)", log: notificationsLog, type: .info, url, attempt + 1)
+                }
+
+                let (data, response) = try await send(request)
+                if let http = response as? HTTPURLResponse {
+                    os_log("[NOTIF] status=%{public}d reqId=%{public}@", log: notificationsLog, type: .info, http.statusCode, requestId)
+                }
+                os_log("[NOTIF] bytes=%{public}d", log: notificationsLog, type: .info, data.count)
+                guard let http = response as? HTTPURLResponse else {
+                    throw ApiServiceError.unknownError
+                }
+                guard (200...299).contains(http.statusCode) else {
+                    if http.statusCode == 401 { throw ApiServiceError.unauthorized }
+                    let message = extractErrorMessage(from: data)
+                    throw ApiHTTPError(statusCode: http.statusCode, message: message)
+                }
+
+                // Use legacy envelope decoder with fractional seconds support
+                let decoder = JSONDecoder()
+                let f = ISO8601DateFormatter()
+                f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                decoder.dateDecodingStrategy = .custom { d in
+                    let s = try d.singleValueContainer().decode(String.self)
+                    guard let date = f.date(from: s) else {
+                        throw DecodingError.dataCorrupted(.init(codingPath: d.codingPath, debugDescription: "Bad date \(s)"))
+                    }
+                    return date
+                }
+                
+                do {
+                    let env = try decoder.decode(NotificationsEnvelopeLegacy.self, from: data)
+                    let actionRequired = env.incoming_requests ?? []
+                    let updates = env.general_notifications ?? []
+                    let unread = env.unread_count
+                    os_log("[NOTIF] using legacy envelope: incoming=%{public}d general=%{public}d unread=%{public}d", 
+                           log: notificationsLog, type: .info, actionRequired.count, updates.count, unread)
+                    var allItems: [NotificationItem] = []
+                    var failedCount = 0
+                    for row in actionRequired {
+                        do { allItems.append(try convertLegacyToItem(row, category: .actionable)) }
+                        catch {
+                            failedCount += 1
+                            os_log("[NOTIF][MAP_ERROR] actionable id=%{public}@ error=%{public}@", log: notificationsLog, type: .error, row.id.uuidString, String(describing: error))
+                        }
+                    }
+                    for row in updates {
+                        do { allItems.append(try convertLegacyToItem(row, category: .informational)) }
+                        catch {
+                            failedCount += 1
+                            os_log("[NOTIF][MAP_ERROR] informational id=%{public}@ error=%{public}@", log: notificationsLog, type: .error, row.id.uuidString, String(describing: error))
+                        }
+                    }
+                    os_log("[NOTIF][MAP] mapped=%{public}d failed=%{public}d total=%{public}d", log: notificationsLog, type: .info, allItems.count, failedCount, actionRequired.count + updates.count)
+                    return NotificationListResponse(unreadCount: unread, items: allItems)
+                } catch {
+                    os_log("[NOTIF][DECODE_ERROR] %{public}@", log: notificationsLog, type: .error, String(describing: error))
+                    let raw = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+                    let preview = String(raw.prefix(2048))
+                    os_log("[NOTIF][RAW] %{public}@", log: notificationsLog, type: .debug, preview)
+                    throw error
+                }
+            } catch {
+                if attempt < maxRetries {
+                    let delay = delays[attempt]
+                    os_log("[NOTIF] retrying in %{public}.1fs (attempt %d/%d): %{public}@", log: notificationsLog, type: .info, delay, attempt + 1, maxRetries, error.localizedDescription)
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    continue
+                } else {
+                    os_log("[NOTIF] fetch failed after %d retries: %{public}@", log: notificationsLog, type: .error, maxRetries, error.localizedDescription)
+                    throw error
+                }
+            }
         }
 
-        // Use legacy envelope decoder with fractional seconds support
-        let decoder = JSONDecoder()
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        decoder.dateDecodingStrategy = .custom { d in
-            let s = try d.singleValueContainer().decode(String.self)
-            guard let date = f.date(from: s) else {
-                throw DecodingError.dataCorrupted(.init(codingPath: d.codingPath, debugDescription: "Bad date \(s)"))
-            }
-            return date
-        }
-        
-        do {
-            let env = try decoder.decode(NotificationsEnvelopeLegacy.self, from: data)
-            
-            let actionRequired = env.incoming_requests ?? []
-            let updates = env.general_notifications ?? []
-            let unread = env.unread_count
-            
-            os_log("[NOTIF] using legacy envelope: incoming=%{public}d general=%{public}d unread=%{public}d", 
-                   log: notificationsLog, type: .info, actionRequired.count, updates.count, unread)
-            
-            // Convert to NotificationItem format for compatibility
-            var allItems: [NotificationItem] = []
-            var failedCount = 0
-            
-            // Map incoming_requests to actionable items
-            for row in actionRequired {
-                do {
-                    let item = try convertLegacyToItem(row, category: .actionable)
-                    allItems.append(item)
-                } catch {
-                    failedCount += 1
-                    os_log("[NOTIF][MAP_ERROR] actionable id=%{public}@ error=%{public}@", 
-                           log: notificationsLog, type: .error, row.id.uuidString, String(describing: error))
-                }
-            }
-            
-            // Map general_notifications to informational items
-            for row in updates {
-                do {
-                    let item = try convertLegacyToItem(row, category: .informational)
-                    allItems.append(item)
-                } catch {
-                    failedCount += 1
-                    os_log("[NOTIF][MAP_ERROR] informational id=%{public}@ error=%{public}@", 
-                           log: notificationsLog, type: .error, row.id.uuidString, String(describing: error))
-                }
-            }
-            
-            os_log("[NOTIF][MAP] mapped=%{public}d failed=%{public}d total=%{public}d", 
-                   log: notificationsLog, type: .info, allItems.count, failedCount, actionRequired.count + updates.count)
-            
-            return NotificationListResponse(unreadCount: unread, items: allItems)
-        } catch {
-            os_log("[NOTIF][DECODE_ERROR] %{public}@", log: notificationsLog, type: .error, String(describing: error))
-            let raw = String(data: data, encoding: .utf8) ?? "<non-utf8>"
-            let preview = String(raw.prefix(2048))
-            os_log("[NOTIF][RAW] %{public}@", log: notificationsLog, type: .debug, preview)
-            throw error
-        }
+        // Unreachable
+        throw ApiServiceError.unknownError
     }
     
     private func convertLegacyToItem(_ row: NotificationRowLegacy, category: NotificationCategory) throws -> NotificationItem {
@@ -1555,6 +1604,10 @@ class ApiService: ObservableObject {
             let owner: Profile?
             let user_reservation: ReservationSummary?
             let address_line: String?
+            // New fields from backend join for user identity
+            let user_id: String?
+            let user_name: String?
+            let user_avatar: String?
         }
         
         struct FeedResponse: Decodable {
@@ -1616,6 +1669,31 @@ class ApiService: ObservableObject {
                 approxLocation = nil
             }
             
+            // Build owner profile from either nested owner or flat user_* fields
+            let synthesizedOwner: Profile? = {
+                if let o = serverPost.owner { return o }
+                let uid = serverPost.user_id?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let uname = (serverPost.user_name ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let avatarString = serverPost.user_avatar?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let uid, !uid.isEmpty, (!uname.isEmpty || (avatarString?.isEmpty == false)) {
+                    // Naively split name to first/last for Profile
+                    let parts = uname.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+                    let first = parts.first.map(String.init)
+                    let last = (parts.count > 1) ? String(parts[1]) : nil
+                    return Profile(
+                        id: uid,
+                        firstName: first,
+                        lastName: last,
+                        city: nil,
+                        avatarUrl: avatarString.flatMap { URL(string: $0) },
+                        givenCount: nil,
+                        pickedCount: nil,
+                        phone: nil
+                    )
+                }
+                return nil
+            }()
+
             return Post(
                 id: serverPost.id,
                 title: serverPost.title,
@@ -1631,7 +1709,7 @@ class ApiService: ObservableObject {
                 addressLine: serverPost.address_line,
                 images: images,
                 distance: serverPost.distance?.value,
-                owner: serverPost.owner,
+                owner: synthesizedOwner,
                 userReservation: serverPost.user_reservation
             )
         }
@@ -1690,12 +1768,16 @@ class ApiService: ObservableObject {
             let contact_phone: String?
             let post: ServerPost?
             let usedLegacyPostKey: Bool
+            // User identity fields provided by backend for owner
+            let owner_name: String?
+            let owner_avatar: String?
 
             enum CodingKeys: String, CodingKey {
                 case id, item_id, reserver, status, requested_at, approved_at, start_at, end_at, canceled_at
                 case picked_up_at, picked_at
                 case contact_phone
                 case post, posts
+                case owner_name, owner_avatar
             }
 
             init(from d: Decoder) throws {
@@ -1723,6 +1805,10 @@ class ApiService: ObservableObject {
                     self.post = nil
                     usedLegacyPostKey = false
                 }
+
+                // Initialize optional owner identity fields
+                owner_name = try c.decodeIfPresent(String.self, forKey: .owner_name)
+                owner_avatar = try c.decodeIfPresent(String.self, forKey: .owner_avatar)
             }
         }
         struct ReservationsResponse: Decodable {
@@ -1810,6 +1896,28 @@ class ApiService: ObservableObject {
             let ownerId = (serverPost.owner?.id ?? serverPost.ownerId ?? r.item_id)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 
+            // Synthesize owner profile from reservation owner_name/owner_avatar if available
+            let synthesizedOwner: Profile? = {
+                let name = r.owner_name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let avatar = r.owner_avatar?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let hasAny = !name.isEmpty || (avatar?.isEmpty == false)
+                guard hasAny else { return serverPost.owner }
+                // Split into first/last components
+                let parts = name.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+                let first = parts.first.map(String.init)
+                let last = (parts.count > 1) ? String(parts[1]) : nil
+                return Profile(
+                    id: ownerId,
+                    firstName: first,
+                    lastName: last,
+                    city: nil,
+                    avatarUrl: avatar.flatMap { URL(string: $0) },
+                    givenCount: nil,
+                    pickedCount: nil,
+                    phone: nil
+                )
+            }()
+
             let post = Post(
                 id: serverPost.id ?? r.item_id,
                 title: title,
@@ -1825,7 +1933,7 @@ class ApiService: ObservableObject {
                 addressLine: serverPost.addressLine,
                 images: images,
                 distance: serverPost.distance?.value,
-                owner: serverPost.owner,
+                owner: synthesizedOwner ?? serverPost.owner,
                 userReservation: nil
             )
             LocationCache.shared.store(post: post)

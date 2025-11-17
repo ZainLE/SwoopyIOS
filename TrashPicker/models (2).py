@@ -26,6 +26,12 @@ class ReservationStatus(str, Enum):
 
 
 class NotificationType(str, Enum):
+    # New types per spec
+    STREET_PICKUP_CONFIRMED = 'street_pickup_confirmed'
+    HOME_PICKUP_REQUEST = 'home_pickup_request'
+    REQUEST_DECLINED = 'request_declined'
+    REQUEST_CANCELLED_AFTER_ACCEPTANCE = 'request_cancelled_after_acceptance'
+    # Legacy types (for backward compatibility)
     NEW_REQUEST = 'new_request'
     STREET_RESERVED = 'street_reserved'
     REQUEST_APPROVED = 'request_approved'
@@ -33,6 +39,25 @@ class NotificationType(str, Enum):
     REQUEST_WITHDRAWN = 'request_withdrawn'
     REQUEST_EXPIRED = 'request_expired'
     PICKUP_COMPLETED = 'pickup_completed'
+
+
+class NotificationCategory(str, Enum):
+    ACTIONABLE = 'actionable'
+    INFORMATIONAL = 'informational'
+
+
+class NotificationState(str, Enum):
+    PENDING_APPROVAL = 'pending_approval'
+    ACCEPTED = 'accepted'
+    RESOLVED_COMPLETED = 'resolved_completed'
+    RESOLVED_DECLINED = 'resolved_declined'
+    RESOLVED_CANCELLED_BY_GIVER = 'resolved_cancelled_by_giver'
+
+
+class PersistenceType(str, Enum):
+    REAL_TIME = 'real_time'
+    ACTIVE_VIEW = 'active_view'
+    INFINITE = 'infinite'
 
 
 # Models
@@ -126,13 +151,19 @@ class Notification(BaseModel):
     id: UUID
     recipient_user_id: UUID
     type: NotificationType
+    category: NotificationCategory
+    state: Optional[NotificationState] = None  # Only for actionable
+    is_read: bool = False
+    persistence_type: PersistenceType
+    persistence_seconds: Optional[int] = None
     reservation_id: Optional[UUID] = None
     post_id: Optional[UUID] = None
     counterparty_user_id: Optional[UUID] = None
     contact_phone: Optional[str] = None  # Only set for request_approved to the requester
     created_at: datetime
-    read_at: Optional[datetime] = None
-    meta: Optional[dict] = None  # JSONB for optional small extras
+    read_at: Optional[datetime] = None  # Legacy field
+    payload: Optional[dict] = None  # JSONB with names, photos, item summary, phone if applicable
+    meta: Optional[dict] = None  # JSONB for optional small extras (legacy)
 
 
 class IncomingRequest(BaseModel):

@@ -107,6 +107,7 @@ struct NotificationPayload: Hashable {
     let itemTitle: String?
     let itemThumbnailUrl: String?
     let warningFlag: Bool?
+    let mode: String?  // "home" or "street"
 
     init(raw: [String: AnyCodable]?) {
         ownerPhone = raw?.string("owner_phone") ?? raw?.string("ownerPhone")
@@ -118,6 +119,7 @@ struct NotificationPayload: Hashable {
         itemTitle = raw?.string("item_title") ?? raw?.string("itemTitle")
         itemThumbnailUrl = raw?.string("item_thumbnail_url") ?? raw?.string("itemThumbnailUrl")
         warningFlag = raw?.bool("show_contact_warning") ?? raw?.bool("warningFlag")
+        mode = raw?.string("mode") ?? raw?.string("pickup_mode") ?? raw?.string("pickupMode")
     }
 }
 
@@ -326,7 +328,8 @@ struct NotificationRowLegacy: Decodable {
             itemTitle: post.title,
             itemThumbURL: nil,  // Legacy doesn't provide thumbnail
             persistenceType: persistenceType,
-            persistenceSeconds: persistenceSeconds
+            persistenceSeconds: persistenceSeconds,
+            mode: post.mode  // Extract from legacy post
         )
     }
     
@@ -367,6 +370,7 @@ struct AppNotification: Identifiable, Hashable {
     let itemThumbURL: URL?
     let persistenceType: PersistenceType
     let persistenceSeconds: Int?
+    let mode: String?  // "home" or "street"
 
     var isUnread: Bool { !isRead }
     var isActionable: Bool { category == .actionable }

@@ -75,6 +75,9 @@ struct NotificationsViewNew: View {
         .onAppear {
             CameraSessionManager.shared.stop()
         }
+        .onDisappear {
+            viewModel.cancelPendingRequests()
+        }
         .task {
             await refreshAndLogCurrentTab()
         }
@@ -158,7 +161,7 @@ struct NotificationsViewNew: View {
         } else {
             requestsListView(viewModel.actionable)
                 .onAppear {
-                    Task { await viewModel.refresh() }
+                    viewModel.refresh()
                 }
         }
     }
@@ -174,7 +177,7 @@ struct NotificationsViewNew: View {
         } else {
             notificationsListView(viewModel.informational)
                 .onAppear {
-                    Task { await viewModel.refresh() }
+                    viewModel.refresh()
                 }
         }
     }
@@ -216,16 +219,24 @@ struct NotificationsViewNew: View {
         ScrollView {
             LazyVStack(spacing: 16) {
                 ForEach(notifications) { notification in
-                    RequestRow(
+                    ActionableNotificationRow(
                         notification: notification,
-                        timeAgo: relativeTime(from: notification.createdAt),
-                        isProcessing: processingRequestIds.contains(notification.id),
+                        relativeTime: relativeTime(from: notification.createdAt),
+                        isPerformingAction: processingRequestIds.contains(notification.id),
                         onApprove: {
                             pendingApprovalNotification = notification
                             showApprovalPrompt = true
                         },
-                        onSkip: {
-                            Task { await skipNotification(notification) }
+                        onReject: {
+                            Task { await rejectNotification(notification) }
+                        },
+                        onContact: {
+                            if let phone = notification.exposedContactPhone {
+                                dialPhoneNumber(phone)
+                            }
+                        },
+                        onCancel: {
+                            Task { await cancelNotification(notification) }
                         }
                     )
                     .padding(.horizontal, 16)
@@ -308,7 +319,7 @@ struct NotificationsViewNew: View {
             try await viewModel.approve(notification)
             showToast("Approved — your contact was shared")
             NotificationCenter.default.post(name: .refreshReservations, object: reservationId.uuidString)
-            await refreshAndLogCurrentTab()
+            // No navigation - state updates inline
         } catch {
             #if DEBUG
             DLog("[NOTIFICATIONS] Approve error: \(error.localizedDescription)")
@@ -320,7 +331,6 @@ struct NotificationsViewNew: View {
             if isAlreadyHandled(error) {
                 showToast("Already approved")
                 NotificationCenter.default.post(name: .refreshReservations, object: reservationId.uuidString)
-                await refreshAndLogCurrentTab()
                 return
             }
             showToast("Couldn't approve request")
@@ -328,7 +338,7 @@ struct NotificationsViewNew: View {
     }
     
     @MainActor
-    private func skipNotification(_ notification: AppNotification) async {
+    private func rejectNotification(_ notification: AppNotification) async {
         guard let reservationId = notification.reservationId else { return }
         Metrics.notificationsDeclineTap(
             reservationId: reservationId.uuidString,
@@ -337,14 +347,32 @@ struct NotificationsViewNew: View {
         processingRequestIds.insert(notification.id)
         defer { processingRequestIds.remove(notification.id) }
         do {
-            try await viewModel.skip(notification)
+            try await viewModel.reject(notification)
             showToast("Request declined")
-            await refreshAndLogCurrentTab()
+            // Row removed immediately by ViewModel
         } catch {
 #if DEBUG
-            DLog("[NOTIFICATIONS] Skip error: \(error.localizedDescription)")
+            DLog("[NOTIFICATIONS] Reject error: \(error.localizedDescription)")
 #endif
             showToast("Couldn't decline request")
+        }
+    }
+    
+    @MainActor
+    private func cancelNotification(_ notification: AppNotification) async {
+        guard let reservationId = notification.reservationId else { return }
+        processingRequestIds.insert(notification.id)
+        defer { processingRequestIds.remove(notification.id) }
+        do {
+            try await viewModel.cancel(notification)
+            showToast("Reservation canceled")
+            NotificationCenter.default.post(name: .refreshReservations, object: reservationId.uuidString)
+            // Row removed immediately by ViewModel
+        } catch {
+#if DEBUG
+            DLog("[NOTIFICATIONS] Cancel error: \(error.localizedDescription)")
+#endif
+            showToast("Couldn't cancel reservation")
         }
     }
     
@@ -488,7 +516,7 @@ struct NotificationsViewNew: View {
     }
     
     private func refreshAndLogCurrentTab(force: Bool = false) async {
-        await viewModel.refresh(force: force)
+        viewModel.refresh(force: force)
         logTabViewed(selectedTab)
     }
 
@@ -500,105 +528,6 @@ struct NotificationsViewNew: View {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: Date())
-    }
-}
-
-// MARK: - Request Row
-
-private struct RequestRow: View {
-    let notification: AppNotification
-    let timeAgo: String
-    let isProcessing: Bool
-    let onApprove: () -> Void
-    let onSkip: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                avatarView
-                    .frame(width: 52, height: 52)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(notification.itemTitle ?? "Home pickup request")
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
-
-                    Text(notification.counterpartyName ?? "Someone")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundColor(AppTheme.ColorToken.primary)
-
-                    Text(timeAgo)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                Spacer()
-
-                if isProcessing {
-                    ProgressView()
-                        .scaleEffect(0.75)
-                        .tint(AppTheme.ColorToken.primary)
-                }
-
-                modePill(label: "Home pickup")
-            }
-
-            HStack(spacing: 12) {
-                Button("Approve", action: onApprove)
-                    .buttonStyle(SwoopyPrimaryButtonStyle(minHeight: 44))
-                    .disabled(isProcessing || notification.reservationId == nil)
-                    .opacity(isProcessing ? 0.6 : 1.0)
-
-                Button("Reject", action: onSkip)
-                    .buttonStyle(SwoopyOutlineButtonStyle(minHeight: 44))
-                    .disabled(isProcessing || notification.reservationId == nil)
-                    .opacity(isProcessing ? 0.6 : 1.0)
-            }
-        }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color(.systemBackground))
-        )
-        .shadow(color: .black.opacity(0.05), radius: 12, y: 4)
-        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(notification.counterpartyName ?? "Someone") requesting \(notification.itemTitle ?? "a pickup")")
-        .accessibilityHint("Approve or reject request")
-    }
-
-    @ViewBuilder
-    private var avatarView: some View {
-        if let url = notification.counterpartyAvatarURL {
-            AsyncImage(url: url) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                Circle().fill(Color.gray.opacity(0.2))
-                    .overlay(Image(systemName: "person.fill").foregroundColor(.gray))
-            }
-            .clipShape(Circle())
-        } else {
-            Circle()
-                .fill(Color.gray.opacity(0.2))
-                .overlay(Image(systemName: "person.fill").foregroundColor(.gray))
-        }
-    }
-    
-    @ViewBuilder
-    private func modePill(label: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "house.fill")
-                .font(.system(size: 12, weight: .semibold))
-            Text(label)
-                .font(.caption)
-                .fontWeight(.semibold)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(AppTheme.ColorToken.primary.opacity(0.12))
-        .foregroundColor(AppTheme.ColorToken.primary)
-        .clipShape(Capsule())
     }
 }
 

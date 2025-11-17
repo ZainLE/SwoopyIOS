@@ -11,7 +11,6 @@ private let reportActionCornerRadius: CGFloat = 24
 @MainActor
 final class ProfileVM: ObservableObject {
     @Published var userEmail: String = ""
-    @Published var displayName: String = ""
     @Published var createdAt: Date?
     @Published var uploadsCount: Int?
     @Published var reservationsCount: Int?
@@ -41,9 +40,6 @@ final class ProfileVM: ObservableObject {
         // Get data from Supabase session (already in memory, instant)
         if let session = supabaseService.session {
             userEmail = session.user.email ?? "No email"
-            displayName = session.user.userMetadata["full_name"]?.description
-                ?? session.user.userMetadata["name"]?.description
-                ?? "Your Name"
             createdAt = session.user.createdAt
         }
         
@@ -166,6 +162,7 @@ struct ProfileView: View {
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var api: ApiService
     @StateObject private var viewModel: ProfileVM
+    @StateObject private var profileManager: ProfileManager
     @EnvironmentObject var notificationService: ReservationNotificationService
     @State private var showingSignOutError = false
     @State private var reportCategory: String?
@@ -181,9 +178,9 @@ struct ProfileView: View {
     @State private var reportSuccessDismissTask: Task<Void, Never>?
     
     init() {
-        // We'll need to inject the service in the view's initializer or use a different approach
-        // For now, we'll create the viewModel in onAppear
+        // Initialize both view models with shared services
         self._viewModel = StateObject(wrappedValue: ProfileVM(supabaseService: SupabaseService.shared))
+        self._profileManager = StateObject(wrappedValue: ProfileManager(apiService: ApiService(supabaseService: SupabaseService.shared)))
     }
     
     var body: some View {
@@ -208,6 +205,7 @@ struct ProfileView: View {
                 viewModel.startProfileRefresh(force: true)
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 await viewModel.load()
+                await profileManager.loadProfile()
                 await reloadNotificationBadges()
             }
         }
@@ -253,6 +251,7 @@ struct ProfileView: View {
         .onAppear {
             Task {
                 await viewModel.load()
+                await profileManager.loadProfile()
                 await reloadNotificationBadges()
             }
             viewModel.startProfileRefresh()
@@ -341,12 +340,29 @@ struct ProfileView: View {
         Section {
             ZStack {
                 HStack(spacing: 16) {
-                    Image(systemName: "person.circle.fill")
-                        .font(.system(size: 48))
-                        .foregroundColor(AppColor.brandGreen)
+                    // Avatar with fallback to system icon
+                    Group {
+                        if let avatarUrl = profileManager.avatarUrl, let url = URL(string: avatarUrl) {
+                            AsyncImage(url: url) { image in
+                                image
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                            } placeholder: {
+                                Image(systemName: "person.circle.fill")
+                                    .font(.system(size: 48))
+                                    .foregroundColor(AppColor.brandGreen)
+                            }
+                            .frame(width: 48, height: 48)
+                            .clipShape(Circle())
+                        } else {
+                            Image(systemName: "person.circle.fill")
+                                .font(.system(size: 48))
+                                .foregroundColor(AppColor.brandGreen)
+                        }
+                    }
                     
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(viewModel.displayName)
+                        Text(profileManager.displayName)
                             .font(AppFont.h3)
                             .foregroundColor(AppColor.text)
                         

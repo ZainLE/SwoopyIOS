@@ -8,6 +8,9 @@ final class NotificationsTabViewModel: ObservableObject {
     @Published var error: String?
     @Published var toastMessage: String?
     @Published private(set) var performingActionIDs: Set<String> = []
+    // Keep track of IDs removed or resolved so they don't reappear after refresh
+    @Published private(set) var dismissedIDs: Set<String> = []
+    @Published private(set) var resolvedIDs: Set<String> = []
     
     private let service: NotificationService
     private var timerTask: Task<Void, Never>?
@@ -51,22 +54,29 @@ final class NotificationsTabViewModel: ObservableObject {
 
     func accept(_ notification: AppNotification) async {
         guard let reservationId = notification.reservationId else { return }
+        // Optimistic: flip to accepted
+        let previous = notification
+        replaceActionable(notification.updating(state: .accepted))
         setAction(notification.id, active: true)
         defer { setAction(notification.id, active: false) }
         do {
             try await service.approve(reservationId: reservationId)
-            replaceActionable(notification.updating(state: .accepted))
-            showToast("Request accepted")
+            showToast("Approved")
         } catch {
-            showToast("Couldn't accept request")
+            // Rollback on failure
+            replaceActionable(previous)
+            showToast("Couldn't approve")
         }
     }
     
     func skip(_ notification: AppNotification) {
+        // Optimistic remove and remember dismissal
+        dismissedIDs.insert(notification.id)
         actionRequired.removeAll { $0.id == notification.id }
         Task {
             try? await service.markRead(id: notification.id)
         }
+        showToast("Request declined")
     }
     
     func confirmPickup(_ notification: AppNotification) async {
@@ -76,6 +86,7 @@ final class NotificationsTabViewModel: ObservableObject {
         do {
             try await service.complete(reservationId: reservationId)
             actionRequired.removeAll { $0.id == notification.id }
+            resolvedIDs.insert(notification.id)
             showToast("Pickup confirmed")
         } catch {
             showToast("Couldn't confirm pickup")
@@ -84,14 +95,20 @@ final class NotificationsTabViewModel: ObservableObject {
     
     func cancelAccepted(_ notification: AppNotification) async {
         guard let reservationId = notification.reservationId else { return }
+        // Optimistic: remove from list (recommended behavior)
+        actionRequired.removeAll { $0.id == notification.id }
+        resolvedIDs.insert(notification.id)
         setAction(notification.id, active: true)
         defer { setAction(notification.id, active: false) }
         do {
             try await service.cancel(reservationId: reservationId)
-            actionRequired.removeAll { $0.id == notification.id }
-            showToast("Reservation canceled")
+            showToast("Approval canceled")
         } catch {
-            showToast("Couldn't cancel reservation")
+            // Rollback on failure: put back if it wasn't filtered out
+            if !actionRequired.contains(where: { $0.id == notification.id }) {
+                actionRequired.append(notification)
+            }
+            showToast("Couldn't cancel")
         }
     }
     
@@ -130,20 +147,26 @@ final class NotificationsTabViewModel: ObservableObject {
     }
     
     private func apply(_ notifications: [AppNotification]) {
-        let actionable = notifications.filter { $0.category == .actionable }
-        let informational = notifications.filter { $0.category == .informational }
-        
-        actionRequired = actionable.sorted { (lhs: AppNotification, rhs: AppNotification) -> Bool in
-            return lhs.createdAt < rhs.createdAt
+        // Tabs are filters over the same in-memory store
+        let actionableHome = notifications.filter {
+            $0.category == .actionable && $0.type == .home_pickup_request
         }
-        
-        information = informational.sorted(by: { (lhs: AppNotification, rhs: AppNotification) -> Bool in
-            if lhs.isUnread != rhs.isUnread {
-                return lhs.isUnread && !rhs.isUnread
-            }
+        // Action Required shows only pending_approval by default; accepted may be present due to optimistic updates
+        let actionableFiltered = actionableHome.filter { $0.state == .pending_approval || $0.state == .accepted }
+            .filter { !dismissedIDs.contains($0.id) && !resolvedIDs.contains($0.id) }
+
+        let informational = notifications.filter { $0.category == .informational }
+            .filter { !dismissedIDs.contains($0.id) && !resolvedIDs.contains($0.id) }
+
+        actionRequired = actionableFiltered.sorted { lhs, rhs in
+            lhs.createdAt < rhs.createdAt
+        }
+
+        information = informational.sorted { lhs, rhs in
+            if lhs.isUnread != rhs.isUnread { return lhs.isUnread && !rhs.isUnread }
             return lhs.createdAt > rhs.createdAt
-        })
-        
+        }
+
         activeViewSeconds = [:]
     }
     

@@ -194,14 +194,15 @@ struct BigCardOverlay: View {
         GeometryReader { outerGeometry in
             let cardWidth = min(outerGeometry.size.width * 0.92, 600)
             let isSmall = outerGeometry.size.height < 700
-            let cardHeight = outerGeometry.size.height * (isSmall ? 0.82 : 0.85)
+            let cardHeight = outerGeometry.size.height * (isSmall ? 0.8 : 0.85)
             let safeTop = outerGeometry.safeAreaInsets.top
            
             // Exact 50/50 split for image/details
             GeometryReader { innerGeometry in
                 let showHero = shouldShowHeroCarousel
-                let heroHeight = showHero ? min(200, floor(innerGeometry.size.height * 0.45)) : 0
-                let detailsHeight = innerGeometry.size.height - (showHero ? heroHeight : 0)
+                let heroRatio: CGFloat = showHero ? (isSmall ? 0.58 : 0.6) : 0
+                let heroHeight = showHero ? max(220, floor(innerGeometry.size.height * heroRatio)) : 0
+                let detailsHeight = innerGeometry.size.height - heroHeight
                 
                 VStack(spacing: 0) {
                     if showHero {
@@ -249,7 +250,7 @@ struct BigCardOverlay: View {
             .shadow(color: .black.opacity(0.12), radius: 24, x: 0, y: 8)
             .offset(y: dragOffset.height)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .padding(.top, safeTop + (isSmall ? 32 : 44))
+            .padding(.top, safeTop + (isSmall ? 10 : 18))
             .gesture(
                 DragGesture()
                     .onChanged { value in

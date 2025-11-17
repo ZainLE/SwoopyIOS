@@ -1307,13 +1307,13 @@ extension SwipeDeckView {
                         Label("Make a post", systemImage: "camera.fill")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(PrimaryCTA())
+                    .buttonStyle(SwoopyPrimaryButtonStyle(minHeight: 48))
                     
                     Button(action: refresh) {
                         Label("Refresh", systemImage: "arrow.clockwise")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(OutlinePill())
+                    .buttonStyle(SwoopyOutlineButtonStyle(minHeight: 48))
                 }
                 .padding(.top, 4)
             }

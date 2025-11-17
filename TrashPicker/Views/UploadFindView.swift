@@ -118,6 +118,7 @@ struct UploadFindView: View {
             .onChange(of: isPhotoPickerPresented) { isPresented in
                 if !isPresented { activePhotoIndex = nil }
             }
+        
     }
 
     private var content: some View {
@@ -690,10 +691,10 @@ struct UploadFindView: View {
     // MARK: Labels & helpers
 
     private func sectionLabel(_ text: String, required: Bool) -> some View {
-        HStack(spacing: 4) {
-            Text(text).font(.subheadline.weight(.semibold))
-            if required { Text("*").foregroundStyle(.red).font(.subheadline.weight(.semibold)) }
-        }.frame(maxWidth: .infinity, alignment: .leading)
+        // `required` remains for semantic clarity, but we no longer show the red asterisk.
+        Text(text)
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func helper(_ text: String) -> some View {

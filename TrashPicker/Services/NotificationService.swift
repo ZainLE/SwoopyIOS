@@ -113,7 +113,8 @@ final class NotificationService: NotificationProviding {
             itemTitle: title,
             itemThumbURL: thumbURL,
             persistenceType: persistenceType,
-            persistenceSeconds: persistenceSeconds
+            persistenceSeconds: persistenceSeconds,
+            mode: payloadModel?.mode  // Extract from payload
         )
     }
 

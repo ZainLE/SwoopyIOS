@@ -24,7 +24,11 @@ final class ReservationNotificationService: ObservableObject {
         let actionable = notifications.filter { $0.category == .actionable }
         let informational = notifications.filter { $0.category == .informational }
 
-        requestsCount = actionable.filter { $0.isUnread }.count
+        // Badge count: unread actionable pending HOME requests only
+        requestsCount = actionable
+            .filter { $0.type == .home_pickup_request && $0.state == .pending_approval }
+            .filter { $0.isUnread }
+            .count
         unreadCount = informational.filter { $0.isUnread }.count
         Metrics.notificationsBadgeCountUpdated(count: requestsCount)
         updateContactPhones(with: notifications)

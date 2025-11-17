@@ -266,13 +266,8 @@ final class OnboardingViewModel: ObservableObject {
         
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw SimpleError(message: "Network error") }
-        
+
         guard (200...299).contains(http.statusCode) else {
-            #if DEBUG
-            if http.statusCode == 404 {
-                print("[Onboarding] ⚠️ 404 on \(url.absoluteString) - check path configuration")
-            }
-            #endif
             let friendlyMsg = APIErrorMapper.friendlyMessage(http: http, data: data)
             throw SimpleError(message: friendlyMsg)
         }

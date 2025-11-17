@@ -44,10 +44,11 @@ struct CustomAppleSignInButton: View {
                     .font(.system(size: 17, weight: .semibold))
             }
             .foregroundColor(style.foregroundColor)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .padding(.horizontal, 20)
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .padding(.horizontal, 20)
+        .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .background(
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(style.backgroundColor)
