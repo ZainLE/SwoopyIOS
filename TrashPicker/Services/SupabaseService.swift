@@ -14,6 +14,20 @@ enum AuthPhase {
     case signedIn
 }
 
+#if DEBUG
+extension SupabaseService {
+    /// Convenience helper to dump the current access token for manual API testing
+    @MainActor
+    func debugPrintAccessToken(label: String = "Access Token") {
+        if let token = session?.accessToken, !token.isEmpty {
+            DLog("[DEBUG] \(label):\n\(token)")
+        } else {
+            DLog("[DEBUG] \(label): <no active session token>")
+        }
+    }
+}
+#endif
+
 // MARK: - SupabaseService
 
 @MainActor
@@ -710,6 +724,26 @@ final class SupabaseService: NSObject, ObservableObject {
         } catch {
             AppLogger.logProfile("Profile fetch failed: \(error.localizedDescription)", level: .error)
             
+            // New users may not have a profile row yet; treat that as an empty profile to drive onboarding
+            if isProfileMissingError(error) {
+                let placeholder = ProfileDTO(
+                    id: uid,
+                    fullName: nil,
+                    firstName: nil,
+                    lastName: nil,
+                    phone: nil,
+                    avatarUrl: nil,
+                    city: nil,
+                    onboardingCompleted: false,
+                    updatedAt: nil
+                )
+                serverProfile = placeholder
+                cachedProfile = placeholder
+                profileLoadState = .loaded
+                AppLogger.logProfile("Profile missing on server; using placeholder to enter onboarding", level: .notice)
+                return
+            }
+            
             // Offline fallback: use cached profile if available
             if let cached = cachedProfile {
                 AppLogger.logProfile("Using cached profile as fallback", level: .notice)
@@ -719,6 +753,14 @@ final class SupabaseService: NSObject, ObservableObject {
                 profileLoadState = .failed(error)
             }
         }
+    }
+    
+    private func isProfileMissingError(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("no rows") ||
+        message.contains("0 rows") ||
+        message.contains("not found") ||
+        message.contains("json object requested")
     }
     
     /// Update profile with onboarding completion flag

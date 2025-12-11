@@ -159,34 +159,15 @@ struct OTPVerificationView: View {
             } else if let current = try? await svc.client.auth.session {
                 svc.setSession(current)
             }
-            
-            // Check if profile exists
-            let hasProfile = try await profileExists(for: response.user.id)
-            
-            if hasProfile {
-                // User has profile, mark profile complete and go to main
-                appFlow.markProfileComplete()
-            } else {
-                // New user, needs onboarding - AppFlowCoordinator will handle this
-                // The coordinator will detect no profile and show profileCapture phase
-            }
-            
+
+            // Fetch latest profile; AppFlowCoordinator will route to profile capture/onboarding as needed
+            await svc.fetchProfile()
+
             dismiss()
         } catch {
             errorMessage = "Invalid code. Please try again."
             isVerifying = false
         }
-    }
-    
-    private func profileExists(for userId: UUID) async throws -> Bool {
-        let response: PostgrestResponse<[String: String]> = try await svc.client
-            .from("profiles")
-            .select("id")
-            .eq("id", value: userId.uuidString)
-            .limit(1)
-            .execute()
-        
-        return !response.value.isEmpty
     }
 }
 
@@ -200,8 +181,10 @@ private struct OTPInputView: View {
     
     var body: some View {
         HStack(spacing: 10) {
-            // Highlight the box being edited: last entered when typing, first when empty, last when full
-            let activeIndex = min(max(otpCode.count - 1, 0), otpLength - 1)
+            // Highlight the next slot to be filled; if full, keep the last box active
+            let activeIndex = otpCode.isEmpty
+                ? 0
+                : min(otpCode.count, otpLength - 1)
             ForEach(0..<otpLength, id: \.self) { index in
                 OTPDigitBox(
                     digit: digitAt(index),
@@ -243,12 +226,16 @@ private struct OTPDigitBox: View {
     
     var body: some View {
         ZStack {
+            let activeColor = BrandStyles.brandGreen
+            let filledColor = AppTheme.ColorToken.stroke
+            let emptyColor = Color.gray.opacity(0.25)
+            
             RoundedRectangle(cornerRadius: 14)
                 .fill(Color(.systemBackground))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14)
                         .stroke(
-                            isActive ? Color("BrandGreen") /* fallback: Color(#colorLiteral(red: 0, green: 0.317, blue: 0.247, alpha: 1)) */ : Color.gray.opacity(0.25),
+                            isActive ? activeColor : (digit != nil ? filledColor : emptyColor),
                             lineWidth: isActive ? 2 : 1
                         )
                 )
@@ -269,4 +256,3 @@ private struct OTPDigitBox: View {
         .environmentObject(SupabaseService.shared)
         .environmentObject(AppFlowCoordinator())
 }
-

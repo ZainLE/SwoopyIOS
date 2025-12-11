@@ -24,6 +24,8 @@ actor NotificationCache {
 
 @MainActor
 final class NotificationsScreenViewModel: ObservableObject {
+    private static var persistedDismissedIds: Set<String> = []
+
     @Published private(set) var actionable: [AppNotification] = []
     @Published private(set) var informational: [AppNotification] = []
     @Published private(set) var unreadCount: Int = 0
@@ -34,6 +36,7 @@ final class NotificationsScreenViewModel: ObservableObject {
     private let notificationService: NotificationProviding
     private weak var reservationService: ReservationNotificationService?
     private var cachedNotifications: [AppNotification] = []
+    private var locallyDismissedIds: Set<String> = []
     private var lastRefreshAt: Date?
     private var refreshEpoch: Int = 0
     private let refreshCooldown: TimeInterval = 2
@@ -41,30 +44,30 @@ final class NotificationsScreenViewModel: ObservableObject {
     // Task cancellation support
     private var fetchTask: Task<Void, Never>?
     private let cache = NotificationCache()
-    private let maxRetries = 2
+    private let maxRetries = 1
 
     init(notificationService: NotificationProviding, reservationService: ReservationNotificationService? = nil) {
         self.notificationService = notificationService
         self.reservationService = reservationService
+        self.locallyDismissedIds = NotificationsScreenViewModel.persistedDismissedIds
     }
 
     /// Refresh notifications with proper cancellation, caching, and retry logic
     func refresh(force: Bool = false) {
         let now = Date()
-        
-        // Cancel any existing fetch
-        fetchTask?.cancel()
-        
-        // Debounce non-forced refreshes
-        if !force, let last = lastRefreshAt, now.timeIntervalSince(last) < refreshCooldown {
+        if let last = lastRefreshAt, now.timeIntervalSince(last) < refreshCooldown {
             #if DEBUG
-            DLog("[NOTIF] debounced refresh (last=\(now.timeIntervalSince(last))s ago)")
+            DLog("[NOTIF] refresh skipped (debounced <\(refreshCooldown)s)")
             #endif
             return
         }
         
+        // Cancel any existing fetch
+        fetchTask?.cancel()
+        
         // Try to load from cache first for instant UI
         fetchTask = Task { @MainActor in
+            lastRefreshAt = now
             // Show cached data immediately if available
             if let cached = await cache.get() {
                 #if DEBUG
@@ -164,14 +167,24 @@ final class NotificationsScreenViewModel: ObservableObject {
                 #endif
                 apply(notifications: cached.items)
                 self.unreadCount = cached.unreadCount
-                self.error = "Using cached data"
+                self.error = friendlyMessage(for: error) ?? "Using cached data"
             } else {
-                self.error = "Could not load notifications"
+                self.error = friendlyMessage(for: error) ?? "Could not load notifications"
             }
             isLoading = false
         }
         
         isRefreshing = false
+    }
+
+    private func friendlyMessage(for error: Error) -> String? {
+        if let httpError = error as? ApiHTTPError, httpError.statusCode == 502 {
+            return "Notifications are temporarily unavailable. Please try again soon."
+        }
+        if let apiError = error as? ApiServiceError, case .serverError(let message) = apiError, message.contains("502") {
+            return "Notifications are temporarily unavailable. Please try again soon."
+        }
+        return nil
     }
     
     /// Fetch with exponential backoff retry logic
@@ -190,7 +203,9 @@ final class NotificationsScreenViewModel: ObservableObject {
             
         } catch is CancellationError {
             throw CancellationError()
-            
+        } catch let decodingError as DecodingError {
+            // Parsing failures won't be fixed by retrying
+            throw decodingError
         } catch {
             // Don't retry if we've hit max attempts
             guard attempt < maxRetries else {
@@ -282,10 +297,12 @@ final class NotificationsScreenViewModel: ObservableObject {
     private func apply(notifications: [AppNotification]) {
         assertMainThread("NotificationsScreenViewModel.apply")
         cachedNotifications = notifications
-        
+        purgeDismissedIds(using: notifications)
+        let visibleNotifications = filterLocallyDismissed(from: notifications)
+
         // CRITICAL FIX: Filter actionable to ONLY home pickups (exclude street pickups)
         // Include both pending_approval AND accepted states (for Contact/Cancel buttons)
-        actionable = notifications.filter { notification in
+        actionable = visibleNotifications.filter { notification in
             // NEVER show street pickups in Action Required
             guard notification.mode?.lowercased() != "street" else { return false }
             
@@ -295,7 +312,7 @@ final class NotificationsScreenViewModel: ObservableObject {
         }
         
         // Informational: Everything else (including ALL street pickups)
-        informational = notifications.filter { notification in
+        informational = visibleNotifications.filter { notification in
             // All street pickups go to informational
             if notification.mode?.lowercased() == "street" {
                 return true
@@ -311,7 +328,21 @@ final class NotificationsScreenViewModel: ObservableObject {
 
     private func removeNotification(id: String) {
         assertMainThread("NotificationsScreenViewModel.removeNotification")
+        locallyDismissedIds.insert(id)
+        NotificationsScreenViewModel.persistedDismissedIds = locallyDismissedIds
         cachedNotifications.removeAll { $0.id == id }
         apply(notifications: cachedNotifications)
+    }
+
+    private func filterLocallyDismissed(from notifications: [AppNotification]) -> [AppNotification] {
+        guard !locallyDismissedIds.isEmpty else { return notifications }
+        return notifications.filter { !locallyDismissedIds.contains($0.id) }
+    }
+
+    private func purgeDismissedIds(using notifications: [AppNotification]) {
+        guard !locallyDismissedIds.isEmpty else { return }
+        let serverIds = Set(notifications.map { $0.id })
+        locallyDismissedIds = locallyDismissedIds.intersection(serverIds)
+        NotificationsScreenViewModel.persistedDismissedIds = locallyDismissedIds
     }
 }

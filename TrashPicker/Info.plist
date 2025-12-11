@@ -20,9 +20,9 @@
 	<key>SmartlookProjectKey</key>
 	<string>6ca49e4d5c6c098cd2aee92d68dc987c0f8fc8fa</string>
 	<key>SupabaseAnonKey</key>
-	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzU5NjE1MjAwLCJleHAiOjE5MTczODE2MDB9.mSliAqP3d591IW4i8INqPxKQ_aYIHDNAiU3eBRkqNx4</string>
+	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh0eHJ1Z3RoYmRobGd5dHhzZ2VhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUzNTIyODAsImV4cCI6MjA4MDkyODI4MH0.HJrsde-KVDzF5Rjyw1UCfwkF842_aXcU-r9P8JkIiyc</string>
 	<key>SupabaseUrl</key>
-	<string>https://api.swoopy.eu</string>
+	<string>https://xtxrugthbdhlgytxsgea.supabase.co</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>

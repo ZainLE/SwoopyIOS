@@ -62,6 +62,7 @@ final class NotificationsTabViewModel: ObservableObject {
         do {
             try await service.approve(reservationId: reservationId)
             showToast("Approved")
+            await reloadNotifications()
         } catch {
             // Rollback on failure
             replaceActionable(previous)
@@ -74,7 +75,12 @@ final class NotificationsTabViewModel: ObservableObject {
         dismissedIDs.insert(notification.id)
         actionRequired.removeAll { $0.id == notification.id }
         Task {
-            try? await service.markRead(id: notification.id)
+            if let reservationId = notification.reservationId {
+                try? await service.cancel(reservationId: reservationId)
+            } else {
+                try? await service.markRead(id: notification.id)
+            }
+            await reloadNotifications()
         }
         showToast("Request declined")
     }
@@ -103,6 +109,7 @@ final class NotificationsTabViewModel: ObservableObject {
         do {
             try await service.cancel(reservationId: reservationId)
             showToast("Approval canceled")
+            await reloadNotifications()
         } catch {
             // Rollback on failure: put back if it wasn't filtered out
             if !actionRequired.contains(where: { $0.id == notification.id }) {
@@ -226,5 +233,13 @@ final class NotificationsTabViewModel: ObservableObject {
             performingActionIDs.remove(id)
         }
     }
+    
+    private func reloadNotifications() async {
+        do {
+            let notifications = try await service.fetchAll()
+            apply(notifications)
+        } catch {
+            // ignore sync failure; optimistic UI already updated
+        }
+    }
 }
-

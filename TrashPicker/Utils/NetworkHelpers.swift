@@ -36,6 +36,11 @@ func fetchWithRetry<T>(
                     try await svc.refreshSessionIfNeeded()
                     return try await operation()
                 } catch {
+                    // If refresh failed due to transient network issues, don't sign the user out
+                    let nsRefresh = error as NSError
+                    if nsRefresh.domain == NSURLErrorDomain {
+                        throw error
+                    }
                     await svc.signOut() // no-flash sign-out
                     Metrics.errorType("401_sessionExpired")
                     throw AuthError.sessionExpired

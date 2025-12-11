@@ -77,6 +77,7 @@ struct ReservationRow: Identifiable {
         max(0, expiresAt.timeIntervalSinceNow)
     }
 
+    @MainActor
     var distanceMeters: Double? {
         guard mode == .street else { return nil }
         guard let pickup = streetCoordinate else {
@@ -147,6 +148,11 @@ struct ReservationRow: Identifiable {
             return .active
         }
         return status
+    }
+    
+    var isCompletedRecently: Bool {
+        guard status == .picked, let pickedAt else { return false }
+        return Date().timeIntervalSince(pickedAt) < 120
     }
 }
 
@@ -405,7 +411,12 @@ struct ReservationsView: View {
     private func buildBigCardOverlay(for reservation: ReservationRow) -> some View {
         let overlayActionConfig = reservation.mode == .street ? actionConfiguration(for: reservation) : nil
         
-        return NavigationStack {
+        return ZStack {
+            Color.clear
+                .contentShape(Rectangle())
+                .ignoresSafeArea()
+                .onTapGesture { selectedReservation = nil }
+
             BigCardOverlay(
                 postID: reservation.id,
                 images: reservation.primaryImageURL.map { [$0.absoluteString] } ?? [],
@@ -436,8 +447,6 @@ struct ReservationsView: View {
                     handleReservationActionSwitch(action, reservation)
                 }
             )
-            .background(Color(.systemBackground))
-            .ignoresSafeArea()
         }
     }
 
@@ -580,6 +589,8 @@ struct ReservationsView: View {
                 onDismiss: { selectedReservation = nil }
             ) { reservation in
                 buildOverlay(reservation)
+                    .background(Color(.systemBackground).ignoresSafeArea())
+                    .padding(.top, 12) // nudge overlay down so X isn’t flush to top
             }
         }
     }
@@ -784,9 +795,14 @@ struct ReservationsView: View {
     // MARK: - Computed Sections
 
     private var visibleReservations: [ReservationRow] {
-        // Ensure no expired items slip through and keep newest first
-        reservations
-            .filter { !$0.isExpired }
+        // Show only pending/active; optionally show short-lived completed cards
+        let now = Date()
+        return reservations
+            .filter {
+                if $0.isExpired { return false }
+                if $0.isCompletedRecently { return true }
+                return $0.effectiveStatus == .pending || $0.effectiveStatus == .active
+            }
             .sorted { $0.requestedAt > $1.requestedAt }
     }
 
@@ -1104,7 +1120,7 @@ struct ReservationsView: View {
 
             Haptics.play(.success)
             removeReservation(reservationId: reservationId, postId: reservation.postId)
-            showToastMessage("Item marked as picked up")
+            showToastMessage("Reservation completed ✅")
 
             if ConsentManager.shared.analytics == .provided {
                 let userId = svc.userId?.uuidString ?? "unknown"
@@ -1120,7 +1136,7 @@ struct ReservationsView: View {
         } catch {
             if shouldTreatAsResolved(error) {
                 removeReservation(reservationId: reservationId, postId: reservation.postId)
-                showToastMessage("Reservation is no longer active.")
+                showToastMessage("Reservation completed ✅")
                 scheduleReservationsRefresh()
                 FeedViewModel.requestFeedRefresh()
             } else {

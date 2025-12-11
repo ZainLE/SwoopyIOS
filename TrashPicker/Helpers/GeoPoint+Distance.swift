@@ -21,6 +21,7 @@ extension GeoPoint {
     }
 
     /// Distance from the latest known user location, if permission allows.
+    @MainActor
     func distanceFromUser(using locationService: LocationService = .shared) -> CLLocationDistance? {
         guard CLLocationManager.locationServicesEnabled() else { return nil }
         let status = CLLocationManager.authorizationStatus()
@@ -32,6 +33,7 @@ extension GeoPoint {
     }
 
     /// Returns a localized "X.X km" string when the distance can be computed.
+    @MainActor
     func formattedDistanceFromUser(locale: Locale = .current) -> String? {
         guard let meters = distanceFromUser(), meters.isFinite else { return nil }
         let kilometers = meters / 1_000

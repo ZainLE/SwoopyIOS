@@ -38,6 +38,7 @@ struct LocationFixResult {
     var age: TimeInterval { max(0, Date().timeIntervalSince(location.timestamp)) }
 }
 
+@MainActor
 final class LocationService: NSObject, ObservableObject, CLLocationManagerDelegate {
     static let shared = LocationService()
 

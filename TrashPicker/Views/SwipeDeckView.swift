@@ -1952,10 +1952,9 @@ extension SwipeDeckView {
         private func mapDetailOverlay(for context: PresentedPostContext) -> some View {
             let post = context.post
             ZStack {
-                Color.black.opacity(0.25)
-                    .background(.ultraThinMaterial)
+                Color.clear
+                    .contentShape(Rectangle())
                     .ignoresSafeArea()
-                    .blur(radius: 10)
                     .onTapGesture {
                         Task { @MainActor in dismissDetailToTeaser() }
                     }

@@ -950,8 +950,11 @@ class ApiService: ObservableObject {
                 } catch {
                     #if DEBUG || RESERVATIONS_DIAGNOSTICS
                     Diag.logAuthStateChange(corr: correlationId, event: "auth.refresh.failed", reason: error.localizedDescription)
-                    Diag.logAuthStateChange(corr: correlationId, event: "auth.signout", reason: "refresh failed")
                     #endif
+                    // If refresh failed due to network issues, surface that error instead of forcing sign-out
+                    if let urlError = error as? URLError {
+                        throw ApiServiceError.networkError(urlError)
+                    }
                     throw ApiServiceError.unauthorized
                 }
             }
@@ -1267,7 +1270,7 @@ class ApiService: ObservableObject {
         return formatter
     }()
 
-    func fetchNotifications(since: Date? = nil, limit: Int = 50) async throws -> NotificationListResponse {
+    func fetchNotifications(since: Date? = nil, limit: Int = 50) async throws -> NotificationsResponse {
         // Proactively refresh auth to avoid stale-token timeouts
         do {
             try await supabaseService.refreshSession()
@@ -1287,8 +1290,8 @@ class ApiService: ObservableObject {
         }
 
         // Retry with exponential backoff
-        let maxRetries = 2
-        let delays: [TimeInterval] = [2.0, 5.0]
+        let maxRetries = 1
+        let delays: [TimeInterval] = [2.0]
 
         for attempt in 0...maxRetries {
             do {
@@ -1319,43 +1322,22 @@ class ApiService: ObservableObject {
                     throw ApiHTTPError(statusCode: http.statusCode, message: message)
                 }
 
-                // Use legacy envelope decoder with fractional seconds support
+                // Decoder with fractional seconds support
                 let decoder = JSONDecoder()
-                let f = ISO8601DateFormatter()
-                f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let isoWithFractional = ISO8601DateFormatter()
+                isoWithFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                let iso = ISO8601DateFormatter()
+                iso.formatOptions = [.withInternetDateTime]
                 decoder.dateDecodingStrategy = .custom { d in
                     let s = try d.singleValueContainer().decode(String.self)
-                    guard let date = f.date(from: s) else {
-                        throw DecodingError.dataCorrupted(.init(codingPath: d.codingPath, debugDescription: "Bad date \(s)"))
+                    if let date = isoWithFractional.date(from: s) ?? iso.date(from: s) {
+                        return date
                     }
-                    return date
+                    throw DecodingError.dataCorrupted(.init(codingPath: d.codingPath, debugDescription: "Bad date \(s)"))
                 }
-                
+
                 do {
-                    let env = try decoder.decode(NotificationsEnvelopeLegacy.self, from: data)
-                    let actionRequired = env.incoming_requests ?? []
-                    let updates = env.general_notifications ?? []
-                    let unread = env.unread_count
-                    os_log("[NOTIF] using legacy envelope: incoming=%{public}d general=%{public}d unread=%{public}d", 
-                           log: notificationsLog, type: .info, actionRequired.count, updates.count, unread)
-                    var allItems: [NotificationItem] = []
-                    var failedCount = 0
-                    for row in actionRequired {
-                        do { allItems.append(try convertLegacyToItem(row, category: .actionable)) }
-                        catch {
-                            failedCount += 1
-                            os_log("[NOTIF][MAP_ERROR] actionable id=%{public}@ error=%{public}@", log: notificationsLog, type: .error, row.id.uuidString, String(describing: error))
-                        }
-                    }
-                    for row in updates {
-                        do { allItems.append(try convertLegacyToItem(row, category: .informational)) }
-                        catch {
-                            failedCount += 1
-                            os_log("[NOTIF][MAP_ERROR] informational id=%{public}@ error=%{public}@", log: notificationsLog, type: .error, row.id.uuidString, String(describing: error))
-                        }
-                    }
-                    os_log("[NOTIF][MAP] mapped=%{public}d failed=%{public}d total=%{public}d", log: notificationsLog, type: .info, allItems.count, failedCount, actionRequired.count + updates.count)
-                    return NotificationListResponse(unreadCount: unread, items: allItems)
+                    return try decoder.decode(NotificationsResponse.self, from: data)
                 } catch {
                     os_log("[NOTIF][DECODE_ERROR] %{public}@", log: notificationsLog, type: .error, String(describing: error))
                     let raw = String(data: data, encoding: .utf8) ?? "<non-utf8>"
@@ -1364,6 +1346,9 @@ class ApiService: ObservableObject {
                     throw error
                 }
             } catch {
+                if error is DecodingError {
+                    throw error
+                }
                 if attempt < maxRetries {
                     let delay = delays[attempt]
                     os_log("[NOTIF] retrying in %{public}.1fs (attempt %d/%d): %{public}@", log: notificationsLog, type: .info, delay, attempt + 1, maxRetries, error.localizedDescription)

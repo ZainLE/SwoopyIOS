@@ -192,16 +192,27 @@ struct BigCardOverlay: View {
 
     var body: some View {
         GeometryReader { outerGeometry in
-            let cardWidth = min(outerGeometry.size.width * 0.92, 600)
+            let cardWidth = min(outerGeometry.size.width * 0.92, 600.0)
             let isSmall = outerGeometry.size.height < 700
-            let cardHeight = outerGeometry.size.height * (isSmall ? 0.8 : 0.85)
+            let topPadding: CGFloat = {
+                let base: CGFloat = isSmall ? 20.0 : 28.0
+                if case .feed = variant { return max(2.0, base - 18.0) }
+                return base
+            }()
+            let closeYOffset: CGFloat = {
+                if case .feed = variant { return -2.0 }
+                return -20.0
+            }()
+            // Uniform vertical sizing for both street and home; slightly taller for better balance
+            let heightFactor: CGFloat = isSmall ? 0.82 : 0.88
+            let cardHeight = outerGeometry.size.height * heightFactor
             let safeTop = outerGeometry.safeAreaInsets.top
            
             // Exact 50/50 split for image/details
             GeometryReader { innerGeometry in
                 let showHero = shouldShowHeroCarousel
-                let heroRatio: CGFloat = showHero ? (isSmall ? 0.58 : 0.6) : 0
-                let heroHeight = showHero ? max(220, floor(innerGeometry.size.height * heroRatio)) : 0
+                let heroRatio: CGFloat = showHero ? (isSmall ? 0.58 : 0.6) : 0.0
+                let heroHeight = showHero ? max(220.0, floor(innerGeometry.size.height * heroRatio)) : 0.0
                 let detailsHeight = innerGeometry.size.height - heroHeight
                 
                 VStack(spacing: 0) {
@@ -250,7 +261,7 @@ struct BigCardOverlay: View {
             .shadow(color: .black.opacity(0.12), radius: 24, x: 0, y: 8)
             .offset(y: dragOffset.height)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .padding(.top, safeTop + (isSmall ? 10 : 18))
+            .padding(.top, safeTop + topPadding) // nudge card down while allowing feed cards to sit higher
             .gesture(
                 DragGesture()
                     .onChanged { value in
@@ -269,7 +280,7 @@ struct BigCardOverlay: View {
                     }
             )
             .overlay(alignment: .topTrailing) {
-                closeButton
+                closeButton.offset(y: closeYOffset) // keep close button near the corner without floating too high
             }
             .overlay {
                 if isReportPostSuccessVisible {
@@ -606,41 +617,36 @@ extension BigCardOverlay {
     private func reservationButtons(_ buttonSet: Variant.ReservationButtonSet) -> some View {
         switch buttonSet {
         case .streetPending, .streetActive:
-            if let config = reservationActionConfig, let handler = onReservationAction {
-                ReservationActionBar(configuration: config, onAction: handler)
-                    .padding(.top, 4)
-            } else if buttonSet == .streetPending {
-                Button("Cancel", action: onSecondaryAction)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.9)
-                    .buttonStyle(SwoopyOutlineButtonStyle())
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 4)
-            } else {
-                HStack(spacing: 8) {
+            HStack(spacing: 12) {
+                if buttonSet == .streetActive {
                     Button("Pick up", action: onPrimaryAction)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.9)
-                        .layoutPriority(1)
-                        .buttonStyle(SwoopyPrimaryButtonStyle())
-
-                    Button("Cancel", action: onSecondaryAction)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.9)
-                        .layoutPriority(1)
-                        .buttonStyle(SwoopyOutlineButtonStyle())
-
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(height: 52)
+                        .frame(maxWidth: .infinity)
+                        .background(primaryColor)
+                        .clipShape(RoundedRectangle(cornerRadius: 26))
+                }
+                
+                Button("Cancel", action: onSecondaryAction)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(primaryColor)
+                    .frame(height: 52)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.clear)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 26)
+                            .stroke(primaryColor, lineWidth: 2)
+                )
+                
+                if buttonSet == .streetActive {
                     Button("Directions", action: onTertiaryAction ?? {})
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.9)
-                        .layoutPriority(1)
-                        .buttonStyle(SwoopyPillSecondaryStyle())
+                        .buttonStyle(SwoopyPillSecondaryStyle(minHeight: 52))
                         .disabled(onTertiaryAction == nil)
                         .opacity(onTertiaryAction == nil ? 0.6 : 1.0)
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.top, 4)
             }
+            .padding(.top, 4)
             
         case .homePending:
             HStack(spacing: 12) {

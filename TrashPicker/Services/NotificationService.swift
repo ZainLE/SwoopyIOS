@@ -33,8 +33,8 @@ final class NotificationService: NotificationProviding {
 
     func getUnifiedNotifications(since: Date? = nil, limit: Int = 50) async throws -> (notifications: [AppNotification], unreadCount: Int) {
         let response = try await api.fetchNotifications(since: since, limit: limit)
-        os_log("[NOTIF][SERVICE] mapping %{public}d items, unread=%{public}d", log: notificationServiceLog, type: .info, response.items.count, response.unreadCount ?? 0)
-        let notifications = response.items
+        os_log("[NOTIF][SERVICE] mapping %{public}d items, unread=%{public}d", log: notificationServiceLog, type: .info, response.notifications.count, response.unreadCount)
+        let notifications = response.notifications
             .map(mapNotification)
             .sorted { $0.createdAt > $1.createdAt }
         
@@ -43,7 +43,7 @@ final class NotificationService: NotificationProviding {
         os_log("[NOTIF][SERVICE] mapped: actionable=%{public}d informational=%{public}d total=%{public}d", 
                log: notificationServiceLog, type: .info, actionableCount, informationalCount, notifications.count)
         
-        return (notifications: notifications, unreadCount: response.unreadCount ?? 0)
+        return (notifications: notifications, unreadCount: response.unreadCount)
     }
 
     func fetchAll() async throws -> [AppNotification] {
@@ -92,9 +92,13 @@ final class NotificationService: NotificationProviding {
         let preferredName = payloadModel?.requesterName ?? payloadModel?.ownerName ?? item.counterpartyName
         let preferredAvatar = payloadModel?.requesterAvatarUrl ?? payloadModel?.ownerAvatarUrl ?? item.counterpartyAvatarURL
         let avatarURL = preferredAvatar.flatMap(URL.init(string:))
-        let thumbURLString = payloadModel?.itemThumbnailUrl ?? item.itemThumbURL
+        let thumbURLString = payloadModel?.itemImageUrl
+            ?? payloadModel?.postImageUrl
+            ?? payloadModel?.itemThumbnailUrl
+            ?? item.itemThumbURL
         let thumbURL = thumbURLString.flatMap(URL.init(string:))
         let title = payloadModel?.itemTitle ?? item.itemTitle
+        let contactPhone = payloadModel?.contactPhone ?? item.counterpartyPhone
 
         return AppNotification(
             id: item.id,
@@ -109,7 +113,7 @@ final class NotificationService: NotificationProviding {
             payload: payloadModel,
             counterpartyName: preferredName,
             counterpartyAvatarURL: avatarURL,
-            legacyCounterpartyPhone: item.counterpartyPhone,
+            legacyCounterpartyPhone: contactPhone,
             itemTitle: title,
             itemThumbURL: thumbURL,
             persistenceType: persistenceType,

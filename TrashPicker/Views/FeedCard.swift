@@ -538,11 +538,10 @@ struct FeedCard: View {
     @ViewBuilder
     private func expandedCardView() -> some View {
         ZStack {
-            // Backdrop with blur effect
-            Color.black.opacity(0.25)
-                .background(.ultraThinMaterial)
+            // Transparent backdrop to remove grey hue
+            Color.clear
+                .contentShape(Rectangle())
                 .ignoresSafeArea()
-                .blur(radius: 10)
                 .onTapGesture { showDetailOverlay = false }
             
             // Big card overlay

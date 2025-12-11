@@ -16,29 +16,29 @@ struct ActionableNotificationRow: View {
         return !phone.isEmpty
     }
     
+    private var titleText: String {
+        if notification.type == .street_reserved {
+            return "Someone reserved your item"
+        }
+        return notification.itemTitle ?? "Home pickup request"
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 // Item thumbnail
                 itemThumbnail
-                    .frame(width: 76, height: 76)
+                    .frame(width: 88, height: 88)
                 
                 VStack(alignment: .leading, spacing: 6) {
-                    // Item title
-                    Text(notification.itemTitle ?? "Home pickup request")
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                        .lineLimit(2)
-                    
-                    // Requester info
                     HStack(spacing: 8) {
                         requesterAvatar
-                            .frame(width: 24, height: 24)
+                            .frame(width: 32, height: 32)
                         
                         Text(notification.counterpartyName ?? "Someone")
-                            .font(.subheadline)
+                            .font(.headline)
                             .foregroundColor(.secondary)
-                            .lineLimit(1)
+                            .lineLimit(2)
                     }
                     
                     // Time ago
@@ -124,20 +124,21 @@ struct ActionableNotificationRow: View {
             } placeholder: {
                 Circle()
                     .fill(Color.gray.opacity(0.2))
-                    .overlay(Image(systemName: "person.fill").font(.system(size: 10)).foregroundColor(.gray))
+                    .overlay(Image(systemName: "person.fill").font(.system(size: 14)).foregroundColor(.gray))
             }
             .clipShape(Circle())
         } else {
             Circle()
                 .fill(Color.gray.opacity(0.2))
-                .overlay(Image(systemName: "person.fill").font(.system(size: 10)).foregroundColor(.gray))
+                .overlay(Image(systemName: "person.fill").font(.system(size: 14)).foregroundColor(.gray))
         }
     }
     
     @ViewBuilder
     private var modePill: some View {
-        let modeLabel = notification.type == .home_pickup_request ? "Home pickup" : "Street pickup"
-        let modeIcon = notification.type == .home_pickup_request ? "house.fill" : "mappin.circle.fill"
+        let isHome = (notification.mode ?? "home") == "home" || notification.type == .home_pickup_request
+        let modeLabel = isHome ? "Home pickup" : "Street pickup"
+        let modeIcon = isHome ? "house.fill" : "mappin.circle.fill"
         
         HStack(spacing: 4) {
             Image(systemName: modeIcon)
@@ -189,6 +190,13 @@ struct ActionableNotificationRow: View {
             }
             .frame(height: 48)
             
+            if hasContactPhone {
+                Text("Use this number to arrange pickup.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.top, 4)
+            }
+            
         } else if notification.state == .pending_approval {
             // Show Approve/Reject for pending notifications
             HStack(spacing: 12) {
@@ -235,7 +243,7 @@ private struct PrimaryActionButtonStyle: ButtonStyle {
             .padding(.horizontal, 20)
             .background(backgroundColor)
             .foregroundColor(foregroundColor)
-            .cornerRadius(12)
+            .clipShape(Capsule(style: .continuous))
             .scaleEffect(configuration.isPressed ? 0.96 : 1.0)
             .opacity(configuration.isPressed ? 0.8 : 1.0)
             .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
@@ -253,7 +261,7 @@ private struct SecondaryActionButtonStyle: ButtonStyle {
             .background(Color.clear)
             .foregroundColor(foregroundColor)
             .overlay(
-                RoundedRectangle(cornerRadius: 12)
+                Capsule(style: .continuous)
                     .stroke(borderColor, lineWidth: 2)
             )
             .scaleEffect(configuration.isPressed ? 0.96 : 1.0)

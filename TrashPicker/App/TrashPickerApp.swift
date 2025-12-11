@@ -205,14 +205,6 @@ private struct RootGateView: View {
                         .padding(16)
                 }
             }
-            .overlay(alignment: .bottomLeading) {
-                FlowDebugHUD(
-                    session: svc.phase == .signedIn,
-                    profile: appFlow.hasCompletedProfile,
-                    onboarding: appFlow.hasCompletedIntro,
-                    state: String(describing: appFlow.phase)
-                )
-            }
 #endif
     }
 }

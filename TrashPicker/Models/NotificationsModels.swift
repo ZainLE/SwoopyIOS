@@ -106,7 +106,10 @@ struct NotificationPayload: Hashable {
     let requesterAvatarUrl: String?
     let itemTitle: String?
     let itemThumbnailUrl: String?
+    let itemImageUrl: String?
+    let postImageUrl: String?
     let warningFlag: Bool?
+    let contactPhone: String?
     let mode: String?  // "home" or "street"
 
     init(raw: [String: AnyCodable]?) {
@@ -118,7 +121,10 @@ struct NotificationPayload: Hashable {
         requesterAvatarUrl = raw?.string("requester_avatar_url") ?? raw?.string("requesterAvatarUrl")
         itemTitle = raw?.string("item_title") ?? raw?.string("itemTitle")
         itemThumbnailUrl = raw?.string("item_thumbnail_url") ?? raw?.string("itemThumbnailUrl")
+        itemImageUrl = raw?.string("item_image_url") ?? raw?.string("itemImageUrl")
+        postImageUrl = raw?.string("post_image_url") ?? raw?.string("postImageUrl")
         warningFlag = raw?.bool("show_contact_warning") ?? raw?.bool("warningFlag")
+        contactPhone = raw?.string("contact_phone") ?? raw?.string("contactPhone")
         mode = raw?.string("mode") ?? raw?.string("pickup_mode") ?? raw?.string("pickupMode")
     }
 }
@@ -227,37 +233,16 @@ struct NotificationItem: Decodable, Identifiable {
     }
 }
 
-struct NotificationListResponse: Decodable {
-    let unreadCount: Int?
-    let items: [NotificationItem]
-
-    enum CodingKeys: String, CodingKey {
-        case unreadCount = "unread_count"
-        case items
-        case data
-        case notifications
+struct NotificationsResponse: Decodable {
+    struct Meta: Decodable {
+        let unread_count: Int
     }
 
-    init(unreadCount: Int?, items: [NotificationItem]) {
-        self.unreadCount = unreadCount
-        self.items = items
-    }
+    let meta: Meta
+    let notifications: [NotificationItem]
 
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        unreadCount = try container.decodeIfPresent(Int.self, forKey: .unreadCount)
-        if let array = try container.decodeIfPresent([NotificationItem].self, forKey: .items) {
-            items = array
-        } else if let array = try container.decodeIfPresent([NotificationItem].self, forKey: .notifications) {
-            items = array
-        } else if let array = try container.decodeIfPresent([NotificationItem].self, forKey: .data) {
-            items = array
-        } else {
-            throw DecodingError.dataCorrupted(
-                .init(codingPath: decoder.codingPath, debugDescription: "Missing notifications array")
-            )
-        }
-    }
+    // Convenience so existing callers can keep using camelCase
+    var unreadCount: Int { meta.unread_count }
 }
 
 // MARK: - Legacy Envelope Models (Production Contract)
@@ -377,6 +362,9 @@ struct AppNotification: Identifiable, Hashable {
     var counterpartyPhone: String? { legacyCounterpartyPhone }
 
     var exposedContactPhone: String? {
+        if let direct = payload?.contactPhone, !direct.isEmpty {
+            return direct
+        }
         if payload?.contactInfoShared == true, let phone = payload?.ownerPhone, !phone.isEmpty {
             return phone
         }

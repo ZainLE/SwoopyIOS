@@ -727,6 +727,7 @@ struct PostDraft {
     let coordinate: CLLocationCoordinate2D?
 }
 
+@MainActor
 final class UploadFindViewModel: ObservableObject {
     @Published var condition: Condition? = .needsFixing  // default to 'Needs Fixing'
     @Published var mode: PickupMode? = .street           // default selected (street)
