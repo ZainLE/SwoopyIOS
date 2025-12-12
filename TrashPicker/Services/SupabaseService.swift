@@ -50,11 +50,13 @@ final class SupabaseService: NSObject, ObservableObject {
     @Published private(set) var session: Session?
     @Published private(set) var isAuthenticated: Bool = false
     @Published private(set) var didCheckSession = false
+    @Published private(set) var authProviderRaw: String?
     
     // Server-side profile (single source of truth for flow gating)
     @Published private(set) var serverProfile: ProfileDTO?
     @Published private(set) var profileLoadState: ProfileLoadState = .idle
     private var cachedProfile: ProfileDTO? // Offline fallback only, never write back
+    private var cachedProfileUserId: String?
     
     // Single refresh guard to avoid concurrent refresh storms
     private let refreshGate = RefreshGate()
@@ -95,6 +97,15 @@ final class SupabaseService: NSObject, ObservableObject {
             let months = days / 30
             return "\(months) months"
         }
+    }
+    
+    var authProvider: String {
+        authProviderRaw ?? "unknown"
+    }
+
+    var isPasswordUser: Bool {
+        let provider = authProvider.lowercased()
+        return provider == "email" || provider == "password"
     }
 
 
@@ -276,6 +287,7 @@ final class SupabaseService: NSObject, ObservableObject {
         do {
             let s = try await client.auth.session(from: url)
             applyAuthSession(s)
+            await fetchProfile()
             // AUDIT: oauth redirect applied
             AuditLog.auth("oauth redirect applied: isAuthenticated=\(isAuthenticated) userId=\(userId?.uuidString ?? "nil")")
             AuthLogger.oauthCallbackSuccess(userId: s.user.id.uuidString)
@@ -292,10 +304,12 @@ final class SupabaseService: NSObject, ObservableObject {
         )
         let s = try? await client.auth.session
         applyAuthSession(s)
+        await fetchProfile()
     }
 
     /// Native Apple Sign-In (no Apple client secret needed on iOS)
     /// Persists fullName/email to profiles only on first sign-in
+    @MainActor
     func signInWithApple(on window: UIWindow?) async throws {
         AppLogger.logAuth("Apple Sign-In started")
         let nonce = Self.randomNonceString()
@@ -317,11 +331,10 @@ final class SupabaseService: NSObject, ObservableObject {
             let s = try await client.auth.signInWithIdToken(
                 credentials: OpenIDConnectCredentials(provider: .apple, idToken: idToken, nonce: nonce)
             )
-            await MainActor.run {
-                applyAuthSession(s)
-                phase = .signedIn
-            }
+            applyAuthSession(s)
+            phase = .signedIn
             AppLogger.logAuth("Apple Sign-In successful, user=\(AppLogger.redactUserId(s.user.id.uuidString))")
+            await fetchProfile()
             
             // Persist identity data only on first sign-in
             await persistAppleIdentityIfFirstSignIn(credential: cred, userId: s.user.id.uuidString)
@@ -385,6 +398,7 @@ final class SupabaseService: NSObject, ObservableObject {
             _ = try await client.auth.signUp(email: email, password: password)
             let s = try? await client.auth.session
             applyAuthSession(s)
+            await fetchProfile()
             if let s = s {
                 AuthLogger.emailSignInSuccess(email: email, mode: "sign-up", userId: s.user.id.uuidString)
             } else {
@@ -403,6 +417,7 @@ final class SupabaseService: NSObject, ObservableObject {
         do {
             let s = try await client.auth.signIn(email: email, password: password)
             applyAuthSession(s)
+            await fetchProfile()
             AuthLogger.emailSignInSuccess(email: email, mode: "sign-in", userId: s.user.id.uuidString)
         } catch {
             AuthLogger.emailSignInFailure(email: email, mode: "sign-in", error: error)
@@ -549,6 +564,14 @@ final class SupabaseService: NSObject, ObservableObject {
         } catch {
             throw SimpleError(message: "Couldn't update your password. Please try again.")
         }
+    }
+    
+    /// Complete a password reset flow (Supabase recovery link)
+    @MainActor
+    func completePasswordReset(newPassword: String) async throws {
+        try await client.auth.update(user: UserAttributes(password: newPassword))
+        let refreshed = try? await client.auth.session
+        applyAuthSession(refreshed)
     }
 
     /// Send a password reset email to the current user
@@ -718,6 +741,7 @@ final class SupabaseService: NSObject, ObservableObject {
             
             serverProfile = profile
             cachedProfile = profile // Cache for offline fallback
+            cachedProfileUserId = uid
             profileLoadState = .loaded
             AppLogger.logProfile("Profile loaded: complete=\(profile.isComplete) onboarding=\(profile.onboardingCompleted)")
             
@@ -739,13 +763,14 @@ final class SupabaseService: NSObject, ObservableObject {
                 )
                 serverProfile = placeholder
                 cachedProfile = placeholder
+                cachedProfileUserId = uid
                 profileLoadState = .loaded
                 AppLogger.logProfile("Profile missing on server; using placeholder to enter onboarding", level: .notice)
                 return
             }
             
             // Offline fallback: use cached profile if available
-            if let cached = cachedProfile {
+            if let cached = cachedProfile, cachedProfileUserId == uid {
                 AppLogger.logProfile("Using cached profile as fallback", level: .notice)
                 serverProfile = cached
                 profileLoadState = .loaded
@@ -1337,6 +1362,13 @@ private extension SupabaseService {
 // MARK: - Internal auth plumbing
 
 private extension SupabaseService {
+    func resetProfileStateForUserChange() {
+        serverProfile = nil
+        cachedProfile = nil
+        cachedProfileUserId = nil
+        profileLoadState = .idle
+    }
+
     @MainActor
     func applyAuthSession(_ session: Session?) {
         #if DEBUG
@@ -1347,13 +1379,18 @@ private extension SupabaseService {
         let previousPhase = phase
         #endif
         
+        let previousUserId = userId
         self.session = session
         if let s = session {
+            if previousUserId != s.user.id {
+                resetProfileStateForUserChange()
+            }
             self.userId = s.user.id
             // Authenticated only if we have a non-empty access token
             let tokenOk = s.accessToken.isEmpty == false
             self.isAuthenticated = tokenOk
             if tokenOk {
+                self.authProviderRaw = Self.extractAuthProvider(from: s.user)
                 KeychainStore.saveSession(accessToken: s.accessToken, refreshToken: s.refreshToken)
                 if phase != .signedIn { phase = .signedIn }
                 AuthLogger.sessionApplied(userId: s.user.id.uuidString, accessTokenPresent: true)
@@ -1370,6 +1407,7 @@ private extension SupabaseService {
                 }
                 #endif
             } else {
+                self.authProviderRaw = nil
                 KeychainStore.clearSession()
                 if phase != .signedOut { phase = .signedOut }
                 AuditLog.auth("applyAuthSession: token missing → signedOut")
@@ -1387,6 +1425,8 @@ private extension SupabaseService {
         } else {
             self.userId = nil
             self.isAuthenticated = false
+            self.authProviderRaw = nil
+            resetProfileStateForUserChange()
             KeychainStore.clearSession()
             if phase != .signedOut { phase = .signedOut }
             AuditLog.auth("applyAuthSession: nil → signedOut")
@@ -1460,8 +1500,22 @@ private extension SupabaseService {
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    static func extractAuthProvider(from user: User) -> String? {
+        if let provider = user.appMetadata["provider"]?.stringValue, !provider.isEmpty {
+            return provider.lowercased()
+        }
+
+        if let providers = user.appMetadata["providers"]?.arrayValue {
+            if let first = providers.compactMap(\.stringValue).first(where: { !$0.isEmpty }) {
+                return first.lowercased()
+            }
+        }
+
+        return nil
+    }
+
     static func isAnonymousUser(_ user: User) -> Bool {
-        let provider = user.appMetadata["provider"]?.description.lowercased() ?? ""
+        let provider = extractAuthProvider(from: user) ?? ""
         return provider == "anonymous" || provider == "anon"
     }
 }

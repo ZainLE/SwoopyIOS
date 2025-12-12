@@ -90,7 +90,10 @@ final class NotificationService: NotificationProviding {
         let payloadModel = item.payload.map(NotificationPayload.init(raw:))
 
         let preferredName = payloadModel?.requesterName ?? payloadModel?.ownerName ?? item.counterpartyName
-        let preferredAvatar = payloadModel?.requesterAvatarUrl ?? payloadModel?.ownerAvatarUrl ?? item.counterpartyAvatarURL
+        let preferredAvatar = payloadModel?.takerAvatarUrl
+            ?? payloadModel?.requesterAvatarUrl
+            ?? payloadModel?.ownerAvatarUrl
+            ?? item.counterpartyAvatarURL
         let avatarURL = preferredAvatar.flatMap(URL.init(string:))
         let thumbURLString = payloadModel?.itemImageUrl
             ?? payloadModel?.postImageUrl
@@ -99,6 +102,7 @@ final class NotificationService: NotificationProviding {
         let thumbURL = thumbURLString.flatMap(URL.init(string:))
         let title = payloadModel?.itemTitle ?? item.itemTitle
         let contactPhone = payloadModel?.contactPhone ?? item.counterpartyPhone
+        let condition = payloadModel?.itemCondition ?? item.itemCondition
 
         return AppNotification(
             id: item.id,
@@ -119,7 +123,8 @@ final class NotificationService: NotificationProviding {
             itemThumbURL: thumbURL,
             persistenceType: persistenceType,
             persistenceSeconds: persistenceSeconds,
-            mode: payloadModel?.mode  // Extract from payload
+            mode: payloadModel?.mode,  // Extract from payload
+            itemCondition: condition
         )
     }
 

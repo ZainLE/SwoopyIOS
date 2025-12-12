@@ -12,6 +12,7 @@ final class AppFlowCoordinator: ObservableObject {
         case launching
         case auth
         case loadingProfile
+        case profileError
         case profileCapture
         case introShowcase
         case loading
@@ -19,11 +20,14 @@ final class AppFlowCoordinator: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .launching
+    @Published private(set) var profileErrorMessage: String?
+    @Published private(set) var captureMessage: String?
 
     private let supabase: SupabaseService
     private let boot: BootCoordinator
     private var cancellables: Set<AnyCancellable> = []
     private var hasMigratedLegacyFlags = false
+    private var lastUserId: UUID?
 
     private var loadingTask: Task<Void, Never>?
     private var loadingStartedAt: Date?
@@ -60,6 +64,17 @@ final class AppFlowCoordinator: ObservableObject {
                 evaluatePhase(reason: "profileComplete")
             }
         }
+    }
+
+    func requireProfileCapture(message: String?) {
+        captureMessage = message
+        updatePhase(.profileCapture, reason: "requested:\(message ?? "missing")")
+    }
+
+    func retryProfileLoad() async {
+        profileErrorMessage = nil
+        updatePhase(.loadingProfile, reason: "profileRetry")
+        await supabase.fetchProfile()
     }
 
     func markIntroComplete() async -> Bool {
@@ -148,11 +163,17 @@ final class AppFlowCoordinator: ObservableObject {
             loadingTask?.cancel()
             loadingTask = nil
             loadingStartedAt = nil
+            profileErrorMessage = nil
         }
         evaluatePhase(reason: "authPhase")
     }
 
     private func handleUserChange(_ userId: UUID?) {
+        if userId != lastUserId {
+            lastUserId = userId
+            hasMigratedLegacyFlags = false
+            profileErrorMessage = nil
+        }
         // Fetch profile when user changes
         if supabase.phase == .signedIn, userId != nil {
             Task {
@@ -199,10 +220,10 @@ final class AppFlowCoordinator: ObservableObject {
             updatePhase(.loadingProfile, reason: reason)
             return
             
-        case .failed:
-            // Profile fetch failed, show auth (user can retry)
-            AppLogger.logProfile("Profile load failed, returning to auth", level: .error)
-            updatePhase(.auth, reason: "profileLoadFailed")
+        case .failed(let error):
+            AppLogger.logProfile("Profile load failed, showing retry gate", level: .error)
+            profileErrorMessage = error.localizedDescription
+            updatePhase(.profileError, reason: "profileLoadFailed")
             return
             
         case .loaded:
@@ -331,6 +352,14 @@ final class AppFlowCoordinator: ObservableObject {
             loadingTask?.cancel()
             loadingTask = nil
             loadingStartedAt = nil
+        }
+
+        if newPhase != .profileError {
+            profileErrorMessage = nil
+        }
+
+        if newPhase != .profileCapture {
+            captureMessage = nil
         }
 
         AppLogger.logFlow("state \(phase) → \(newPhase) (reason: \(reason))")

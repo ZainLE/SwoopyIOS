@@ -40,13 +40,11 @@ struct ActionableNotificationRow: View {
                             .foregroundColor(.primary)
                             .lineLimit(2)
                     }
-                    
-                    if let title = notification.itemTitle, !title.isEmpty {
-                        Text(title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundColor(.primary)
-                            .lineLimit(2)
-                    }
+
+                    Text(conditionText)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.primary)
+                        .lineLimit(2)
                     
                     // Time ago
                     Text(relativeTime)
@@ -128,17 +126,14 @@ struct ActionableNotificationRow: View {
                     image
                         .resizable()
                         .scaledToFill()
-                case .empty:
-                    Circle()
-                        .fill(Color.gray.opacity(0.2))
-                        .overlay(
-                            ProgressView()
-                                .scaleEffect(0.6)
-                        )
                 default:
                     Circle()
                         .fill(Color.gray.opacity(0.2))
-                        .overlay(Image(systemName: "person.fill").font(.system(size: 14)).foregroundColor(.gray))
+                        .overlay(
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 14))
+                                .foregroundColor(.gray)
+                        )
                 }
             }
             .clipShape(Circle())
@@ -147,6 +142,10 @@ struct ActionableNotificationRow: View {
                 .fill(Color.gray.opacity(0.2))
                 .overlay(Image(systemName: "person.fill").font(.system(size: 14)).foregroundColor(.gray))
         }
+    }
+
+    private var conditionText: String {
+        notification.conditionDisplayName ?? "Post"
     }
     
     @ViewBuilder

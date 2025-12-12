@@ -12,6 +12,8 @@ struct OnboardingFlowView: View {
     @State private var isCompleting = false
     @State private var toastMessage: String?
     @EnvironmentObject private var appFlow: AppFlowCoordinator
+    @EnvironmentObject private var svc: SupabaseService
+    private var pageCount: Int { pages.count }
     
     private let pages: [Page] = [
         Page(
@@ -74,6 +76,12 @@ struct OnboardingFlowView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: toastMessage)
+        .onChange(of: index) { newValue in
+            let clamped = min(max(newValue, 0), max(pageCount - 1, 0))
+            if clamped != newValue {
+                index = clamped
+            }
+        }
     }
     
     private var topBar: some View {
@@ -112,7 +120,9 @@ struct OnboardingFlowView: View {
     
     private func handleBack() {
         guard index > 0 else { return }
-        index -= 1
+        withAnimation(.easeInOut(duration: 0.25)) {
+            index -= 1
+        }
         Haptics.play(.tabSelect)
     }
     
@@ -121,7 +131,9 @@ struct OnboardingFlowView: View {
         if isLastPage {
             handleCompletionRequest()
         } else {
-            index += 1
+            withAnimation(.easeInOut(duration: 0.25)) {
+                index += 1
+            }
             Haptics.play(.tabSelect)
         }
     }
@@ -130,14 +142,37 @@ struct OnboardingFlowView: View {
         Task { await completeIntroIfNeeded() }
     }
 
+    @MainActor
     private func completeIntroIfNeeded() async {
         guard !isCompleting else { return }
-        await MainActor.run { isCompleting = true }
-        let success = await appFlow.markIntroComplete()
-        await MainActor.run {
-            isCompleting = false
-            if success {
-                Haptics.play(.success)
+        isCompleting = true
+        let success: Bool
+
+        // Fetch latest profile and log required fields before completion
+        await svc.fetchProfile()
+        let profile = svc.serverProfile
+        let missingFields = missingRequiredFields(from: profile)
+        let hasName = profile?.hasName ?? false
+        let hasPhone = profile?.hasPhone ?? false
+        let hasAvatar = profile?.hasAvatar ?? false
+        AppLogger.logProfile(
+            "Intro completion check - name:\(hasName) phone:\(hasPhone) avatar:\(hasAvatar) missing:\(missingFields)",
+            level: .notice
+        )
+
+        if missingFields.isEmpty {
+            success = await appFlow.markIntroComplete()
+        } else {
+            success = false
+            appFlow.requireProfileCapture(message: "Please finish your profile: \(missingFields.joined(separator: ", "))")
+        }
+
+        isCompleting = false
+        if success {
+            Haptics.play(.success)
+        } else {
+            if missingFields.isEmpty == false {
+                showToast("Please finish your profile: \(missingFields.joined(separator: ", "))")
             } else {
                 showToast("Couldn't complete onboarding. Please try again.")
             }
@@ -149,6 +184,15 @@ struct OnboardingFlowView: View {
             return isCompleting ? "Finishing…" : "Finish"
         }
         return "Next"
+    }
+
+    private func missingRequiredFields(from profile: ProfileDTO?) -> [String] {
+        guard let profile else { return ["name", "phone", "avatar"] }
+        var missing: [String] = []
+        if !profile.hasName { missing.append("name") }
+        if !profile.hasPhone { missing.append("phone") }
+        if !profile.hasAvatar { missing.append("avatar") }
+        return missing
     }
 
     private func showToast(_ message: String) {

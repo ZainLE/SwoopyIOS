@@ -1086,6 +1086,21 @@ private struct UploadRow: View {
 
 private struct UploadPostRow: View {
     let post: Post  // Post.expiresAt is Date? in your model
+    private static let timeFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateStyle = .none
+        df.timeStyle = .short
+        df.timeZone = .current
+        df.locale = .current
+        return df
+    }()
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        return f
+    }()
+    private static var didLogSample = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -1098,7 +1113,7 @@ private struct UploadPostRow: View {
                 )
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(post.title)
+                Text(uploadTitle(for: post))
                     .font(AppFont.h3)
 
                 Text(post.condition.displayName)
@@ -1113,17 +1128,38 @@ private struct UploadPostRow: View {
         }
     }
 
+    private func uploadTitle(for post: Post) -> String {
+        switch post.mode {
+        case .street:
+            return "Street post"
+        case .home:
+            return "Home post"
+        default:
+            return "Post"
+        }
+    }
+
     // Shows the expiration nicely if we have a Date
     @ViewBuilder
     private var expiresView: some View {
-        if let date = post.expiresAt {
-            // choose .time / .relative / .date to taste
-            Text(date, style: .time)
+        // Prefer createdAt for upload timestamp; fall back to expiresAt if missing
+        if let date = post.createdAt ?? post.expiresAt {
+            Text(formattedUploadDate(date))
                 .font(AppFont.sub)
                 .foregroundColor(AppColor.muted)
         } else {
             EmptyView()
         }
+    }
+
+    private func formattedUploadDate(_ date: Date) -> String {
+        let formatted = UploadPostRow.timeFormatter.string(from: date)
+        if UploadPostRow.didLogSample == false {
+            UploadPostRow.didLogSample = true
+            let raw = UploadPostRow.isoFormatter.string(from: date)
+            DLog("[UPLOADS] sample timestamp raw=\(raw) local=\(formatted)")
+        }
+        return formatted
     }
 }
 

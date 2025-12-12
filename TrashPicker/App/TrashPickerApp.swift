@@ -42,6 +42,7 @@ struct TrashPickerApp: App {
     @StateObject private var draftStore = UploadDraftStore()
     @StateObject private var loc = LocationManager()
     @StateObject private var consent = ConsentManager.shared
+    @StateObject private var appState = AppState.shared
     
     @State private var showConsentAlert = false
 
@@ -55,7 +56,9 @@ struct TrashPickerApp: App {
                 .environmentObject(draftStore)
                 .environmentObject(loc)
                 .environmentObject(consent)
+                .environmentObject(appState)
                 .onOpenURL { url in
+                    AuthDeepLinkHandler.handle(url)
                     Task {
                         // Handle OAuth callback (Google, magic links, etc.)
                         await svc.handleOAuthRedirect(url)
@@ -89,6 +92,7 @@ private struct RootGateView: View {
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var api: ApiService
     @EnvironmentObject var notificationService: ReservationNotificationService
+    @EnvironmentObject var appState: AppState
     @StateObject private var boot = BootCoordinator.shared
     @StateObject private var appFlow = AppFlowCoordinator()
     @Environment(\.scenePhase) private var scenePhase
@@ -111,8 +115,10 @@ private struct RootGateView: View {
                 Task {
                     try? await notificationService.fetchNotifications()
                 }
+                boot.start(svc: svc, api: api)
             } else if newPhase == .signedOut {
                 notificationService.reset()
+                boot.start(svc: svc, api: api)
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -136,6 +142,16 @@ private struct RootGateView: View {
             AuthView()
         case .loadingProfile:
             LoadingGateView(message: "Loading your profile…")
+        case .profileError:
+            ProfileErrorGateView(
+                message: appFlow.profileErrorMessage,
+                onRetry: {
+                    Task { await appFlow.retryProfileLoad() }
+                },
+                onSignOut: {
+                    Task { @MainActor in await svc.signOut() }
+                }
+            )
         case .profileCapture:
             OnboardingFlow()
         case .introShowcase:
@@ -186,7 +202,14 @@ private struct RootGateView: View {
     }
     
     private var appShell: some View {
-        content
+        Group {
+            switch appState.authFlow {
+            case .resetPassword:
+                ResetPasswordView()
+            default:
+                content
+            }
+        }
             .environmentObject(appFlow)
             .overlay(alignment: .top) {
                 if let msg = boot.bannerMessage {

@@ -1400,7 +1400,8 @@ class ApiService: ObservableObject {
             counterpartyAvatarURL: row.counterparty.photo_url,
             counterpartyPhone: phone,
             itemTitle: row.post.title,
-            itemThumbURL: nil
+            itemThumbURL: nil,
+            itemCondition: nil
         )
     }
 

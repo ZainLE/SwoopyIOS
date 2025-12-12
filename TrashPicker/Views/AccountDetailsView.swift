@@ -30,6 +30,8 @@ struct AccountDetailsView: View {
     @State private var canAuthenticateWithDevice = false
     @State private var biometricType: LABiometryType = .none
     @State private var deleteSheetHeight: CGFloat = 0
+    @State private var showDeletionSuccess = false
+    @State private var deletionSuccessMessage = "Your account has been deleted successfully."
     
     // Track initial values to detect changes
     @State private var initialFullName = ""
@@ -49,6 +51,7 @@ struct AccountDetailsView: View {
     @State private var passwordError: String?
     @State private var passwordSuccess: String?
     @State private var isUpdatingPassword = false
+    @State private var showPasswordResetConfirmation = false
     
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     
@@ -59,7 +62,7 @@ struct AccountDetailsView: View {
                     headerSection
                     personalInformationSection
                     accountInformationSection
-                    changePasswordSection
+                    passwordSection
                     deleteAccountButton
                 }
                 .padding(.horizontal, 24)
@@ -162,10 +165,22 @@ struct AccountDetailsView: View {
             await loadCurrentProfile()
             updateBiometricAvailability()
         }
+        .alert("Password Reset Email Sent", isPresented: $showPasswordResetConfirmation) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("We’ve sent you a password reset email. Open it to continue.")
+        }
         .alert("Error", isPresented: $showingError) {
             Button("OK") { }
         } message: {
             Text(errorMessage)
+        }
+        .alert("Account Deleted", isPresented: $showDeletionSuccess) {
+            Button("Return to Login") {
+                Task { await svc.finalizeAccountDeletion() }
+            }
+        } message: {
+            Text(deletionSuccessMessage)
         }
         .onChange(of: selectedPhoto) { _, newPhoto in
             guard let newPhoto else { return }
@@ -286,6 +301,15 @@ struct AccountDetailsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
     
+    @ViewBuilder
+    private var passwordSection: some View {
+        if svc.isPasswordUser {
+            changePasswordSection
+        } else {
+            passwordProviderCard
+        }
+    }
+    
     private var changePasswordSection: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -360,6 +384,25 @@ struct AccountDetailsView: View {
             .disabled(isUpdatingPassword || isLoading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    
+    private var passwordProviderCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Password")
+                .font(AppFont.body.weight(.semibold))
+                .foregroundColor(AppColor.text)
+            
+            Text(passwordProviderMessage)
+                .font(AppFont.body)
+                .foregroundColor(AppColor.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(AppColor.brandGreen.opacity(0.08))
+        )
     }
     
     private var deleteAccountButton: some View {
@@ -478,9 +521,25 @@ struct AccountDetailsView: View {
         selectedPhotoData != nil
     }
     
+    private var passwordProviderMessage: String {
+        let provider = svc.authProvider.lowercased()
+        switch provider {
+        case "apple":
+            return "You signed in with Apple. Passwords are managed by Apple."
+        case "google":
+            return "You signed in with Google. Passwords are managed by Google."
+        default:
+            return "You signed in with a social account. Passwords are managed by your provider."
+        }
+    }
+    
     // MARK: - Methods
 
     private func sendPasswordReset() async {
+        guard svc.isPasswordUser else {
+            passwordError = "Password resets are only available for email/password accounts."
+            return
+        }
         guard !email.isEmpty else {
             passwordError = "No email associated with this account."
             return
@@ -489,7 +548,7 @@ struct AccountDetailsView: View {
         passwordSuccess = nil
         do {
             try await svc.sendPasswordResetEmail()
-            passwordSuccess = "Check your email for a reset link."
+            showPasswordResetConfirmation = true
         } catch {
             if let simple = error as? SimpleError {
                 passwordError = simple.message
@@ -582,10 +641,11 @@ struct AccountDetailsView: View {
         }
         
         do {
-            _ = try await svc.deleteAccount()
+            let response = try await svc.deleteAccount()
             showDeleteConfirmation = false
             deleteSheetHeight = 0
-            await svc.finalizeAccountDeletion()
+            deletionSuccessMessage = response.message.isEmpty ? "Your account has been deleted successfully." : response.message
+            showDeletionSuccess = true
         } catch {
             if error.isCancellationLike {
                 errorMessage = fallbackMessage

@@ -128,12 +128,9 @@ final class NotificationsScreenViewModel: ObservableObject {
             DLog("[NOTIF] fetch succeeded in \(String(format: "%.2f", duration))s")
             #endif
             
-            // Update cache
-            await cache.set(items: result.notifications, unreadCount: result.unreadCount)
-            
-            // Update UI on main thread
-            apply(notifications: result.notifications)
-            self.unreadCount = result.unreadCount
+            // Update UI on main thread and recompute unread from visible notifications only
+            let visible = apply(notifications: result.notifications)
+            await cache.set(items: visible, unreadCount: unreadCount)
             self.error = nil
             isLoading = false
             
@@ -294,7 +291,8 @@ final class NotificationsScreenViewModel: ObservableObject {
         removeNotification(id: notification.id)
     }
 
-    private func apply(notifications: [AppNotification]) {
+    @discardableResult
+    private func apply(notifications: [AppNotification]) -> [AppNotification] {
         assertMainThread("NotificationsScreenViewModel.apply")
         cachedNotifications = filterLowSignal(notifications)
         purgeDismissedIds(using: cachedNotifications)
@@ -324,6 +322,10 @@ final class NotificationsScreenViewModel: ObservableObject {
         }
         
         reservationService?.apply(notifications: notifications)
+        
+        // Recompute unread based ONLY on visible notifications
+        unreadCount = visibleNotifications.filter { $0.isUnread }.count
+        return visibleNotifications
     }
 
     private func removeNotification(id: String) {

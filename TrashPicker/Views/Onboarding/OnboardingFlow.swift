@@ -88,6 +88,7 @@ struct OnboardingFlow: View {
 // MARK: - Welcome Profile Screen
 
 private struct WelcomeProfileScreen: View {
+    @EnvironmentObject private var appFlow: AppFlowCoordinator
     @ObservedObject var viewModel: OnboardingViewModel
     var onContinue: () -> Void
     var onAvatarTapped: () -> Void
@@ -104,6 +105,17 @@ private struct WelcomeProfileScreen: View {
             ScrollView {
                 VStack(spacing: 24) {
                     logo
+                    if let message = appFlow.captureMessage, !message.isEmpty {
+                        Text(message)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundColor(.red)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Color.red.opacity(0.1))
+                            )
+                    }
                     avatarSection
                     formFields
                     if let error = viewModel.errorMessage {

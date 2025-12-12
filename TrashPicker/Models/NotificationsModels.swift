@@ -104,10 +104,12 @@ struct NotificationPayload: Hashable {
     let ownerAvatarUrl: String?
     let requesterName: String?
     let requesterAvatarUrl: String?
+    let takerAvatarUrl: String?
     let itemTitle: String?
     let itemThumbnailUrl: String?
     let itemImageUrl: String?
     let postImageUrl: String?
+    let itemCondition: String?
     let warningFlag: Bool?
     let contactPhone: String?
     let mode: String?  // "home" or "street"
@@ -121,10 +123,12 @@ struct NotificationPayload: Hashable {
         ownerAvatarUrl = raw?.string("owner_avatar_url") ?? raw?.string("ownerAvatarUrl")
         requesterName = raw?.string("requester_name") ?? raw?.string("requesterName")
         requesterAvatarUrl = raw?.string("requester_avatar_url") ?? raw?.string("requesterAvatarUrl")
+        takerAvatarUrl = raw?.string("taker_avatar_url") ?? raw?.string("takerAvatarUrl") ?? requesterAvatarUrl
         itemTitle = raw?.string("item_title") ?? raw?.string("itemTitle")
         itemThumbnailUrl = raw?.string("item_thumbnail_url") ?? raw?.string("itemThumbnailUrl")
         itemImageUrl = raw?.string("item_image_url") ?? raw?.string("itemImageUrl")
         postImageUrl = raw?.string("post_image_url") ?? raw?.string("postImageUrl")
+        itemCondition = raw?.string("item_condition") ?? raw?.string("itemCondition")
         warningFlag = raw?.bool("show_contact_warning") ?? raw?.bool("warningFlag")
         contactPhone = raw?.string("contact_phone") ?? raw?.string("contactPhone")
         mode = raw?.string("mode") ?? raw?.string("pickup_mode") ?? raw?.string("pickupMode")
@@ -151,6 +155,7 @@ struct NotificationItem: Decodable, Identifiable {
     let counterpartyPhone: String?
     let itemTitle: String?
     let itemThumbURL: String?
+    let itemCondition: String?
 
     enum CodingKeys: String, CodingKey {
         case id, type, category, state, payload
@@ -167,6 +172,7 @@ struct NotificationItem: Decodable, Identifiable {
         case counterpartyPhone = "counterparty_phone"
         case itemTitle = "item_title"
         case itemThumbURL = "item_thumbnail_url"
+        case itemCondition = "item_condition"
     }
 
     // Memberwise initializer for direct construction
@@ -187,7 +193,8 @@ struct NotificationItem: Decodable, Identifiable {
         counterpartyAvatarURL: String?,
         counterpartyPhone: String?,
         itemTitle: String?,
-        itemThumbURL: String?
+        itemThumbURL: String?,
+        itemCondition: String?
     ) {
         self.id = id
         self.type = type
@@ -206,6 +213,7 @@ struct NotificationItem: Decodable, Identifiable {
         self.counterpartyPhone = counterpartyPhone
         self.itemTitle = itemTitle
         self.itemThumbURL = itemThumbURL
+        self.itemCondition = itemCondition
     }
     
     init(from decoder: Decoder) throws {
@@ -226,6 +234,7 @@ struct NotificationItem: Decodable, Identifiable {
         counterpartyPhone = try container.decodeIfPresent(String.self, forKey: .counterpartyPhone)
         itemTitle = try container.decodeIfPresent(String.self, forKey: .itemTitle)
         itemThumbURL = try container.decodeIfPresent(String.self, forKey: .itemThumbURL)
+        itemCondition = try container.decodeIfPresent(String.self, forKey: .itemCondition)
 
         if let explicit = try container.decodeIfPresent(Bool.self, forKey: .isReadValue) {
             isRead = explicit
@@ -318,7 +327,8 @@ struct NotificationRowLegacy: Decodable {
             itemThumbURL: nil,  // Legacy doesn't provide thumbnail
             persistenceType: persistenceType,
             persistenceSeconds: persistenceSeconds,
-            mode: post.mode  // Extract from legacy post
+            mode: post.mode,  // Extract from legacy post
+            itemCondition: nil
         )
     }
     
@@ -361,6 +371,7 @@ struct AppNotification: Identifiable, Hashable {
     let persistenceType: PersistenceType
     let persistenceSeconds: Int?
     let mode: String?  // "home" or "street"
+    let itemCondition: String?
 
     var isUnread: Bool { !isRead }
     var isActionable: Bool { category == .actionable }
@@ -382,5 +393,24 @@ struct AppNotification: Identifiable, Hashable {
         var copy = self
         copy.state = newState
         return copy
+    }
+
+    var conditionDisplayName: String? {
+        guard let raw = itemCondition?.trimmingCharacters(in: .whitespacesAndNewlines),
+              raw.isEmpty == false else { return nil }
+        let lower = raw.lowercased()
+        if let backend = ConditionBackend(rawValue: lower) {
+            return backend.ui.displayName
+        }
+        if let ui = ConditionUI(rawValue: lower) {
+            return ui.displayName
+        }
+        let normalized = lower.replacingOccurrences(of: " ", with: "")
+        if let match = ConditionUI.allCases.first(where: {
+            $0.displayName.lowercased().replacingOccurrences(of: " ", with: "") == normalized
+        }) {
+            return match.displayName
+        }
+        return raw
     }
 }

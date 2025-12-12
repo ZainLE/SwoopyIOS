@@ -103,15 +103,11 @@ final class OnboardingViewModel: ObservableObject {
                 throw SimpleError(message: "Image must be under 5MB")
             }
             
-            let photoURL = try await uploadProfilePhoto(image)
+            _ = try await uploadProfilePhoto(image)
             
             // Step 2: Update profile with names and phone
             uploadProgress = "Updating profile..."
             try await updateProfileFields(firstName: names.first, lastName: names.last, phone: phoneValue)
-            
-            // Step 3: Mark onboarding complete
-            uploadProgress = "Completing setup..."
-            try await markOnboardingComplete()
             
             storedFullName = name
             storedPhone = phoneValue
@@ -241,33 +237,6 @@ final class OnboardingViewModel: ObservableObject {
             #endif
             throw SimpleError(message: APIErrorMapper.friendlyMessage(http: http, data: data))
         default:
-            let friendlyMsg = APIErrorMapper.friendlyMessage(http: http, data: data)
-            throw SimpleError(message: friendlyMsg)
-        }
-    }
-    
-    private func markOnboardingComplete() async throws {
-        let token = await SupabaseService.shared.currentAccessTokenOrNil() ?? ""
-        guard !token.isEmpty else { throw SimpleError(message: "Not authenticated") }
-        
-        guard let url = URL(string: SupabaseConfig.apiBaseURL + "/me/onboarding/complete") else {
-            throw SimpleError(message: "Invalid URL")
-        }
-        
-        #if DEBUG
-        print("[Onboarding] POST \(url.absoluteString)")
-        #endif
-        
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw SimpleError(message: "Network error") }
-
-        guard (200...299).contains(http.statusCode) else {
             let friendlyMsg = APIErrorMapper.friendlyMessage(http: http, data: data)
             throw SimpleError(message: friendlyMsg)
         }

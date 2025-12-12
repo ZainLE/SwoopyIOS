@@ -165,7 +165,7 @@ private enum ReservationDateParser {
 }
 
 extension ReservationRow {
-    init(_ r: Reservation) {
+    init(_ r: Reservation, fallbackImageURL: URL? = nil) {
         let p = r.post
 
         id = r.id
@@ -176,7 +176,7 @@ extension ReservationRow {
         condition = p.condition
         mode = p.mode
         distanceKm = p.distance
-        primaryImageURL = p.primaryImageURL
+        primaryImageURL = p.primaryImageURL ?? fallbackImageURL
         addressLine = p.addressLine
 
         ownerName = p.owner?.fullName ?? "Unknown"
@@ -679,12 +679,18 @@ struct ReservationsView: View {
         isLoading = true
         showError = false
         do {
+            let existingImageByReservation: [String: URL?] = Dictionary(uniqueKeysWithValues: reservations.map { ($0.id, $0.primaryImageURL) })
+            let existingImageByPost: [String: URL?] = Dictionary(uniqueKeysWithValues: reservations.map { ($0.postId, $0.primaryImageURL) })
+
             let apiReservations = try await fetchWithRetry(svc: svc) {
                 try await api.getMyReservations()
             }
             // Map and filter out expired reservations upfront
             let rows = apiReservations
-                .map(ReservationRow.init)
+                .map { res -> ReservationRow in
+                    let fallback: URL? = (existingImageByReservation[res.id] ?? nil) ?? (existingImageByPost[res.itemId] ?? nil)
+                    return ReservationRow(res, fallbackImageURL: fallback)
+                }
                 .filter { !$0.isExpired }
             await MainActor.run {
                 reservations = rows
