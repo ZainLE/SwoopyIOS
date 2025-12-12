@@ -51,12 +51,14 @@ final class NotificationsTabViewModel: ObservableObject {
             }
         }
     }
-
+    
     func accept(_ notification: AppNotification) async {
         guard let reservationId = notification.reservationId else { return }
         // Optimistic: flip to accepted
+        var updated = notification
+        updated.state = .accepted
         let previous = notification
-        replaceActionable(notification.updating(state: .accepted))
+        replaceActionable(updated)
         setAction(notification.id, active: true)
         defer { setAction(notification.id, active: false) }
         do {
@@ -94,6 +96,7 @@ final class NotificationsTabViewModel: ObservableObject {
             actionRequired.removeAll { $0.id == notification.id }
             resolvedIDs.insert(notification.id)
             showToast("Pickup confirmed")
+            await reloadNotifications()
         } catch {
             showToast("Couldn't confirm pickup")
         }
@@ -158,8 +161,13 @@ final class NotificationsTabViewModel: ObservableObject {
         let actionableHome = notifications.filter {
             $0.category == .actionable && $0.type == .home_pickup_request
         }
-        // Action Required shows only pending_approval by default; accepted may be present due to optimistic updates
-        let actionableFiltered = actionableHome.filter { $0.state == .pending_approval || $0.state == .accepted }
+        // Action Required shows current actionable items:
+        // - Pending approval
+        // - Accepted with a contact phone (so user can contact/cancel)
+        let actionableFiltered = actionableHome.filter {
+            ($0.state == .pending_approval) ||
+            ($0.state == .accepted)
+        }
             .filter { !dismissedIDs.contains($0.id) && !resolvedIDs.contains($0.id) }
 
         let informational = notifications.filter { $0.category == .informational }

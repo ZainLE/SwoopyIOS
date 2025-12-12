@@ -32,6 +32,9 @@ struct InformationalNotificationRow: View {
     }
     
     private var primaryText: String {
+        if let title = notification.payload?.title, !title.isEmpty {
+            return title
+        }
         switch notification.type {
         case .street_pickup_confirmed:
             return "The item you posted has been picked up"
@@ -48,11 +51,14 @@ struct InformationalNotificationRow: View {
         case .pickup_completed:
             return "Reservation completed"
         default:
-            return "Update"
+            return notification.itemTitle ?? "Update"
         }
     }
     
     private var bodyText: String? {
+        if let body = notification.payload?.body, !body.isEmpty {
+            return body
+        }
         switch notification.type {
         case .street_pickup_confirmed:
             return "Thanks for sharing! Your street pickup is done."

@@ -330,10 +330,12 @@ struct ReservationSummary: Codable, Identifiable {
     let id: String
     let status: String
     let requestedAt: String
+    let contactPhone: String?
     
     enum CodingKeys: String, CodingKey {
         case id, status
         case requestedAt = "requested_at"
+        case contactPhone = "contact_phone"
     }
 }
 
@@ -2047,6 +2049,7 @@ class ApiService: ObservableObject {
             let id: String?
             let status: String?
             let requested_at: String?
+            let contact_phone: String?
         }
         struct ServerPost: Decodable {
             let id: String
@@ -2108,7 +2111,9 @@ class ApiService: ObservableObject {
                     let requested = raw.requested_at
                 else { return nil }
                 let status = raw.status ?? "pending"
-                return ReservationSummary(id: id, status: status, requestedAt: requested)
+                let phone = raw.contact_phone?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let cleanPhone = (phone?.isEmpty == false) ? phone : nil
+                return ReservationSummary(id: id, status: status, requestedAt: requested, contactPhone: cleanPhone)
             }()
 
             let safeTitle = (server.title?.isEmpty ?? true) ? "Untitled item" : (server.title ?? "Untitled item")

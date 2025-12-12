@@ -641,6 +641,8 @@ extension BigCardOverlay {
                 
                 if buttonSet == .streetActive {
                     Button("Directions", action: onTertiaryAction ?? {})
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                         .buttonStyle(SwoopyPillSecondaryStyle(minHeight: 52))
                         .disabled(onTertiaryAction == nil)
                         .opacity(onTertiaryAction == nil ? 0.6 : 1.0)

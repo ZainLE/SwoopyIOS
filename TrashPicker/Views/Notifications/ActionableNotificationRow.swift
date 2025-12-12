@@ -4,18 +4,18 @@ struct ActionableNotificationRow: View {
     let notification: AppNotification
     let relativeTime: String
     let isPerformingAction: Bool
+    let isContactEnabled: Bool
+    let isContactLoading: Bool
+    let contactPhone: String?
     let onApprove: () -> Void
     let onReject: () -> Void
     let onContact: () -> Void
     let onCancel: () -> Void
     
-    private var hasContactPhone: Bool {
-        guard let phone = notification.exposedContactPhone?.trimmingCharacters(in: .whitespacesAndNewlines) else {
-            return false
-        }
-        return !phone.isEmpty
+    private var isHomeAction: Bool {
+        notification.category == .actionable && notification.type == .home_pickup_request
     }
-    
+
     private var titleText: String {
         if notification.type == .street_reserved {
             return "Someone reserved your item"
@@ -156,46 +156,33 @@ struct ActionableNotificationRow: View {
     
     @ViewBuilder
     private var buttons: some View {
-        // CRITICAL FIX: Check notification.state for already-approved notifications
-        // Show Contact/Cancel if state is .accepted (even after app restart)
-        if notification.state == .accepted {
+        if notification.state == .accepted, isHomeAction {
             HStack(spacing: 12) {
                 Button(action: onContact) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "phone.fill")
-                            .font(.system(size: 14, weight: .semibold))
+                    if isContactLoading {
+                        ProgressView()
+                            .tint(.white)
+                            .frame(maxWidth: .infinity)
+                    } else {
                         Text("Contact")
                             .font(.system(size: 16, weight: .semibold))
+                            .frame(maxWidth: .infinity)
                     }
-                    .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(PrimaryActionButtonStyle(
-                    backgroundColor: AppTheme.ColorToken.primary,
-                    foregroundColor: .white
-                ))
-                .disabled(isPerformingAction || !hasContactPhone)
-                .opacity((isPerformingAction || !hasContactPhone) ? 0.5 : 1.0)
-                
+                .buttonStyle(SwoopyPrimaryButtonStyle(minHeight: 48))
+                .disabled(isPerformingAction || !isContactEnabled)
+                .opacity((isPerformingAction || !isContactEnabled) ? 0.5 : 1.0)
+
                 Button(action: onCancel) {
                     Text("Cancel")
                         .font(.system(size: 16, weight: .semibold))
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(SecondaryActionButtonStyle(
-                    borderColor: .red,
-                    foregroundColor: .red
-                ))
+                .buttonStyle(SwoopyOutlineButtonStyle(minHeight: 48))
                 .disabled(isPerformingAction)
                 .opacity(isPerformingAction ? 0.5 : 1.0)
             }
             .frame(height: 48)
-            
-            if hasContactPhone {
-                Text("Use this number to arrange pickup.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .padding(.top, 4)
-            }
             
         } else if notification.state == .pending_approval {
             // Show Approve/Reject for pending notifications

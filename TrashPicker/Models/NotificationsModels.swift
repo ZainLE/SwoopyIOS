@@ -111,6 +111,8 @@ struct NotificationPayload: Hashable {
     let warningFlag: Bool?
     let contactPhone: String?
     let mode: String?  // "home" or "street"
+    let title: String?
+    let body: String?
 
     init(raw: [String: AnyCodable]?) {
         ownerPhone = raw?.string("owner_phone") ?? raw?.string("ownerPhone")
@@ -126,6 +128,8 @@ struct NotificationPayload: Hashable {
         warningFlag = raw?.bool("show_contact_warning") ?? raw?.bool("warningFlag")
         contactPhone = raw?.string("contact_phone") ?? raw?.string("contactPhone")
         mode = raw?.string("mode") ?? raw?.string("pickup_mode") ?? raw?.string("pickupMode")
+        title = raw?.string("title")
+        body = raw?.string("body")
     }
 }
 
@@ -351,6 +355,7 @@ struct AppNotification: Identifiable, Hashable {
     let counterpartyName: String?
     let counterpartyAvatarURL: URL?
     let legacyCounterpartyPhone: String?
+    var localContactPhone: String?
     let itemTitle: String?
     let itemThumbURL: URL?
     let persistenceType: PersistenceType
@@ -362,16 +367,9 @@ struct AppNotification: Identifiable, Hashable {
     var counterpartyPhone: String? { legacyCounterpartyPhone }
 
     var exposedContactPhone: String? {
-        if let direct = payload?.contactPhone, !direct.isEmpty {
-            return direct
-        }
-        if payload?.contactInfoShared == true, let phone = payload?.ownerPhone, !phone.isEmpty {
-            return phone
-        }
-        if let legacyCounterpartyPhone, !legacyCounterpartyPhone.isEmpty {
-            return legacyCounterpartyPhone
-        }
-        return nil
+        guard let localContactPhone else { return nil }
+        let trimmed = localContactPhone.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     func markingRead() -> AppNotification {

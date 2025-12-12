@@ -114,6 +114,7 @@ final class NotificationService: NotificationProviding {
             counterpartyName: preferredName,
             counterpartyAvatarURL: avatarURL,
             legacyCounterpartyPhone: contactPhone,
+            localContactPhone: nil,
             itemTitle: title,
             itemThumbURL: thumbURL,
             persistenceType: persistenceType,

@@ -46,11 +46,11 @@ struct ReservationRow: Identifiable {
     var contactPhone: String?
 
     // reservation state
-    let status: ReservationStatus
+    var status: ReservationStatus
     let requestedAt: Date
     let approvedAt: Date?
     let endAt: Date?
-    let pickedAt: Date?
+    var pickedAt: Date?
     let postExpiresAt: Date?
 
     // locations
@@ -106,28 +106,17 @@ struct ReservationRow: Identifiable {
     }
 
     var canContact: Bool {
-        // Street mode: never show contact (public pickups, no contact needed)
-        guard mode == .home else { return false }
-        
-        // Home mode: only when active and contact info available
-        switch effectiveStatus {
-        case .active:
-            if let phone = contactPhone, !phone.isEmpty {
-                return true
-            }
-            return false
-        default:
-            return false
-        }
+        guard let _ = contactDisplayNumber else { return false }
+        return status != .canceled && status != .expired
     }
 
     var isHome: Bool { mode == .home }
 
     var contactDisplayNumber: String? {
-        if let phone = contactPhone, !phone.isEmpty {
+        if let phone = contactPhone?.trimmingCharacters(in: .whitespacesAndNewlines), !phone.isEmpty {
             return phone
         }
-        if let ownerPhone, !ownerPhone.isEmpty {
+        if let ownerPhone = ownerPhone?.trimmingCharacters(in: .whitespacesAndNewlines), !ownerPhone.isEmpty {
             return ownerPhone
         }
         return nil
@@ -191,9 +180,11 @@ extension ReservationRow {
         addressLine = p.addressLine
 
         ownerName = p.owner?.fullName ?? "Unknown"
-        ownerPhone = p.owner?.phone
+        ownerPhone = p.owner?.phone?.trimmingCharacters(in: .whitespacesAndNewlines)
         ownerAvatarUrl = p.owner?.avatarUrl
-        contactPhone = r.contactPhone
+        let phoneFromReservation = r.contactPhone?.trimmingCharacters(in: .whitespacesAndNewlines)
+        contactPhone = (phoneFromReservation?.isEmpty == false ? phoneFromReservation : nil)
+            ?? ownerPhone
 
         status = ReservationStatus(rawValue: r.status.rawValue) ?? .pending
         requestedAt = ReservationDateParser.parse(r.requestedAt) ?? Date()
@@ -549,33 +540,43 @@ struct ReservationsView: View {
         let copyPhoneNumber: (String) -> Void
         
         func body(content: Content) -> some View {
-            content.confirmationDialog(
-                "Contact giver",
-                isPresented: $showContactOptions,
-                presenting: contactReservation
-            ) { reservation in
-                dialogButtons(for: reservation)
-            } message: { reservation in
-                dialogMessage(for: reservation)
-            }
+            content
+                .popover(
+                    isPresented: Binding(
+                        get: { showContactOptions && contactReservation != nil },
+                        set: { presenting in
+                            if !presenting {
+                                contactReservation = nil
+                                showContactOptions = false
+                            }
+                        }
+                    ),
+                    attachmentAnchor: .rect(.bounds),
+                    arrowEdge: .top
+                ) {
+                    dialogPopover(for: contactReservation)
+                }
         }
         
         @ViewBuilder
-        private func dialogButtons(for reservation: ReservationRow) -> some View {
-            if let phone = reservation.contactDisplayNumber {
-                Button("Call \(phone)") { dialPhoneNumber(phone) }
-                Button("Copy number") { copyPhoneNumber(phone) }
+        private func dialogPopover(for reservation: ReservationRow?) -> some View {
+            VStack(spacing: 10) {
+                if let phone = reservation?.contactDisplayNumber {
+                    Button("Call \(phone)") { dialPhoneNumber(phone) }
+                        .buttonStyle(.borderedProminent)
+                    Button("Copy number") { copyPhoneNumber(phone) }
+                        .buttonStyle(.bordered)
+                } else {
+                    Text("Contact not available yet")
+                        .foregroundColor(.secondary)
+                }
+                Button("Close", role: .cancel) {
+                    contactReservation = nil
+                    showContactOptions = false
+                }
             }
-            Button("Cancel", role: .cancel) {
-                contactReservation = nil
-            }
-        }
-        
-        @ViewBuilder
-        private func dialogMessage(for reservation: ReservationRow) -> some View {
-            if let phone = reservation.contactDisplayNumber {
-                Text(phone)
-            }
+            .padding()
+            .presentationCompactAdaptation(.popover)
         }
     }
 
@@ -601,33 +602,46 @@ struct ReservationsView: View {
         let handleCancel: (String) async -> Void
         
         func body(content: Content) -> some View {
-            content.confirmationDialog(
-                pendingAction?.dialogTitle ?? "",
-                isPresented: Binding<Bool>(
-                    get: { pendingAction != nil },
-                    set: { if !$0 { pendingAction = nil } }
-                ),
-                presenting: pendingAction
-            ) { action in
-                actionButtons(for: action)
-            } message: { action in
-                Text(action.message)
-            }
+            content
+                .popover(
+                    isPresented: Binding(
+                        get: { pendingAction != nil },
+                        set: { presenting in
+                            if !presenting { pendingAction = nil }
+                        }
+                    ),
+                    attachmentAnchor: .rect(.bounds),
+                    arrowEdge: .top
+                ) {
+                    if let action = pendingAction {
+                        actionPopover(for: action)
+                    }
+                }
         }
         
         @ViewBuilder
-        private func actionButtons(for action: PendingReservationAction) -> some View {
-            switch action.kind {
-            case .pickup:
-                Button(action.confirmButtonTitle) {
-                    Task { await handlePickup(action.reservationId) }
+        private func actionPopover(for action: PendingReservationAction) -> some View {
+            VStack(spacing: 10) {
+                Text(action.message)
+                    .font(.body)
+                    .multilineTextAlignment(.center)
+                    .padding(.bottom, 4)
+                switch action.kind {
+                case .pickup:
+                    Button(action.confirmButtonTitle) {
+                        Task { await handlePickup(action.reservationId) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                case .cancel:
+                    Button(action.confirmButtonTitle, role: .destructive) {
+                        Task { await handleCancel(action.reservationId) }
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-            case .cancel:
-                Button(action.confirmButtonTitle, role: .destructive) {
-                    Task { await handleCancel(action.reservationId) }
-                }
+                Button("Not now", role: .cancel) { pendingAction = nil }
             }
-            Button("Not now", role: .cancel) { }
+            .padding()
+            .presentationCompactAdaptation(.popover)
         }
     }
 
@@ -661,6 +675,7 @@ struct ReservationsView: View {
                 .filter { !$0.isExpired }
             await MainActor.run {
                 reservations = rows
+                applyApprovedPhones(notificationService.contactPhonesByReservation)
                 hydrateMissingLocations(for: rows)
                 isLoading = false
 
@@ -861,14 +876,6 @@ struct ReservationsView: View {
         }
     }
     
-    @MainActor
-    private func scheduleReservationsRefresh(after seconds: Double = 1.2) {
-        Task {
-            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            await loadReservations()
-        }
-    }
-
     private func shouldTreatAsResolved(_ error: Error) -> Bool {
         if let apiError = error as? ApiServiceError {
             switch apiError {
@@ -1080,24 +1087,15 @@ struct ReservationsView: View {
 
     private func onContact(reservation: ReservationRow) {
         Metrics.contactButtonTap(reservationId: reservation.id, postId: reservation.postId)
-        switch (reservation.mode, reservation.status) {
-        case (.home, .pending):
-            showToastMessage("Waiting for giver's confirmation")
-        case (.home, .active):
-            if reservation.canContact, reservation.contactDisplayNumber != nil {
-                contactReservation = reservation
-                showContactOptions = true
-            } else {
-                pendingContactRefreshId = reservation.id
-                NotificationCenter.default.post(name: .refreshReservations, object: reservation.id)
-            }
-        case (_, .picked):
-            showToastMessage("Already picked up.")
-        case (_, .canceled), (_, .expired):
-            showToastMessage("Reservation is no longer active.")
-        default:
-            break
+        guard reservation.canContact, let phone = reservation.contactDisplayNumber else {
+            showToastMessage("Contact not available yet")
+            return
         }
+        var updatedReservation = reservation
+        // Normalize the phone we surface in the dialog to the one we can dial right now.
+        updatedReservation.contactPhone = phone
+        contactReservation = updatedReservation
+        showContactOptions = true
     }
 
     @MainActor
@@ -1119,8 +1117,9 @@ struct ReservationsView: View {
             }
 
             Haptics.play(.success)
-            removeReservation(reservationId: reservationId, postId: reservation.postId)
+            markReservationCompletedAndFadeOut(reservationId: reservationId, postId: reservation.postId)
             showToastMessage("Reservation completed ✅")
+            Task { await loadReservations() }
 
             if ConsentManager.shared.analytics == .provided {
                 let userId = svc.userId?.uuidString ?? "unknown"
@@ -1130,14 +1129,13 @@ struct ReservationsView: View {
                 Smartlook.instance.track(event: "ItemPickedUp", properties: props)
             }
 
-            scheduleReservationsRefresh()
             FeedViewModel.requestFeedRefresh()
 
         } catch {
             if shouldTreatAsResolved(error) {
-                removeReservation(reservationId: reservationId, postId: reservation.postId)
+                markReservationCompletedAndFadeOut(reservationId: reservationId, postId: reservation.postId)
                 showToastMessage("Reservation completed ✅")
-                scheduleReservationsRefresh()
+                Task { await loadReservations() }
                 FeedViewModel.requestFeedRefresh()
             } else {
                 let message = readableMessage(from: error)
@@ -1206,7 +1204,6 @@ struct ReservationsView: View {
             showToastMessage("Reservation canceled")
             // Trigger refetches for reservations and notifications consumers
             NotificationCenter.default.post(name: .refreshReservations, object: reservationId)
-            scheduleReservationsRefresh()
             FeedViewModel.requestFeedRefresh()
 
         } catch {
@@ -1221,7 +1218,6 @@ struct ReservationsView: View {
                 removeReservation(reservationId: reservationId, postId: reservation.postId)
                 showToastMessage("Reservation is no longer active.")
                 NotificationCenter.default.post(name: .refreshReservations, object: reservationId)
-                scheduleReservationsRefresh()
                 FeedViewModel.requestFeedRefresh()
             } else {
                 let message = readableMessage(from: error)
@@ -1274,6 +1270,26 @@ struct ReservationsView: View {
             if toastRetryAction == nil {
                 withAnimation { showToast = false }
             }
+        }
+    }
+
+    @MainActor
+    private func markReservationCompletedAndFadeOut(reservationId: String, postId: String) {
+        // Update local model to show completed state briefly
+        if let idx = reservations.firstIndex(where: { $0.id == reservationId }) {
+            reservations[idx].status = .picked
+            reservations[idx].pickedAt = Date()
+        }
+
+        if selectedReservation?.id == reservationId {
+            selectedReservation?.status = .picked
+            selectedReservation?.pickedAt = Date()
+        }
+
+        // Remove after short delay to allow the user to see completion
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            removeReservation(reservationId: reservationId, postId: postId)
         }
     }
 
@@ -1330,18 +1346,22 @@ struct ReservationsView: View {
     }
 
     private func reservationVariant(for reservation: ReservationRow) -> BigCardOverlay.Variant {
-        switch (reservation.mode, reservation.status) {
-        case (.street, .pending):
-            return .reservations(.streetPending)
-        case (.street, .active):
-            return .reservations(.streetActive)
-        case (.home, .pending):
-            return .reservations(.homePending)
-        case (.home, .active):
-            return .reservations(.homeActive)
-        case (_, .picked):
+        if reservation.status == .picked {
             return .reservations(.completed)
-        default:
+        }
+
+        switch reservation.mode {
+        case .street:
+            return reservation.status == .active
+                ? .reservations(.streetActive)
+                : .reservations(.streetPending)
+        case .home:
+            if reservation.canContact {
+                return .reservations(.homeActive)
+            }
+            if reservation.status == .active {
+                return .reservations(.homeActive)
+            }
             return .reservations(.homePending)
         }
     }
