@@ -9,6 +9,7 @@ import Foundation
 
 enum SafetyStrings {
     static let report = NSLocalizedString("Report", comment: "Report content button")
+    static let reportUser = NSLocalizedString("Report User", comment: "Report user button")
     static let blockUser = NSLocalizedString("Block User", comment: "Block user button")
     static let chooseReason = NSLocalizedString("Choose a reason", comment: "Report reason section header")
     static let addDetails = NSLocalizedString("Add details (optional)", comment: "Optional details section header")
@@ -24,11 +25,13 @@ enum SafetyStrings {
     
     // Category labels
     static let categorySpam = NSLocalizedString("Spam", comment: "Report category: Spam")
-    static let categoryHarassment = NSLocalizedString("Harassment / Abuse", comment: "Report category: Harassment")
-    static let categoryHate = NSLocalizedString("Hate / Violence", comment: "Report category: Hate")
-    static let categoryFraud = NSLocalizedString("Fraud / Scam", comment: "Report category: Fraud")
-    static let categoryIllegal = NSLocalizedString("Illegal Item / Activity", comment: "Report category: Illegal")
+    static let categoryHarassment = NSLocalizedString("Harassment or Abuse", comment: "Report category: Harassment")
+    static let categoryHate = NSLocalizedString("Hate or Violence", comment: "Report category: Hate")
+    static let categoryFraud = NSLocalizedString("Fraud or Scam", comment: "Report category: Fraud")
+    static let categoryIllegal = NSLocalizedString("Illegal or Unsafe", comment: "Report category: Illegal")
     static let categoryInappropriate = NSLocalizedString("Inappropriate Content", comment: "Report category: Inappropriate")
+    static let categoryNudity = NSLocalizedString("Nudity or Sexual Content", comment: "Report category: Nudity")
+    static let categoryImpersonation = NSLocalizedString("Impersonation", comment: "Report category: Impersonation")
     static let categoryOther = NSLocalizedString("Other", comment: "Report category: Other")
     
     // Moderation banners

@@ -281,6 +281,7 @@ struct ReservationsView: View {
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var notificationService: ReservationNotificationService
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var blockStore = BlockStore.shared
 
     var onGoToFeed: (() -> Void)? = nil
 
@@ -326,6 +327,9 @@ struct ReservationsView: View {
                 .task {
                     await maybeLoadReservations()
                     applyApprovedPhones(notificationService.contactPhonesByReservation)
+                    if let api {
+                        BlockStore.shared.configure(api: api)
+                    }
                 }
                 .modifier(authenticationChanges)
                 .modifier(notificationHandlers)
@@ -603,45 +607,54 @@ struct ReservationsView: View {
         
         func body(content: Content) -> some View {
             content
-                .popover(
+                .sheet(
                     isPresented: Binding(
                         get: { pendingAction != nil },
                         set: { presenting in
                             if !presenting { pendingAction = nil }
                         }
-                    ),
-                    attachmentAnchor: .rect(.bounds),
-                    arrowEdge: .top
+                    )
                 ) {
                     if let action = pendingAction {
-                        actionPopover(for: action)
+                        actionSheet(for: action)
+                            .presentationDetents([.fraction(0.3)])
+                            .presentationDragIndicator(.visible)
                     }
                 }
         }
         
         @ViewBuilder
-        private func actionPopover(for action: PendingReservationAction) -> some View {
-            VStack(spacing: 10) {
+        private func actionSheet(for action: PendingReservationAction) -> some View {
+            VStack(spacing: 14) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.35))
+                    .frame(width: 40, height: 4)
+                    .padding(.top, 8)
+
                 Text(action.message)
                     .font(.body)
                     .multilineTextAlignment(.center)
-                    .padding(.bottom, 4)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 2)
+
                 switch action.kind {
                 case .pickup:
                     Button(action.confirmButtonTitle) {
                         Task { await handlePickup(action.reservationId) }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(SwoopyPrimaryButtonStyle(minHeight: 48))
                 case .cancel:
                     Button(action.confirmButtonTitle, role: .destructive) {
                         Task { await handleCancel(action.reservationId) }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(SwoopyPrimaryButtonStyle(minHeight: 48))
                 }
                 Button("Not now", role: .cancel) { pendingAction = nil }
+                    .buttonStyle(SwoopyOutlineButtonStyle())
             }
-            .padding()
-            .presentationCompactAdaptation(.popover)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 24)
+            .padding(.top, 6)
         }
     }
 
@@ -818,6 +831,7 @@ struct ReservationsView: View {
                 if $0.isCompletedRecently { return true }
                 return $0.effectiveStatus == .pending || $0.effectiveStatus == .active
             }
+            .filter { !blockStore.isBlocked($0.ownerId) }
             .sorted { $0.requestedAt > $1.requestedAt }
     }
 
@@ -1100,6 +1114,9 @@ struct ReservationsView: View {
 
     @MainActor
     private func handlePickup(reservationId: String) async {
+        // Close confirmation sheet immediately after user acts
+        pendingAction = nil
+
         guard let api else { return }
         guard let reservation = reservations.first(where: { $0.id == reservationId }) else { return }
         let allowedStatuses: [ReservationStatus] = reservation.mode == .street ? [.active, .pending] : [.active]
@@ -1153,6 +1170,9 @@ struct ReservationsView: View {
         Diag.log(.action, "cancel.tap", fields: ["corr": corr, "reservationId": reservationId])
         #endif
         
+        // Close confirmation sheet immediately after user acts
+        pendingAction = nil
+
         guard let api else { return }
         guard let reservation = reservations.first(where: { $0.id == reservationId }) else { return }
 
@@ -1575,7 +1595,7 @@ private struct ReservationCard: View {
     }
 
     private var thumbnail: some View {
-        AsyncImage(url: reservation.primaryImageURL) { phase in
+        ResilientAsyncImage(url: reservation.primaryImageURL) { phase in
             switch phase {
             case .success(let image):
                 image

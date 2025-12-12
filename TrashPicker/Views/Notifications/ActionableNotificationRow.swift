@@ -37,7 +37,14 @@ struct ActionableNotificationRow: View {
                         
                         Text(notification.counterpartyName ?? "Someone")
                             .font(.headline)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(.primary)
+                            .lineLimit(2)
+                    }
+                    
+                    if let title = notification.itemTitle, !title.isEmpty {
+                        Text(title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(.primary)
                             .lineLimit(2)
                     }
                     
@@ -47,10 +54,7 @@ struct ActionableNotificationRow: View {
                         .foregroundColor(.secondary)
                 }
                 
-                Spacer()
-                
-                // Mode pill
-                modePill
+                Spacer(minLength: 0)
             }
             
             // Buttons based on state
@@ -71,9 +75,8 @@ struct ActionableNotificationRow: View {
     
     @ViewBuilder
     private var itemThumbnail: some View {
-        // FIXED: Better image loading with proper error handling
         if let thumbURL = notification.itemThumbURL {
-            AsyncImage(url: thumbURL) { phase in
+            ResilientAsyncImage(url: thumbURL) { phase in
                 switch phase {
                 case .empty:
                     // Loading state
@@ -119,12 +122,24 @@ struct ActionableNotificationRow: View {
     @ViewBuilder
     private var requesterAvatar: some View {
         if let url = notification.counterpartyAvatarURL {
-            AsyncImage(url: url) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                Circle()
-                    .fill(Color.gray.opacity(0.2))
-                    .overlay(Image(systemName: "person.fill").font(.system(size: 14)).foregroundColor(.gray))
+            ResilientAsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+                case .empty:
+                    Circle()
+                        .fill(Color.gray.opacity(0.2))
+                        .overlay(
+                            ProgressView()
+                                .scaleEffect(0.6)
+                        )
+                default:
+                    Circle()
+                        .fill(Color.gray.opacity(0.2))
+                        .overlay(Image(systemName: "person.fill").font(.system(size: 14)).foregroundColor(.gray))
+                }
             }
             .clipShape(Circle())
         } else {
@@ -135,30 +150,13 @@ struct ActionableNotificationRow: View {
     }
     
     @ViewBuilder
-    private var modePill: some View {
-        let isHome = (notification.mode ?? "home") == "home" || notification.type == .home_pickup_request
-        let modeLabel = isHome ? "Home pickup" : "Street pickup"
-        let modeIcon = isHome ? "house.fill" : "mappin.circle.fill"
-        
-        HStack(spacing: 4) {
-            Image(systemName: modeIcon)
-                .font(.system(size: 10, weight: .semibold))
-            Text(modeLabel)
-                .font(.caption2)
-                .fontWeight(.semibold)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(AppTheme.ColorToken.primary.opacity(0.12))
-        .foregroundColor(AppTheme.ColorToken.primary)
-        .clipShape(Capsule())
-    }
-    
-    @ViewBuilder
     private var buttons: some View {
         if notification.state == .accepted, isHomeAction {
             HStack(spacing: 12) {
-                Button(action: onContact) {
+                Button {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    onContact()
+                } label: {
                     if isContactLoading {
                         ProgressView()
                             .tint(.white)
@@ -173,7 +171,10 @@ struct ActionableNotificationRow: View {
                 .disabled(isPerformingAction || !isContactEnabled)
                 .opacity((isPerformingAction || !isContactEnabled) ? 0.5 : 1.0)
 
-                Button(action: onCancel) {
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onCancel()
+                } label: {
                     Text("Cancel")
                         .font(.system(size: 16, weight: .semibold))
                         .frame(maxWidth: .infinity)
@@ -187,7 +188,10 @@ struct ActionableNotificationRow: View {
         } else if notification.state == .pending_approval {
             // Show Approve/Reject for pending notifications
             HStack(spacing: 12) {
-                Button(action: onApprove) {
+                Button {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    onApprove()
+                } label: {
                     Text("Approve")
                         .font(.system(size: 16, weight: .semibold))
                         .frame(maxWidth: .infinity)
@@ -199,15 +203,15 @@ struct ActionableNotificationRow: View {
                 .disabled(isPerformingAction)
                 .opacity(isPerformingAction ? 0.5 : 1.0)
                 
-                Button(action: onReject) {
-                    Text("Reject")
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onReject()
+                } label: {
+                    Text("Skip")
                         .font(.system(size: 16, weight: .semibold))
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(SecondaryActionButtonStyle(
-                    borderColor: .red,
-                    foregroundColor: .red
-                ))
+                .buttonStyle(SwoopyOutlineButtonStyle(minHeight: 48))
                 .disabled(isPerformingAction)
                 .opacity(isPerformingAction ? 0.5 : 1.0)
             }

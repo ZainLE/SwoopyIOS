@@ -9,22 +9,26 @@ import Foundation
 
 struct ReportPayload: Codable {
     enum Category: String, CaseIterable, Codable {
-        case spam
-        case harassment
-        case hate
-        case fraud
-        case illegal
-        case inappropriate
+        case spamOrMisleading = "spam_or_misleading"
+        case illegalOrUnsafe = "illegal_or_unsafe"
+        case inappropriateContent = "inappropriate_content"
+        case harassmentOrAbuse = "harassment_or_abuse"
+        case hateOrViolence = "hate_or_violence"
+        case fraudOrScam = "fraud_or_scam"
+        case nudityOrSexual = "nudity_or_sexual_content"
+        case impersonation = "impersonation"
         case other
         
         var displayName: String {
             switch self {
-            case .spam: return SafetyStrings.categorySpam
-            case .harassment: return SafetyStrings.categoryHarassment
-            case .hate: return SafetyStrings.categoryHate
-            case .fraud: return SafetyStrings.categoryFraud
-            case .illegal: return SafetyStrings.categoryIllegal
-            case .inappropriate: return SafetyStrings.categoryInappropriate
+            case .spamOrMisleading: return SafetyStrings.categorySpam
+            case .illegalOrUnsafe: return SafetyStrings.categoryIllegal
+            case .inappropriateContent: return SafetyStrings.categoryInappropriate
+            case .harassmentOrAbuse: return SafetyStrings.categoryHarassment
+            case .hateOrViolence: return SafetyStrings.categoryHate
+            case .fraudOrScam: return SafetyStrings.categoryFraud
+            case .nudityOrSexual: return SafetyStrings.categoryNudity
+            case .impersonation: return SafetyStrings.categoryImpersonation
             case .other: return SafetyStrings.categoryOther
             }
         }

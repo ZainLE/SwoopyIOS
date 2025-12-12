@@ -365,7 +365,7 @@ struct FeedCard: View {
     private func imageContentView() -> some View {
         let urls = itemImageURLs
         if let url = (urls.indices.contains(currentImageIndex) ? urls[currentImageIndex] : urls.first) {
-            AsyncImage(url: url) { phase in
+            ResilientAsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let img):
                     img.resizable()

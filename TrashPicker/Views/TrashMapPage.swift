@@ -72,10 +72,7 @@ struct TrashMapPage: View {
                 // Street items: precise pin
                 ForEach(pins.filter { $0.mode != "home" }) { item in
                     Annotation(item.title, coordinate: item.coordinate) {
-                        Image(systemName: "mappin.circle.fill")
-                            .font(.title)
-                            .foregroundStyle(.red)
-                            .shadow(radius: 1)
+                        MapPinImage()
                     }
                 }
                 UserAnnotation()
@@ -205,5 +202,16 @@ struct TrashMapPage: View {
 
     private func regionCenter() -> CLLocationCoordinate2D {
         return lastRegion?.center ?? regionFallback.center
+    }
+}
+
+private struct MapPinImage: View {
+    var body: some View {
+        Image("MapPin")
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .frame(width: 32, height: 38)
+            .shadow(radius: 1)
+            .offset(y: -6)
     }
 }

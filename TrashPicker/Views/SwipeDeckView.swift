@@ -732,6 +732,7 @@ struct SwipeDeckView: View {
         guard !isReserving else { return } // Prevent action during reserve
         
         dbg("ACTION", "pass \(post.id.prefix(8))")
+        Haptics.play(.tabReselect) // light haptic for pass/swipe-left
         
         await deckState.triggerPass()
         
@@ -2179,6 +2180,7 @@ extension SwipeDeckView {
                         let result = try await withTimeout(seconds: 18.0) {
                             try await api.getFeed(query: query)
                         }
+                        posts = result
                         feedVM.items = result
                         mapError = nil
                         pruneSelectionIfNeeded()

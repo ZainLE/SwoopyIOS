@@ -15,13 +15,36 @@ final class FeedViewModel: ObservableObject {
     private var lastRefreshLocation: CLLocationCoordinate2D?
     private var lastRefreshRadius: Double = 10.0
     private let coalescer = FeedCoalescer()
+    private let blockStore = BlockStore.shared
+    private let hiddenStore = HiddenContentStore.shared
+    private var cancellables: Set<AnyCancellable> = []
+    private var baseItems: [Post] = []
     
     // MARK: - Notification Name
     static let feedDidChangeNotification = Notification.Name("FeedDidChange")
     
     init(api: ApiService) {
         self.api = api
+        blockStore.configure(api: api)
         setupNotificationObserver()
+        blockStore.$blockedIds
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.applyBlockFilter()
+            }
+            .store(in: &cancellables)
+        hiddenStore.$hiddenPostIds
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.applyBlockFilter()
+            }
+            .store(in: &cancellables)
+        hiddenStore.$hideReportedContent
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.applyBlockFilter()
+            }
+            .store(in: &cancellables)
     }
     
     // MARK: - Public API
@@ -85,7 +108,8 @@ final class FeedViewModel: ObservableObject {
             // Only update if this task wasn't cancelled
             guard !Task.isCancelled else { return }
             
-            items = fetchedItems
+            baseItems = fetchedItems
+            applyBlockFilter()
             lastRefreshLocation = location
             lastRefreshRadius = radiusKm
             
@@ -112,6 +136,18 @@ final class FeedViewModel: ObservableObject {
     deinit {
         currentTask?.cancel()
         NotificationCenter.default.removeObserver(self)
+        cancellables.forEach { $0.cancel() }
+    }
+
+    private func applyBlockFilter() {
+        let filtered = baseItems.filter { post in
+            let blockedOwner = blockStore.isBlocked(post.ownerId)
+            let hidden = hiddenStore.shouldHide(post: post, isBlocked: blockedOwner)
+            return !hidden
+        }
+        if filtered != items {
+            items = filtered
+        }
     }
 }
 

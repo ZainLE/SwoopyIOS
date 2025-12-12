@@ -61,9 +61,9 @@ struct BigCardOverlay: View {
     private let reportToastDuration: UInt64 = 2_500_000_000
 
     private let reportPostReasons: [ReportPostReason] = [
-        ReportPostReason(id: "spam", title: "Spam or misleading", category: .spam),
-        ReportPostReason(id: "illegal", title: "Illegal or unsafe", category: .illegal),
-        ReportPostReason(id: "inappropriate", title: "Inappropriate content", category: .inappropriate)
+        ReportPostReason(id: "spam", title: "Spam or misleading", category: .spamOrMisleading),
+        ReportPostReason(id: "illegal", title: "Illegal or unsafe", category: .illegalOrUnsafe),
+        ReportPostReason(id: "inappropriate", title: "Inappropriate content", category: .inappropriateContent)
     ]
     
     enum LocationMode {
@@ -173,12 +173,19 @@ struct BigCardOverlay: View {
         self.onTertiaryAction = onTertiaryAction
         self.onReservationAction = onReservationAction
         
-        let resolved = BigCardOverlay.resolveCoordinate(
+        var resolved = BigCardOverlay.resolveCoordinate(
             mode: mode,
             variant: variant,
             exactCoordinate: exactCoordinate,
             approxCoordinate: approxCoordinate
         )
+        
+        // Fallback to cached street coordinate so the map pin still shows when the feed payload lacks location
+        if resolved.coordinate == nil, mode == .street, let postID,
+           let cached = LocationCache.shared.coordinate(for: postID, mode: .street) {
+            resolved = (coordinate: cached, precision: .approximate)
+        }
+        
         self.displayCoordinate = resolved.coordinate
         self.locationPrecision = resolved.precision
         _locationViewModel = StateObject(
@@ -336,7 +343,7 @@ extension BigCardOverlay {
         ZStack {
             TabView(selection: $currentImageIndex) {
                 ForEach(Array(images.enumerated()), id: \.offset) { index, imageUrl in
-                    AsyncImage(url: URL(string: imageUrl)) { phase in
+                    ResilientAsyncImage(url: URL(string: imageUrl)) { phase in
                         switch phase {
                         case .success(let image):
                             image
@@ -502,7 +509,7 @@ extension BigCardOverlay {
             HStack(spacing: 12) {
                 // Avatar
                 if let avatarUrl = ownerAvatarUrl {
-                    AsyncImage(url: avatarUrl) { phase in
+                    ResilientAsyncImage(url: avatarUrl) { phase in
                         switch phase {
                         case .success(let image):
                             image
@@ -769,9 +776,9 @@ extension BigCardOverlay {
     private func submitReport(for reason: ReportPostReason) {
         guard let postID else { return }
         Task {
-            let payload = ReportPayload(postId: postID, reportedUserId: nil, category: reason.category, notes: nil)
             do {
-                try await api.reportPost(payload)
+                _ = try await api.reportPost(postId: postID)
+                HiddenContentStore.shared.add(postId: postID)
             } catch {
                 DLog("[REPORT] post_report_error=\(error.localizedDescription)")
             }

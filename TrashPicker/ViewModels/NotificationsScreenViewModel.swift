@@ -296,9 +296,9 @@ final class NotificationsScreenViewModel: ObservableObject {
 
     private func apply(notifications: [AppNotification]) {
         assertMainThread("NotificationsScreenViewModel.apply")
-        cachedNotifications = notifications
-        purgeDismissedIds(using: notifications)
-        let visibleNotifications = filterLocallyDismissed(from: notifications)
+        cachedNotifications = filterLowSignal(notifications)
+        purgeDismissedIds(using: cachedNotifications)
+        let visibleNotifications = filterLocallyDismissed(from: cachedNotifications)
 
         // CRITICAL FIX: Filter actionable to ONLY home pickups (exclude street pickups)
         // Include both pending_approval AND accepted states (for Contact/Cancel buttons)
@@ -334,6 +334,10 @@ final class NotificationsScreenViewModel: ObservableObject {
         apply(notifications: cachedNotifications)
     }
 
+    private func filterLowSignal(_ notifications: [AppNotification]) -> [AppNotification] {
+        notifications.filter { !$0.isNameOnlyPing }
+    }
+
     private func filterLocallyDismissed(from notifications: [AppNotification]) -> [AppNotification] {
         guard !locallyDismissedIds.isEmpty else { return notifications }
         return notifications.filter { !locallyDismissedIds.contains($0.id) }
@@ -344,5 +348,21 @@ final class NotificationsScreenViewModel: ObservableObject {
         let serverIds = Set(notifications.map { $0.id })
         locallyDismissedIds = locallyDismissedIds.intersection(serverIds)
         NotificationsScreenViewModel.persistedDismissedIds = locallyDismissedIds
+    }
+}
+
+private extension AppNotification {
+    /// Filters out "name-only" pings (no title/body/item) that don't convey useful context.
+    var isNameOnlyPing: Bool {
+        guard category != .actionable else { return false }
+        guard type == .unknown else { return false }
+
+        let title = payload?.title ?? itemTitle ?? ""
+        let body = payload?.body ?? ""
+        let hasText = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                      !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+        let hasThumb = itemThumbURL != nil
+        return !hasText && !hasThumb
     }
 }

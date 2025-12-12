@@ -707,9 +707,10 @@ private struct ReserveResponse: Decodable {
 // MARK: - API Service
 
 class ApiService: ObservableObject {
-    private let baseURL: String = SupabaseConfig.apiBaseURL
-    private var session: URLSession
-    private let supabaseService: SupabaseService
+    // Internal so extensions in other files (e.g., safety flows) can reuse core helpers
+    let baseURL: String = SupabaseConfig.apiBaseURL
+    var session: URLSession
+    let supabaseService: SupabaseService
     
     @Published var isAuthenticated = false
     
@@ -781,7 +782,7 @@ class ApiService: ObservableObject {
         ]
     }
 
-    private func resolvedURL(for rawPath: String, query: [URLQueryItem]? = nil) throws -> URL {
+    func resolvedURL(for rawPath: String, query: [URLQueryItem]? = nil) throws -> URL {
         if let absolute = URL(string: rawPath), absolute.scheme != nil {
             var components = URLComponents(url: absolute, resolvingAgainstBaseURL: false)
             if let query, !query.isEmpty {
@@ -1610,10 +1611,14 @@ class ApiService: ObservableObject {
         let req = try buildRequest(path: "/feed", method: .GET, query: queryItems, headers: headers)
         let (data, resp) = try await send(req)
         if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
+            #if DEBUG
+            DLog("[FEED ERR] status=\(http.statusCode) body=\(body)")
+            #endif
             if let msg = try? JSONDecoder().decode(APIErrorMessage.self, from: data).error {
                 throw ApiServiceError.serverError(msg)
             } else {
-                throw ApiServiceError.serverError("HTTP \(http.statusCode)")
+                throw ApiServiceError.serverError("HTTP \(http.statusCode) body=\(body)")
             }
         }
         let response = try JSONDecoder().decode(FeedResponse.self, from: data)

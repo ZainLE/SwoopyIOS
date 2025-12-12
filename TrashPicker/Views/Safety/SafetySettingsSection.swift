@@ -10,6 +10,7 @@ import SwiftUI
 struct SafetySettingsSection: View {
     @AppStorage("feature_safety_v1") private var featureSafety = true
     @AppStorage("safety_demo_mode") private var demoMode = false
+    @ObservedObject private var hiddenStore = HiddenContentStore.shared
     
     var body: some View {
         Section {
@@ -21,6 +22,19 @@ struct SafetySettingsSection: View {
                         .foregroundColor(AppTheme.ColorToken.text)
                     
                     Text("Report content and block users")
+                        .font(AppTheme.Typography.footnote)
+                        .foregroundColor(AppTheme.ColorToken.mutedGray)
+                }
+            }
+            .tint(AppTheme.ColorToken.primary)
+
+            Toggle(isOn: $hiddenStore.hideReportedContent) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Hide reported content")
+                        .font(AppTheme.Typography.body)
+                        .foregroundColor(AppTheme.ColorToken.text)
+                    
+                    Text("Filter posts you have reported")
                         .font(AppTheme.Typography.footnote)
                         .foregroundColor(AppTheme.ColorToken.mutedGray)
                 }

@@ -35,42 +35,24 @@ struct NotificationsViewNew: View {
     }
     
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("Tab", selection: $selectedTab) {
-                ForEach(Tab.allCases, id: \.self) { tab in
-                    HStack(spacing: 4) {
-                        Text(tab.rawValue)
-                        if tab == .actionRequired && viewModel.actionable.count > 0 {
-                            Text("\(viewModel.actionable.count)")
-                                .font(.caption2.bold())
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.red)
-                                .clipShape(Capsule())
-                        }
-                        if tab == .updates && viewModel.unreadCount > 0 {
-                            Text("\(viewModel.unreadCount)")
-                                .font(.caption2.bold())
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.red)
-                                .clipShape(Capsule())
-                        }
-                    }
-                    .tag(tab)
+        ScrollView {
+            VStack(spacing: 16) {
+                NotificationsSegmentedControl(
+                    selectedTab: $selectedTab,
+                    actionCount: viewModel.actionable.count,
+                    updatesCount: viewModel.unreadCount
+                )
+                .padding(.top, 8)
+                
+                switch selectedTab {
+                case .actionRequired:
+                    actionRequiredContent
+                case .updates:
+                    updatesContent
                 }
             }
-            .pickerStyle(.segmented)
-            .padding()
-            
-            switch selectedTab {
-            case .actionRequired:
-                actionRequiredContent
-            case .updates:
-                updatesContent
-            }
+            .padding(.horizontal)
+            .padding(.bottom, 24)
         }
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.large)
@@ -150,10 +132,10 @@ struct NotificationsViewNew: View {
             requestsListView(viewModel.actionable)
                 .onAppear {
                     viewModel.refresh()
-                }
         }
     }
-    
+}
+
     @ViewBuilder
     private var updatesContent: some View {
         if viewModel.isLoading {
@@ -204,52 +186,47 @@ struct NotificationsViewNew: View {
     // MARK: - Requests List
     
     private func requestsListView(_ notifications: [AppNotification]) -> some View {
-        ScrollView {
-            LazyVStack(spacing: 16) {
-                ForEach(notifications) { notification in
-                    let contactPhone = notification.reservationId.flatMap { reservationContacts[$0]?.trimmedPhone }
-                    ActionableNotificationRow(
-                        notification: notification,
-                        relativeTime: relativeTime(from: notification.createdAt),
-                        isPerformingAction: processingRequestIds.contains(notification.id),
-                        isContactEnabled: contactAvailability(for: notification).enabled,
-                        isContactLoading: contactAvailability(for: notification).loading,
-                        contactPhone: contactPhone,
-                        onApprove: {
-                            pendingApprovalNotification = notification
-                            showApprovalPrompt = true
-                        },
-                        onReject: {
-                            Task { await rejectNotification(notification) }
-                        },
-                        onContact: {
-                            handleContactTap(notification)
-                        },
-                        onCancel: {
-                            Task { await cancelNotification(notification) }
-                        }
-                    )
-                    .popover(
-                        isPresented: Binding(
-                            get: { showContactOptions && contactPopoverNotificationId == notification.id },
-                            set: { presenting in
-                                if !presenting {
-                                    showContactOptions = false
-                                    pendingContactPhone = nil
-                                    contactPopoverNotificationId = nil
-                                }
-                            }
-                        ),
-                        attachmentAnchor: .rect(.bounds),
-                        arrowEdge: .top
-                    ) {
-                        contactPopoverContent()
+        LazyVStack(spacing: 16) {
+            ForEach(notifications) { notification in
+                let contactPhone = notification.reservationId.flatMap { reservationContacts[$0]?.trimmedPhone }
+                ActionableNotificationRow(
+                    notification: notification,
+                    relativeTime: relativeTime(from: notification.createdAt),
+                    isPerformingAction: processingRequestIds.contains(notification.id),
+                    isContactEnabled: contactAvailability(for: notification).enabled,
+                    isContactLoading: contactAvailability(for: notification).loading,
+                    contactPhone: contactPhone,
+                    onApprove: {
+                        pendingApprovalNotification = notification
+                        showApprovalPrompt = true
+                    },
+                    onReject: {
+                        Task { await rejectNotification(notification) }
+                    },
+                    onContact: {
+                        handleContactTap(notification)
+                    },
+                    onCancel: {
+                        Task { await cancelNotification(notification) }
                     }
-                    .padding(.horizontal, 16)
+                )
+                .popover(
+                    isPresented: Binding(
+                        get: { showContactOptions && contactPopoverNotificationId == notification.id },
+                        set: { presenting in
+                            if !presenting {
+                                showContactOptions = false
+                                pendingContactPhone = nil
+                                contactPopoverNotificationId = nil
+                            }
+                        }
+                    ),
+                    attachmentAnchor: .rect(.bounds),
+                    arrowEdge: .top
+                ) {
+                    contactPopoverContent()
                 }
             }
-            .padding(.top, 16)
-            .padding(.bottom, 12)
         }
     }
     
@@ -265,29 +242,24 @@ struct NotificationsViewNew: View {
     // MARK: - Notifications List
     
     private func notificationsListView(_ notifications: [AppNotification]) -> some View {
-        ScrollView {
-            LazyVStack(spacing: 16) {
-                ForEach(notifications) { notification in
-                    // Informational updates should never expose contact actions.
-                    let contactAction: (() -> Void)? = nil
-                    let deleteAction: (() -> Void)? = notification.category == .informational ? {
-                        Task { await deleteNotification(notification) }
-                    } : nil
-                    NotificationRow(
-                        notification: notification,
-                        timeAgo: relativeTime(from: notification.createdAt),
-                        onTap: { handleNotificationTap(notification) },
-                        onContact: contactAction,
-                        onDelete: deleteAction
-                    )
-                    .padding(.horizontal, 16)
-                    .onAppear {
-                        handleNotificationAppear(notification)
-                    }
+        LazyVStack(spacing: 16) {
+            ForEach(notifications) { notification in
+                // Informational updates should never expose contact actions.
+                let contactAction: (() -> Void)? = nil
+                let deleteAction: (() -> Void)? = notification.category == .informational ? {
+                    Task { await deleteNotification(notification) }
+                } : nil
+                NotificationRow(
+                    notification: notification,
+                    timeAgo: relativeTime(from: notification.createdAt),
+                    onTap: { handleNotificationTap(notification) },
+                    onContact: contactAction,
+                    onDelete: deleteAction
+                )
+                .onAppear {
+                    handleNotificationAppear(notification)
                 }
             }
-            .padding(.top, 16)
-            .padding(.bottom, 12)
         }
     }
     
@@ -656,6 +628,129 @@ struct NotificationsViewNew: View {
         if let direct, !direct.isEmpty { return direct }
         if let ownerPhone, !ownerPhone.isEmpty { return ownerPhone }
         return nil
+    }
+}
+
+// MARK: - Segmented Control
+
+private struct NotificationsSegmentedControl: View {
+    @Binding var selectedTab: NotificationsViewNew.Tab
+    let actionCount: Int
+    let updatesCount: Int
+    
+    var body: some View {
+        SegmentedPill(
+            selection: $selectedTab,
+            items: [
+                SegmentedPillOption(
+                    value: .actionRequired,
+                    title: NotificationsViewNew.Tab.actionRequired.rawValue,
+                    badgeCount: actionCount
+                ),
+                SegmentedPillOption(
+                    value: .updates,
+                    title: NotificationsViewNew.Tab.updates.rawValue,
+                    badgeCount: updatesCount
+                )
+            ]
+        )
+    }
+}
+
+struct SegmentedPillOption<Value: Hashable>: Identifiable {
+    let value: Value
+    let title: String
+    let badgeCount: Int
+    
+    var id: Value { value }
+}
+
+/// Two-option segmented pill matching the pickup location control.
+struct SegmentedPill<Value: Hashable>: View {
+    @Binding var selection: Value
+    let items: [SegmentedPillOption<Value>]
+    
+    @Namespace private var thumbAnimation
+    
+    private let segmentHeight: CGFloat = 46
+    private let horizontalInset: CGFloat = 8
+    private let verticalInset: CGFloat = 11
+    
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(items) { item in
+                segmentButton(for: item)
+            }
+        }
+        .frame(height: segmentHeight)
+        .background(
+            Capsule()
+                .fill(Color(.secondarySystemBackground))
+        )
+        .clipShape(Capsule())
+        .overlay(
+            Capsule()
+                .stroke(Color(.separator), lineWidth: 0.5)
+        )
+    }
+    
+    @ViewBuilder
+    private func segmentButton(for item: SegmentedPillOption<Value>) -> some View {
+        let isSelected = selection == item.value
+        
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                selection = item.value
+            }
+        } label: {
+            ZStack {
+                if isSelected {
+                    Capsule()
+                        .fill(AppTheme.ColorToken.primary)
+                        .matchedGeometryEffect(id: "segmentedThumb", in: thumbAnimation)
+                }
+                
+                HStack(spacing: 8) {
+                    Text(item.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(isSelected ? .white : .primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.9)
+                        .layoutPriority(1)
+                    
+                    if item.badgeCount > 0 {
+                        badgeView(for: item.badgeCount, isSelected: isSelected)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, horizontalInset)
+                .padding(.vertical, verticalInset)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: segmentHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+    }
+    
+    @ViewBuilder
+    private func badgeView(for count: Int, isSelected: Bool) -> some View {
+        let text = count > 99 ? "99+" : "\(count)"
+        Text(text)
+            .font(.system(size: 11, weight: .heavy))
+            .foregroundColor(isSelected ? AppTheme.ColorToken.primary : .white)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .frame(minWidth: 26, minHeight: 20)
+            .background(
+                Capsule()
+                    .fill(isSelected ? .white : AppTheme.ColorToken.primary)
+                    .opacity(isSelected ? 0.95 : 1)
+            )
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 

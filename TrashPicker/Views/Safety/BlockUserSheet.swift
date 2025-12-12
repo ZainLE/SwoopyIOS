@@ -10,6 +10,7 @@ import SwiftUI
 struct BlockUserSheet: View {
     @EnvironmentObject var api: ApiService
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var blockStore = BlockStore.shared
     
     let userId: String
     let userName: String?
@@ -129,11 +130,7 @@ struct BlockUserSheet: View {
         Haptics.play(.tabSelect)
         
         do {
-            let payload = BlockPayload(
-                userId: userId,
-                notes: notes.isEmpty ? nil : notes
-            )
-            try await api.blockUser(payload)
+            await blockStore.block(userId: userId)
             
             isSubmitting = false
             ToastCenter.shared.show(SafetyStrings.blocked)

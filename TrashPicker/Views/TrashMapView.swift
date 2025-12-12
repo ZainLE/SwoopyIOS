@@ -148,9 +148,7 @@ struct FullScreenMapView: View {
             
             ForEach(vm.pins) { pin in
                 Annotation(pin.title, coordinate: pin.coord) {
-                    Image(systemName: "mappin.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(.red)
+                    MapPinImage()
                 }
             }
         }
@@ -234,5 +232,16 @@ struct FullScreenMapView: View {
                 }
             )
         }
+    }
+}
+
+private struct MapPinImage: View {
+    var body: some View {
+        Image("MapPin")
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .frame(width: 32, height: 38)
+            .shadow(radius: 1)
+            .offset(y: -6)
     }
 }

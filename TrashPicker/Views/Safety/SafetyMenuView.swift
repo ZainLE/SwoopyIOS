@@ -26,7 +26,7 @@ struct SafetyMenuView: View {
                     showReportSheet = true
                     Haptics.play(.tabSelect)
                 }) {
-                    Label(SafetyStrings.report, systemImage: "flag")
+                    Label(userId != nil ? SafetyStrings.reportUser : SafetyStrings.report, systemImage: "flag")
                 }
                 .foregroundStyle(.red)
                 
@@ -66,6 +66,9 @@ struct SafetyMenuView: View {
                     .environmentObject(api)
                 }
             }
+            .onAppear {
+                BlockStore.shared.configure(api: api)
+            }
         }
     }
 }
@@ -90,7 +93,7 @@ struct SafetyMenuCompact: View {
                     showReportSheet = true
                     Haptics.play(.tabSelect)
                 }) {
-                    Label(SafetyStrings.report, systemImage: "flag")
+                    Label(userId != nil ? SafetyStrings.reportUser : SafetyStrings.report, systemImage: "flag")
                 }
                 
                 if userId != nil {
@@ -123,6 +126,9 @@ struct SafetyMenuCompact: View {
                     )
                     .environmentObject(api)
                 }
+            }
+            .onAppear {
+                BlockStore.shared.configure(api: api)
             }
         }
     }
