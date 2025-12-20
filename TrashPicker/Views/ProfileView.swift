@@ -189,6 +189,7 @@ struct ProfileView: View {
                 profileHeaderSection
                 uploadsSection
                 notificationsSection
+                safetySection
                 primaryActionsSection
             }
             .listStyle(.insetGrouped)
@@ -435,7 +436,34 @@ struct ProfileView: View {
             }
         }
     }
-    
+
+    @ViewBuilder
+    private var safetySection: some View {
+        Section {
+            NavigationLink(destination: SafetySettingsView()) {
+                HStack(spacing: 12) {
+                    Image(systemName: "shield.lefthalf.filled")
+                        .font(.system(size: 20))
+                        .foregroundColor(AppColor.brandGreen)
+                        .frame(width: 24)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Safety & Moderation")
+                            .font(AppFont.body)
+                            .foregroundColor(AppColor.text)
+                        
+                        Text("Report, filter, or block users")
+                            .font(AppFont.sub)
+                            .foregroundColor(AppColor.muted)
+                    }
+                    
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
     @ViewBuilder
     private var notificationsSection: some View {
         let totalBadge = max(0, notificationService.requestsCount + notificationService.unreadCount)

@@ -541,8 +541,17 @@ struct AuthView: View {
                 appleCoordinator = nil
             },
             onError: { error in
-                if isUserCancelledAppleError(error) {
+                if let friendly = appleRecoverableAppleErrorMessage(error) {
+                    #if DEBUG
+                    let nsError = error as NSError
+                    DLog("[APPLE] recoverable auth error (code=\(nsError.code)) - likely not signed into Apple ID")
+                    #endif
+                    errorMessage = friendly
+                } else if isUserCancelledAppleError(error) {
+                    #if DEBUG
                     DLog("⚪️ Apple Sign-In cancelled by user")
+                    #endif
+                    errorMessage = appleRecoverableAppleErrorMessage(error) // Shows friendly message instead of raw error
                 } else {
                     errorMessage = error.localizedDescription
                 }
@@ -597,6 +606,22 @@ struct AuthView: View {
             }
         }
         return false
+    }
+    
+    private func appleRecoverableAppleErrorMessage(_ error: Error) -> String? {
+        let friendly = """
+        Sign in with Apple requires an Apple ID
+        
+        Please sign in to your Apple ID in Settings and try again.
+        """
+        if let appleError = error as? ASAuthorizationError {
+            if appleError.code == .canceled { return friendly }
+        }
+        let nsError = error as NSError
+        if nsError.domain == ASAuthorizationError.errorDomain && nsError.code == 1000 {
+            return friendly
+        }
+        return nil
     }
     
     private func isUserCancelledGoogleError(_ error: Error) -> Bool {

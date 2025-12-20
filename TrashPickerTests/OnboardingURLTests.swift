@@ -67,6 +67,22 @@ final class OnboardingURLTests: XCTestCase {
         )
     }
     
+    func testPhoneOTPSendURL() {
+        let expectedURL = "https://api.swoopy.eu/custom-api/me/phone/otp/send"
+        let constructedURL = SupabaseConfig.apiBaseURL + "/me/phone/otp/send"
+        
+        XCTAssertEqual(constructedURL, expectedURL, "Phone OTP send URL must be exactly '\(expectedURL)'")
+        XCTAssertFalse(constructedURL.contains("/custom-api/custom-api"))
+    }
+    
+    func testPhoneOTPVerifyURL() {
+        let expectedURL = "https://api.swoopy.eu/custom-api/me/phone/otp/verify"
+        let constructedURL = SupabaseConfig.apiBaseURL + "/me/phone/otp/verify"
+        
+        XCTAssertEqual(constructedURL, expectedURL, "Phone OTP verify URL must be exactly '\(expectedURL)'")
+        XCTAssertFalse(constructedURL.contains("/custom-api/custom-api"))
+    }
+    
     func testNoTrailingSlashInBaseURL() {
         // Verify base URL has no trailing slash
         XCTAssertFalse(

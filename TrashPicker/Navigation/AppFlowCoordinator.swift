@@ -1,6 +1,6 @@
 // AppFlowCoordinator: Server-driven flow routing
 // Single source of truth: SupabaseService.serverProfile
-// Routing order: Auth → LoadingProfile → ProfileCapture → IntroShowcase → Loading → Main
+// Routing order: Auth → LoadingProfile → ProfileCapture → PhoneVerification → IntroShowcase → Loading → Main
 // No local UserDefaults gating; all decisions based on server profile state
 
 import Combine
@@ -14,6 +14,7 @@ final class AppFlowCoordinator: ObservableObject {
         case loadingProfile
         case profileError
         case profileCapture
+        case phoneVerification
         case introShowcase
         case loading
         case main
@@ -69,6 +70,10 @@ final class AppFlowCoordinator: ObservableObject {
     func requireProfileCapture(message: String?) {
         captureMessage = message
         updatePhase(.profileCapture, reason: "requested:\(message ?? "missing")")
+    }
+    
+    func requirePhoneVerification() {
+        updatePhase(.phoneVerification, reason: "requestedPhoneVerification")
     }
 
     func retryProfileLoad() async {
@@ -242,8 +247,12 @@ final class AppFlowCoordinator: ObservableObject {
             return
         }
 
-        // Step 5: Check onboarding completion
-        guard profile.onboardingCompleted else {
+        // Step 5: If onboarding not complete, require phone verification first
+        if profile.onboardingCompleted == false {
+            if profile.requiresPhoneVerification {
+                updatePhase(.phoneVerification, reason: "phoneUnverified")
+                return
+            }
             updatePhase(.introShowcase, reason: "onboardingIncomplete")
             return
         }

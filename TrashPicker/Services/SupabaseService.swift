@@ -758,6 +758,7 @@ final class SupabaseService: NSObject, ObservableObject {
                     phone: nil,
                     avatarUrl: nil,
                     city: nil,
+                    phoneVerified: false,
                     onboardingCompleted: false,
                     updatedAt: nil
                 )
@@ -850,6 +851,23 @@ final class SupabaseService: NSObject, ObservableObject {
         let result = try await api.rawRequest("/me/onboarding/complete", method: .POST)
         try ensureSuccess(result, action: "complete onboarding")
         await fetchProfile()
+    }
+    
+    // MARK: - Phone Verification (OTP)
+    
+    @MainActor
+    func sendPhoneVerificationCode(phone: String) async throws {
+        let api = ApiService(supabaseService: self)
+        try await api.sendPhoneOTP(phone: phone)
+    }
+    
+    @MainActor
+    func verifyPhoneCode(phone: String, firebaseIdToken: String, refreshProfile: Bool = false) async throws {
+        let api = ApiService(supabaseService: self)
+        try await api.verifyPhoneOTP(phone: phone, firebaseIdToken: firebaseIdToken)
+        if refreshProfile {
+            await fetchProfile()
+        }
     }
 
     private func ensureSuccess(_ result: RawHTTPResult, action: String) throws {

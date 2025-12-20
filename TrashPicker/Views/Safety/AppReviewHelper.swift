@@ -9,7 +9,6 @@ import SwiftUI
 
 struct AppReviewHelper: View {
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("safety_demo_mode") private var demoMode = false
     
     var body: some View {
         NavigationStack {
@@ -40,42 +39,6 @@ struct AppReviewHelper: View {
                     }
                     .padding(.horizontal, 24)
                     .padding(.top, 24)
-                    
-                    Divider()
-                    
-                    // Demo Mode Toggle
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Demo Mode")
-                            .font(AppTheme.Typography.headline)
-                            .foregroundColor(AppTheme.ColorToken.text)
-                        
-                        Toggle(isOn: $demoMode) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Enable Demo Mode")
-                                    .font(AppTheme.Typography.body)
-                                
-                                Text("Uses mock responses for testing without backend")
-                                    .font(AppTheme.Typography.footnote)
-                                    .foregroundColor(AppTheme.ColorToken.mutedGray)
-                            }
-                        }
-                        .tint(AppTheme.ColorToken.primary)
-                        
-                        if demoMode {
-                            HStack(spacing: 8) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundColor(AppTheme.ColorToken.accent)
-                                Text("Demo mode is active")
-                                    .font(AppTheme.Typography.footnote)
-                                    .foregroundColor(AppTheme.ColorToken.accent)
-                            }
-                            .padding(.vertical, 8)
-                            .padding(.horizontal, 12)
-                            .background(AppTheme.ColorToken.accent.opacity(0.1))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                        }
-                    }
-                    .padding(.horizontal, 24)
                     
                     Divider()
                     
@@ -161,13 +124,13 @@ struct AppReviewHelper: View {
                             .foregroundColor(AppTheme.ColorToken.mutedGray)
                         
                         Button(action: {
-                            if let url = URL(string: "mailto:support@swoopy.app") {
+                            if let url = URL(string: "mailto:contact@swoopy.eu") {
                                 UIApplication.shared.open(url)
                             }
                         }) {
                             HStack {
                                 Image(systemName: "envelope.fill")
-                                Text("support@swoopy.app")
+                                Text("contact@swoopy.eu")
                             }
                             .font(AppTheme.Typography.body)
                             .foregroundColor(AppTheme.ColorToken.primary)

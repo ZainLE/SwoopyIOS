@@ -2,6 +2,9 @@ import SwiftUI
 import UIKit
 import OneSignalFramework
 import SmartlookAnalytics
+import FirebaseCore
+import FirebaseAppCheck
+import FirebaseAuth
 
 @main
 struct TrashPickerApp: App {
@@ -58,11 +61,23 @@ struct TrashPickerApp: App {
                 .environmentObject(consent)
                 .environmentObject(appState)
                 .onOpenURL { url in
-                    AuthDeepLinkHandler.handle(url)
-                    Task {
-                        // Handle OAuth callback (Google, magic links, etc.)
-                        await svc.handleOAuthRedirect(url)
+                    // 1) Firebase Phone Auth or other Firebase handlers
+                    let handled = Auth.auth().canHandle(url)
+                    DLog("[OPEN_URL] kind=firebaseauth scheme=\(url.scheme ?? "") host=\(url.host ?? "") handled=\(handled)")
+                    if handled { return }
+                    
+                    // 2) Supabase OAuth callbacks only
+                    if url.scheme == "swoopy", url.host == "auth" {
+                        DLog("[OPEN_URL] kind=supabase scheme=\(url.scheme ?? "nil") host=\(url.host ?? "nil")")
+                        Task {
+                            await svc.handleOAuthRedirect(url)
+                        }
+                        return
                     }
+                    
+                    // 3) Everything else: optional app deep links or ignore
+                    AuthDeepLinkHandler.handle(url)
+                    DLog("[OPEN_URL] kind=other scheme=\(url.scheme ?? "nil") host=\(url.host ?? "nil")")
                 }
                 .tint(AppTheme.ColorToken.primary)
                 .preferredColorScheme(.light) // SwiftUI-level Light Mode enforcement
@@ -141,7 +156,7 @@ private struct RootGateView: View {
         case .auth:
             AuthView()
         case .loadingProfile:
-            LoadingGateView(message: "Loading your profile…")
+            loadingSplash
         case .profileError:
             ProfileErrorGateView(
                 message: appFlow.profileErrorMessage,
@@ -154,6 +169,10 @@ private struct RootGateView: View {
             )
         case .profileCapture:
             OnboardingFlow()
+        case .phoneVerification:
+            PhoneOTPVerificationView(initialPhone: svc.serverProfile?.phone, supabase: svc) {
+                // After verifying, the refreshed profile will move the flow forward
+            }
         case .introShowcase:
             OnboardingFlowView()
         case .loading:
@@ -262,9 +281,24 @@ private struct LoadingStageView: View {
 final class AppDelegate: NSObject, UIApplicationDelegate {
     private let userDefaults = UserDefaults.standard
     private let permissionPromptKey = "OneSignal.didPromptForPush"
+    private var didLogAPNSToken = false
     
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // Initialize Firebase early for Auth/URL handling
+        installAppCheckProvider()
+        FirebaseApp.configure()
+        logRuntimeSecurityState()
+        logFirebaseURLSchemePresence()
+        Task.detached {
+            do {
+                let token = try await AppCheck.appCheck().token(forcingRefresh: false)
+                DLog("[APP_CHECK_TOKEN] success size=\(token.token.count)")
+            } catch {
+                DLog("[APP_CHECK_TOKEN] fail reason=\(error.localizedDescription)")
+            }
+        }
+        
         OneSignal.Debug.setLogLevel(.LL_VERBOSE)
         
         UNUserNotificationCenter.current().delegate = self
@@ -281,6 +315,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         logPushSubscriptionState(context: "post-init")
         
         requestNotificationPermissionIfNeeded()
+        UIApplication.shared.registerForRemoteNotifications()
 
         // Smartlook Analytics initialization
         // NOTE: Mask sensitive fields (addresses, precise location) in Smartlook recordings.
@@ -361,6 +396,91 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 }
 
+/// Log build/environment state relevant to Firebase Phone Auth/App Check
+private func logRuntimeSecurityState() {
+    #if DEBUG
+    let buildType = "DEBUG"
+    #else
+    let buildType = "RELEASE"
+    #endif
+    DLog("[RUNTIME_STATE] build=\(buildType)")
+}
+
+private func installAppCheckProvider() {
+    let iosVersion = UIDevice.current.systemVersion
+    #if DEBUG
+    installDebugAppCheckProvider(iosVersion: iosVersion)
+    #else
+    installReleaseAppCheckProvider(iosVersion: iosVersion)
+    #endif
+}
+
+#if DEBUG
+private func installDebugAppCheckProvider(iosVersion: String) {
+    if let debugClass = NSClassFromString("FIRAppCheckDebugProviderFactory") as? NSObject.Type,
+       let debugFactory = debugClass.init() as? AppCheckProviderFactory {
+        AppCheck.setAppCheckProviderFactory(debugFactory)
+        DLog("[APP_CHECK_PROVIDER] installed=true provider=Debug iosVersion=\(iosVersion) build=DEBUG")
+        return
+    }
+    DLog("[APP_CHECK_PROVIDER] installed=false provider=DebugMissing iosVersion=\(iosVersion) build=DEBUG")
+    if let deviceCheckFactory = DeviceCheckProviderFactory() as AppCheckProviderFactory? {
+        AppCheck.setAppCheckProviderFactory(deviceCheckFactory)
+        DLog("[APP_CHECK_PROVIDER] installed=true provider=DeviceCheck iosVersion=\(iosVersion) build=DEBUG")
+    }
+}
+#else
+private func installReleaseAppCheckProvider(iosVersion: String) {
+    // Prefer App Attest when available; fall back to Device Check
+    if #available(iOS 14.0, *) {
+        if let attestClass = NSClassFromString("FIRAppAttestProviderFactory") as? NSObject.Type,
+           let attestFactory = attestClass.init() as? AppCheckProviderFactory {
+            AppCheck.setAppCheckProviderFactory(attestFactory)
+            DLog("[APP_CHECK_PROVIDER] installed=true provider=AppAttest iosVersion=\(iosVersion) build=RELEASE")
+            return
+        }
+    }
+    if let deviceCheckFactory = DeviceCheckProviderFactory() as AppCheckProviderFactory? {
+        AppCheck.setAppCheckProviderFactory(deviceCheckFactory)
+        DLog("[APP_CHECK_PROVIDER] installed=true provider=DeviceCheck iosVersion=\(iosVersion) build=RELEASE")
+    }
+}
+#endif
+
+/// Validate Firebase URL scheme is registered to avoid runtime crashes for phone auth
+private func logFirebaseURLSchemePresence() {
+    let expectedScheme = firebaseExpectedURLScheme() ?? "nil"
+    let isPresent = expectedScheme != "nil" ? bundleContainsURLScheme(expectedScheme) : false
+    DLog("[FIREBASE_CONFIG] expectedScheme=\(expectedScheme) present=\(isPresent)")
+}
+
+private func firebaseExpectedURLScheme() -> String? {
+    guard
+        let path = Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist"),
+        let plist = NSDictionary(contentsOfFile: path) as? [String: Any],
+        let sender = plist["GCM_SENDER_ID"] as? String,
+        let appId = plist["GOOGLE_APP_ID"] as? String
+    else { return nil }
+    
+    // GOOGLE_APP_ID format: 1:<sender>:ios:<appIdSuffix>
+    let parts = appId.split(separator: ":")
+    guard parts.count >= 4 else { return nil }
+    let suffix = parts.last ?? Substring("")
+    return "app-1-\(sender)-ios-\(suffix)"
+}
+
+private func bundleContainsURLScheme(_ scheme: String) -> Bool {
+    guard let types = Bundle.main.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] else {
+        return false
+    }
+    for type in types {
+        if let schemes = type["CFBundleURLSchemes"] as? [String], schemes.contains(scheme) {
+            return true
+        }
+    }
+    return false
+}
+
 extension AppDelegate: UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification,
@@ -369,8 +489,63 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
     }
 }
 
+extension AppDelegate {
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        guard didLogAPNSToken == false else { return }
+        didLogAPNSToken = true
+        let token = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
+        DLog("[PUSH] APNs token received (required for Firebase phone auth reCAPTCHA-less flow) token=\(token)")
+        #if DEBUG
+        let tokenType: AuthAPNSTokenType = .sandbox
+        #else
+        let tokenType: AuthAPNSTokenType = .prod
+        #endif
+        Auth.auth().setAPNSToken(deviceToken, type: tokenType)
+        DLog("[APNS_TOKEN_OK] forwardedToFirebase=true env=\(tokenType == .prod ? "prod" : "sandbox")")
+        OneSignal.User.pushSubscription.optIn()
+        // OneSignal Swift SDK v5+ handles APNs token internally; no manual setDeviceToken API.
+    }
+    
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        DLog("[PUSH] failedToRegister error=\(error.localizedDescription)")
+    }
+    
+    func application(_ application: UIApplication,
+                     didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        if Auth.auth().canHandleNotification(userInfo) {
+            DLog("[PUSH] handledByFirebaseAuth=true (OTP)")
+            completionHandler(.noData)
+            return
+        }
+        completionHandler(.newData)
+    }
+}
+
 extension AppDelegate: OSPushSubscriptionObserver {
     func onPushSubscriptionDidChange(state: OSPushSubscriptionChangedState) {
         logPushSubscriptionState(context: "subscription-change")
+    }
+}
+
+extension AppDelegate {
+    func application(_ app: UIApplication,
+                     open url: URL,
+                     options: [UIApplication.OpenURLOptionsKey : Any] = [:]) -> Bool {
+        let firebaseHandled = Auth.auth().canHandle(url)
+        DLog("[OPEN_URL] kind=firebaseauth scheme=\(url.scheme ?? "") host=\(url.host ?? "") handled=\(firebaseHandled)")
+        if firebaseHandled { return true }
+        
+        if url.scheme == "swoopy", url.host == "auth" {
+            DLog("[OPEN_URL] kind=supabase scheme=\(url.scheme ?? "nil") host=\(url.host ?? "nil")")
+            Task {
+                await SupabaseService.shared.handleOAuthRedirect(url)
+            }
+            return true
+        }
+        
+        AuthDeepLinkHandler.handle(url)
+        DLog("[OPEN_URL] kind=other scheme=\(url.scheme ?? "nil") host=\(url.host ?? "nil")")
+        return false
     }
 }

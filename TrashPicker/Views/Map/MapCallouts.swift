@@ -178,7 +178,8 @@ private struct MapCalloutsPreview: View {
             avatarUrl: nil,
             givenCount: 12,
             pickedCount: 4,
-            phone: "+34 600 111 222"
+            phone: "+34 600 111 222",
+            phoneVerified: true
         )
 
         let images = [

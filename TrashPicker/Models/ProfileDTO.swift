@@ -9,6 +9,7 @@ struct ProfileDTO: Codable, Equatable {
     let phone: String?
     let avatarUrl: String?
     let city: String?
+    let phoneVerified: Bool?
     let onboardingCompleted: Bool
     let updatedAt: Date?
 
@@ -20,6 +21,7 @@ struct ProfileDTO: Codable, Equatable {
         phone: String? = nil,
         avatarUrl: String? = nil,
         city: String? = nil,
+        phoneVerified: Bool? = nil,
         onboardingCompleted: Bool,
         updatedAt: Date?
     ) {
@@ -30,6 +32,7 @@ struct ProfileDTO: Codable, Equatable {
         self.phone = phone
         self.avatarUrl = avatarUrl
         self.city = city
+        self.phoneVerified = phoneVerified
         self.onboardingCompleted = onboardingCompleted
         self.updatedAt = updatedAt
     }
@@ -43,6 +46,7 @@ struct ProfileDTO: Codable, Equatable {
         case avatarUrl = "avatar_url"
         case photoUrl = "photo_url"
         case city
+        case phoneVerified = "phone_verified"
         case onboardingCompleted = "onboarding_completed"
         case updatedAt = "updated_at"
     }
@@ -58,6 +62,7 @@ struct ProfileDTO: Codable, Equatable {
             ?? container.decodeIfPresent(String.self, forKey: .photoUrl)
         avatarUrl = avatarString
         city = try container.decodeIfPresent(String.self, forKey: .city)
+        phoneVerified = try container.decodeIfPresent(Bool.self, forKey: .phoneVerified)
         onboardingCompleted = try container.decodeIfPresent(Bool.self, forKey: .onboardingCompleted) ?? false
         if let updatedString = try container.decodeIfPresent(String.self, forKey: .updatedAt) {
             let iso = ISO8601DateFormatter()
@@ -92,6 +97,14 @@ struct ProfileDTO: Codable, Equatable {
         return !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     
+    var isPhoneVerified: Bool {
+        phoneVerified ?? false
+    }
+    
+    var requiresPhoneVerification: Bool {
+        hasPhone && !isPhoneVerified
+    }
+    
     var displayName: String {
         if let full = fullName, !full.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return full
@@ -111,6 +124,7 @@ struct ProfileDTO: Codable, Equatable {
         try container.encodeIfPresent(phone, forKey: .phone)
         try container.encodeIfPresent(avatarUrl, forKey: .avatarUrl)
         try container.encodeIfPresent(city, forKey: .city)
+        try container.encodeIfPresent(phoneVerified, forKey: .phoneVerified)
         try container.encode(onboardingCompleted, forKey: .onboardingCompleted)
         if let updatedAt {
             let iso = ISO8601DateFormatter()

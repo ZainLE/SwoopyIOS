@@ -57,6 +57,7 @@ final class ProfileManager: ObservableObject {
                     phone: serverProfile.phone,
                     avatarUrl: serverProfile.avatarUrl?.absoluteString,
                     city: serverProfile.city,
+                    phoneVerified: serverProfile.phoneVerified,
                     onboardingCompleted: true, // Default since we got a profile from server
                     updatedAt: nil // Profile struct doesn't have updatedAt
                 )

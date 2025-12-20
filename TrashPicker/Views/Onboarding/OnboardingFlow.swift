@@ -64,6 +64,7 @@ struct OnboardingFlow: View {
         Task {
             let ok = await viewModel.completeOnboarding()
             if ok {
+                appFlow.requirePhoneVerification()
                 appFlow.markProfileComplete()
                 Haptics.play(.success)
             }
@@ -93,12 +94,8 @@ private struct WelcomeProfileScreen: View {
     var onContinue: () -> Void
     var onAvatarTapped: () -> Void
     
-    @FocusState private var focus: Field?
-    
-    private enum Field: Hashable {
-        case name
-        case phone
-    }
+    @FocusState private var nameFocused: Bool
+    @FocusState private var phoneFocused: Bool
     
     var body: some View {
         ZStack {
@@ -159,29 +156,16 @@ private struct WelcomeProfileScreen: View {
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.immediately)
         .safeAreaInset(edge: .bottom) {
-            PillButton(title: "Continue", enabled: viewModel.canContinue && !viewModel.isSaving) {
+            PillButton(title: "Get code", enabled: viewModel.canContinue && !viewModel.isSaving) {
                 guard viewModel.canContinue, !viewModel.isSaving else { return }
-                focus = nil
+                nameFocused = false
+                phoneFocused = false
                 onContinue()
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 16)
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
-        .onChange(of: viewModel.phone) { _, newValue in
-            let sanitized = sanitize(phone: newValue)
-            if sanitized != newValue {
-                viewModel.phone = sanitized
-            }
-            if viewModel.errorMessage != nil {
-                viewModel.errorMessage = nil
-            }
-        }
-        .onChange(of: viewModel.fullName) { _, _ in
-            if viewModel.errorMessage != nil {
-                viewModel.errorMessage = nil
-            }
-        }
     }
     
     private var logo: some View {
@@ -211,8 +195,8 @@ private struct WelcomeProfileScreen: View {
                         .textInputAutocapitalization(.words)
                         .autocorrectionDisabled()
                         .submitLabel(.next)
-                        .focused($focus, equals: .name)
-                        .onSubmit { focus = .phone }
+                        .focused($nameFocused)
+                        .onSubmit { phoneFocused = true }
                 }
                 .accessibilityIdentifier("onboarding.fullName")
                 
@@ -225,11 +209,14 @@ private struct WelcomeProfileScreen: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 InputField(title: "Phone number", isRequired: true) {
-                    TextField("+34612345678", text: $viewModel.phone)
-                        .keyboardType(.phonePad)
-                        .submitLabel(.done)
-                        .focused($focus, equals: .phone)
-                        .onSubmit { focus = nil }
+                    PhoneNumberField(
+                        phoneNumber: $viewModel.phone,
+                        country: $viewModel.selectedCountry,
+                        isEnabled: !viewModel.isSaving,
+                        placeholder: "612 345 678",
+                        focusState: $phoneFocused,
+                        onSubmit: { phoneFocused = false }
+                    )
                 }
                 .accessibilityIdentifier("onboarding.phone")
                 
@@ -259,7 +246,7 @@ private struct WelcomeProfileScreen: View {
         if isPhoneInvalid {
             return "Must be in E.164 format: +[country code][number] (e.g., +34612345678)"
         } else {
-            return "International format with + and country code"
+            return "This number will be verified via SMS."
         }
     }
     
@@ -269,7 +256,9 @@ private struct WelcomeProfileScreen: View {
     
     private var isPhoneInvalid: Bool {
         let value = viewModel.trimmedPhone
-        guard !value.isEmpty else { return false }
+        let digits = value.filter(\.isNumber)
+        let nationalCount = max(0, digits.count - viewModel.selectedCountry.callingCode.count)
+        guard nationalCount > 0 else { return false }
         return !viewModel.isPhoneValid
     }
     
@@ -280,17 +269,6 @@ private struct WelcomeProfileScreen: View {
         return (first, last)
     }
     
-    private func sanitize(phone: String) -> String {
-        var result = ""
-        for character in phone {
-            if character.isNumber {
-                result.append(character)
-            } else if character == "+" && result.isEmpty {
-                result.append(character)
-            }
-        }
-        return result
-    }
 }
 
 // MARK: - Shared UI

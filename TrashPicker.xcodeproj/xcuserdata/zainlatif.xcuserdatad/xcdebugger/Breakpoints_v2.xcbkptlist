@@ -20,12 +20,12 @@
             landmarkType = "24">
             <Locations>
                <Location
-                  uuid = "68A7576C-C01D-4099-8B63-1C15D1A58CE6 - ae413b36d85a38a1"
+                  uuid = "68A7576C-C01D-4099-8B63-1C15D1A58CE6 - ff8f9a38dcfd31ec"
                   shouldBeEnabled = "Yes"
                   ignoreCount = "0"
                   continueAfterRunningActions = "No"
                   symbolName = "Swoopy.SwipeDeckView.baseViewWithModifiers.getter : some"
-                  moduleName = "Swoopy.debug.dylib"
+                  moduleName = "Swoopy"
                   usesParentBreakpointCondition = "Yes"
                   urlString = "file:///Users/zainlatif/Developer/TrashPicker/TrashPicker/Views/SwipeDeckView.swift"
                   startingColumnNumber = "9223372036854775807"
@@ -34,18 +34,18 @@
                   endingLineNumber = "336">
                </Location>
                <Location
-                  uuid = "68A7576C-C01D-4099-8B63-1C15D1A58CE6 - c309ef684f4756c9"
+                  uuid = "68A7576C-C01D-4099-8B63-1C15D1A58CE6 - 92c74e664be02553"
                   shouldBeEnabled = "Yes"
                   ignoreCount = "0"
                   continueAfterRunningActions = "No"
                   symbolName = "closure #6 (Foundation.Notification) -&gt; () in Swoopy.SwipeDeckView.baseViewWithModifiers.getter : some"
-                  moduleName = "Swoopy.debug.dylib"
+                  moduleName = "Swoopy"
                   usesParentBreakpointCondition = "Yes"
                   urlString = "file:///Users/zainlatif/Developer/TrashPicker/TrashPicker/Views/SwipeDeckView.swift"
                   startingColumnNumber = "9223372036854775807"
                   endingColumnNumber = "9223372036854775807"
-                  startingLineNumber = "336"
-                  endingLineNumber = "336">
+                  startingLineNumber = "389"
+                  endingLineNumber = "389">
                </Location>
             </Locations>
          </BreakpointContent>

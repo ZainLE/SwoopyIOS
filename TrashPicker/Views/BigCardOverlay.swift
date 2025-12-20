@@ -25,6 +25,7 @@ struct BigCardOverlay: View {
     let approxCoordinate: CLLocationCoordinate2D?
     let ownerName: String
     let ownerAvatarUrl: URL?
+    let ownerId: String?
     let memberSince: Date?
     let pickupsCount: Int?
     let variant: Variant
@@ -43,13 +44,12 @@ struct BigCardOverlay: View {
     @State private var dragOffset: CGSize = .zero
     @Namespace private var imageTransition
     @StateObject private var locationViewModel: LocationDescriptionViewModel
-    @State private var clock: Date = Date()
-    private let countdownTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     @State private var isReportPostSheetPresented = false
     @State private var isReportPostSuccessVisible = false
     @State private var reportSuccessTask: Task<Void, Never>? = nil
     private let displayCoordinate: CLLocationCoordinate2D?
     private let locationPrecision: CoordinatePrecision
+    @State private var isBlockUserSheetPresented = false
 
     // Design tokens
     private let overlayScale: CGFloat = 0.86
@@ -140,6 +140,7 @@ struct BigCardOverlay: View {
         approxCoordinate: CLLocationCoordinate2D?,
         ownerName: String,
         ownerAvatarUrl: URL?,
+        ownerId: String?,
         memberSince: Date?,
         pickupsCount: Int?,
         variant: Variant,
@@ -162,6 +163,7 @@ struct BigCardOverlay: View {
         self.approxCoordinate = approxCoordinate
         self.ownerName = ownerName
         self.ownerAvatarUrl = ownerAvatarUrl
+        self.ownerId = ownerId
         self.memberSince = memberSince
         self.pickupsCount = pickupsCount
         self.variant = variant
@@ -319,13 +321,16 @@ struct BigCardOverlay: View {
                 .presentationDetents([.fraction(0.45)])
                 .presentationDragIndicator(.hidden)
             }
+            .sheet(isPresented: $isBlockUserSheetPresented) {
+                if let ownerId = ownerId {
+                    BlockUserSheet(userId: ownerId, userName: ownerName)
+                        .environmentObject(api)
+                }
+            }
         }
         .onDisappear {
             reportSuccessTask?.cancel()
             reportSuccessTask = nil
-        }
-        .onReceive(countdownTimer) { now in
-            clock = now
         }
     }
 }
@@ -580,12 +585,12 @@ extension BigCardOverlay {
             Text("Report Post?")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundColor(.primary)
-            Text("Your safety matters. If this post seems spam, illegal, or inappropriate, please report it.")
+            Text("Your safety matters. If this post seems spam, illegal, or inappropriate, please report it or block the user.")
                 .font(.system(size: 13, weight: .regular))
                 .foregroundColor(mutedColor)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack {
+            HStack(spacing: 12) {
                 Button {
                     Haptics.play(.primaryAction)
                     isReportPostSheetPresented = true
@@ -603,7 +608,27 @@ extension BigCardOverlay {
                 .disabled(isReportPostSheetPresented || postID == nil)
                 .opacity((isReportPostSheetPresented || postID == nil) ? 0.75 : 1.0)
 
-                Spacer(minLength: 0)
+                if ownerId != nil {
+                    Button {
+                        Haptics.play(.tabSelect)
+                        isBlockUserSheetPresented = true
+                    } label: {
+                        Text("Block user")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(dangerColor)
+                            .frame(height: 44)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.plain)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .stroke(dangerColor, lineWidth: 1.5)
+                    )
+                    .frame(width: buttonWidth)
+                    .opacity(ownerId == nil ? 0.6 : 1.0)
+                } else {
+                    Spacer(minLength: 0)
+                }
             }
         }
     }

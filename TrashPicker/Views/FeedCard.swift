@@ -172,6 +172,13 @@ struct FeedCard: View {
         return nil
     }
     
+    private var itemOwnerId: String? {
+        if let post = item as? Post {
+            return post.ownerId
+        }
+        return nil
+    }
+    
     private var itemInterestedCount: Int? {
         if let ckItem = item as? CKTrashItem {
             return ckItem.interestedCount
@@ -557,6 +564,7 @@ struct FeedCard: View {
                 approxCoordinate: itemApproxCoordinate,
                 ownerName: itemOwnerName ?? "Anonymous User",
                 ownerAvatarUrl: itemOwnerAvatarUrl,
+                ownerId: itemOwnerId,
                 memberSince: itemCreatedAt,
                 pickupsCount: itemInterestedCount,
                 variant: .feed,

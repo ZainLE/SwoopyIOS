@@ -25,26 +25,24 @@ struct PhoneNormalizer {
     /// - Returns: "+34660580637" (E.164 format)
     /// - Throws: PhoneNormalizationError if invalid
     static func normalizeToE164(rawInput: String, defaultCountryCode: String = "34") throws -> String {
-        // Extract only digits
-        let digits = rawInput.filter(\.isNumber)
+        let trimmed = rawInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        var digits = trimmed.filter(\.isNumber)
         
-        // Minimum 9 digits for valid phone number
-        guard digits.count >= 9 else {
+        // Handle international prefix like 00
+        if trimmed.hasPrefix("00"), digits.count > 2 {
+            digits = String(digits.dropFirst(2))
+        } else if !trimmed.hasPrefix("+") && !digits.hasPrefix(defaultCountryCode) {
+            digits = defaultCountryCode + digits
+        }
+        
+        guard digits.count >= 7 else {
             throw PhoneNormalizationError.tooShort
         }
-        
-        // Build with country code if not present
-        let withCountry: String
-        if digits.hasPrefix(defaultCountryCode) {
-            // Already has country code
-            withCountry = digits
-        } else {
-            // Prepend default country code
-            withCountry = defaultCountryCode + digits
+        guard digits.count <= 15 else {
+            throw PhoneNormalizationError.tooLong
         }
         
-        // Format as E.164: +{country code}{number}
-        let e164 = "+" + withCountry
+        let e164 = "+" + digits
         
         // Validate against E.164 regex: +[1-9]d{1,14}
         let regex = try! NSRegularExpression(pattern: #"^\+[1-9]\d{1,14}$"#)

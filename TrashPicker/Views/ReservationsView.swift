@@ -424,6 +424,7 @@ struct ReservationsView: View {
                 approxCoordinate: reservation.homeCoordinate,
                 ownerName: reservation.ownerName,
                 ownerAvatarUrl: reservation.ownerAvatarUrl,
+                ownerId: reservation.ownerId,
                 memberSince: nil,
                 pickupsCount: nil,
                 variant: reservationVariant(for: reservation),

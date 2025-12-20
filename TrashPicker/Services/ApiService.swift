@@ -348,6 +348,7 @@ struct Profile: Codable {
     let givenCount: Int?
     let pickedCount: Int?
     let phone: String?
+    let phoneVerified: Bool?
     
     enum CodingKeys: String, CodingKey {
         case id
@@ -359,6 +360,7 @@ struct Profile: Codable {
         case givenCount = "given_count"
         case pickedCount = "picked_count"
         case phone
+        case phoneVerified = "phone_verified"
     }
     
     init(
@@ -369,7 +371,8 @@ struct Profile: Codable {
         avatarUrl: URL?,
         givenCount: Int?,
         pickedCount: Int?,
-        phone: String?
+        phone: String?,
+        phoneVerified: Bool?
     ) {
         self.id = id
         self.firstName = firstName
@@ -379,6 +382,7 @@ struct Profile: Codable {
         self.givenCount = givenCount
         self.pickedCount = pickedCount
         self.phone = phone
+        self.phoneVerified = phoneVerified
     }
     
     init(from decoder: Decoder) throws {
@@ -393,6 +397,7 @@ struct Profile: Codable {
         givenCount = try container.decodeIfPresent(Int.self, forKey: .givenCount)
         pickedCount = try container.decodeIfPresent(Int.self, forKey: .pickedCount)
         phone = try container.decodeIfPresent(String.self, forKey: .phone)
+        phoneVerified = try container.decodeIfPresent(Bool.self, forKey: .phoneVerified)
     }
     
     func encode(to encoder: Encoder) throws {
@@ -405,6 +410,7 @@ struct Profile: Codable {
         try container.encodeIfPresent(givenCount, forKey: .givenCount)
         try container.encodeIfPresent(pickedCount, forKey: .pickedCount)
         try container.encodeIfPresent(phone, forKey: .phone)
+        try container.encodeIfPresent(phoneVerified, forKey: .phoneVerified)
     }
     
     /// Computed full name from first and last name
@@ -1681,7 +1687,8 @@ class ApiService: ObservableObject {
                         avatarUrl: avatarString.flatMap { URL(string: $0) },
                         givenCount: nil,
                         pickedCount: nil,
-                        phone: nil
+                        phone: nil,
+                        phoneVerified: nil
                     )
                 }
                 return nil
@@ -1907,7 +1914,8 @@ class ApiService: ObservableObject {
                     avatarUrl: avatar.flatMap { URL(string: $0) },
                     givenCount: nil,
                     pickedCount: nil,
-                    phone: nil
+                    phone: nil,
+                    phoneVerified: nil
                 )
             }()
 
@@ -2200,7 +2208,8 @@ class ApiService: ObservableObject {
             avatarUrl: avatarURL,
             givenCount: envelope.given_count,
             pickedCount: envelope.picked_count,
-            phone: envelope.phone
+            phone: envelope.phone,
+            phoneVerified: envelope.phone_verified
         )
     }
     
@@ -2282,6 +2291,41 @@ class ApiService: ObservableObject {
             return try await performProfileUpdate(path: "/me/profile", headers: headers, body: body)
         } catch ApiServiceError.notFound {
             return try await performProfileUpdate(path: "/profile", headers: headers, body: body)
+        }
+    }
+    
+    // MARK: - Phone Verification (OTP)
+    
+    func sendPhoneOTP(phone: String) async throws {
+        struct Body: Encodable { let phone: String }
+        let headers = try await authHeaders()
+        let payload = try JSONEncoder().encode(Body(phone: phone))
+        let request = try buildRequest(path: "/me/phone/otp/send", method: .POST, body: payload, headers: headers)
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let message = extractErrorMessage(from: data) ?? "Couldn't send the code. Please try again."
+            throw SimpleError(message: message)
+        }
+    }
+    
+    func verifyPhoneOTP(phone: String, firebaseIdToken: String) async throws {
+        struct Body: Encodable {
+            let phone: String
+            let firebase_id_token: String
+        }
+        let headers = try await authHeaders()
+        let payload = try JSONEncoder().encode(Body(phone: phone, firebase_id_token: firebaseIdToken))
+        let request = try buildRequest(path: "/me/phone/otp/verify", method: .POST, body: payload, headers: headers)
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let message = extractErrorMessage(from: data) ?? "Couldn't verify the code. Please try again."
+            throw SimpleError(message: message)
         }
     }
 }
@@ -2367,6 +2411,7 @@ private extension ApiService {
         let city: String?
         let given_count: Int?
         let picked_count: Int?
+        let phone_verified: Bool?
     }
 
     func performProfileUpdate(path: String, headers: [String: String], body: Data) async throws -> Profile {
@@ -2408,7 +2453,8 @@ private extension ApiService {
             avatarUrl: avatarURL,
             givenCount: envelope.given_count,
             pickedCount: envelope.picked_count,
-            phone: envelope.phone
+            phone: envelope.phone,
+            phoneVerified: envelope.phone_verified
         )
     }
 }

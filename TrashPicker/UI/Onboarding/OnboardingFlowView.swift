@@ -148,19 +148,26 @@ struct OnboardingFlowView: View {
         isCompleting = true
         let success: Bool
 
-        // Fetch latest profile and log required fields before completion
-        await svc.fetchProfile()
-        let profile = svc.serverProfile
+        // Use cached profile to avoid flashing the loading gate; refresh only if missing
+        var profile = svc.serverProfile
+        if profile == nil {
+            await svc.fetchProfile()
+            profile = svc.serverProfile
+        }
         let missingFields = missingRequiredFields(from: profile)
         let hasName = profile?.hasName ?? false
         let hasPhone = profile?.hasPhone ?? false
         let hasAvatar = profile?.hasAvatar ?? false
+        let isPhoneVerified = profile?.isPhoneVerified ?? false
         AppLogger.logProfile(
             "Intro completion check - name:\(hasName) phone:\(hasPhone) avatar:\(hasAvatar) missing:\(missingFields)",
             level: .notice
         )
 
-        if missingFields.isEmpty {
+        if !isPhoneVerified {
+            success = false
+            appFlow.requirePhoneVerification()
+        } else if missingFields.isEmpty {
             success = await appFlow.markIntroComplete()
         } else {
             success = false
@@ -192,6 +199,7 @@ struct OnboardingFlowView: View {
         if !profile.hasName { missing.append("name") }
         if !profile.hasPhone { missing.append("phone") }
         if !profile.hasAvatar { missing.append("avatar") }
+        if !profile.isPhoneVerified { missing.append("phone verification") }
         return missing
     }
 

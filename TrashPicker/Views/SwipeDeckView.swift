@@ -1972,6 +1972,7 @@ extension SwipeDeckView {
                     approxCoordinate: post.approxCoordinate,
                     ownerName: ownerName(for: post),
                     ownerAvatarUrl: post.owner?.avatarUrl,
+                    ownerId: post.ownerId,
                     memberSince: post.createdAt,
                     pickupsCount: post.owner?.pickedCount,
                     variant: .feed,
