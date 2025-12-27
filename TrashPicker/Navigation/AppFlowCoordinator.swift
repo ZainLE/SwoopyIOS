@@ -221,9 +221,12 @@ final class AppFlowCoordinator: ObservableObject {
             return
             
         case .loading:
-            // Profile fetch in progress
-            updatePhase(.loadingProfile, reason: reason)
-            return
+            // Use cached profile while a refresh is in progress to avoid flashing the loading gate
+            if supabase.serverProfile == nil {
+                updatePhase(.loadingProfile, reason: reason)
+                return
+            }
+            break // Proceed with cached profile
             
         case .failed(let error):
             AppLogger.logProfile("Profile load failed, showing retry gate", level: .error)

@@ -10,28 +10,39 @@ enum BrandStyles {
 struct PillButton: View {
     let title: String
     var enabled: Bool = true
+    var isLoading: Bool = false
     var action: () -> Void
+    
+    private var isDisabled: Bool { isLoading || !enabled }
     
     var body: some View {
         Button(action: trigger) {
-            HStack {
-                Spacer(minLength: 0)
+            HStack(spacing: 10) {
+                if isLoading {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.white)
+                        .scaleEffect(0.9)
+                        .accessibilityHidden(true)
+                }
                 Text(title)
                     .font(.headline)
                     .foregroundStyle(Color.white)
-                Spacer(minLength: 0)
             }
+            .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
             .background(BrandStyles.brandGreen)
             .clipShape(Capsule(style: .continuous))
-            .opacity(enabled ? 1.0 : 0.55)
+            .opacity(isDisabled ? 0.7 : 1.0)
         }
         .buttonStyle(.plain)
-        .disabled(!enabled)
+        .disabled(isDisabled)
+        .accessibilityLabel(isLoading ? "\(title), Loading" : title)
+        .accessibilityHint(isLoading ? "In progress" : "")
     }
     
     private func trigger() {
-        guard enabled else { return }
+        guard isDisabled == false else { return }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         action()
     }

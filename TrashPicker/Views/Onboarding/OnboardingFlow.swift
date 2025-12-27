@@ -128,35 +128,15 @@ private struct WelcomeProfileScreen: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, 140)
             }
-            
-            // Upload progress overlay
-            if viewModel.isSaving {
-                Color.black.opacity(0.4)
-                    .ignoresSafeArea()
-                
-                VStack(spacing: 16) {
-                    ProgressView()
-                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                        .scaleEffect(1.5)
-                    
-                    if !viewModel.uploadProgress.isEmpty {
-                        Text(viewModel.uploadProgress)
-                            .font(.body)
-                            .foregroundColor(.white)
-                            .multilineTextAlignment(.center)
-                    }
-                }
-                .padding(32)
-                .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(Color.black.opacity(0.8))
-                )
-            }
         }
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.immediately)
         .safeAreaInset(edge: .bottom) {
-            PillButton(title: "Get code", enabled: viewModel.canContinue && !viewModel.isSaving) {
+            PillButton(
+                title: "Get code",
+                enabled: viewModel.canContinue && !viewModel.isSaving,
+                isLoading: viewModel.isSaving
+            ) {
                 guard viewModel.canContinue, !viewModel.isSaving else { return }
                 nameFocused = false
                 phoneFocused = false
