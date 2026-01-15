@@ -154,11 +154,15 @@ struct OnboardingFlowView: View {
             await svc.fetchProfile()
             profile = svc.serverProfile
         }
-        let missingFields = missingRequiredFields(from: profile)
+        let provider = svc.authProvider.lowercased()
+        let missingFields = missingRequiredFields(from: profile, provider: provider)
         let hasName = profile?.hasName ?? false
         let hasPhone = profile?.hasPhone ?? false
         let hasAvatar = profile?.hasAvatar ?? false
         let isPhoneVerified = profile?.isPhoneVerified ?? false
+        #if DEBUG
+        DLog("[ONBOARDING_INTRO] provider=\(provider) requiresName=\(provider != "apple" && provider != "google") missing=\(missingFields)")
+        #endif
         AppLogger.logProfile(
             "Intro completion check - name:\(hasName) phone:\(hasPhone) avatar:\(hasAvatar) missing:\(missingFields)",
             level: .notice
@@ -193,10 +197,16 @@ struct OnboardingFlowView: View {
         return "Next"
     }
 
-    private func missingRequiredFields(from profile: ProfileDTO?) -> [String] {
-        guard let profile else { return ["name", "phone", "avatar"] }
+    private func missingRequiredFields(from profile: ProfileDTO?, provider: String) -> [String] {
+        let requiresName = provider != "apple" && provider != "google"
+        guard let profile else {
+            if requiresName {
+                return ["name", "phone", "avatar"]
+            }
+            return ["phone", "avatar"]
+        }
         var missing: [String] = []
-        if !profile.hasName { missing.append("name") }
+        if requiresName && !profile.hasName { missing.append("name") }
         if !profile.hasPhone { missing.append("phone") }
         if !profile.hasAvatar { missing.append("avatar") }
         if !profile.isPhoneVerified { missing.append("phone verification") }

@@ -109,6 +109,10 @@ struct AppTabView: View {
                 FeedViewModel.requestFeedRefresh()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .pushRouteToTab)) { note in
+            guard let tab = note.object as? AppTab else { return }
+            router.selectedTab = tab
+        }
     }
     
     // MARK: - Camera Handling

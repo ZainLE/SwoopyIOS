@@ -10,6 +10,7 @@ struct NotificationsViewNew: View {
     @EnvironmentObject private var reservationNotificationService: ReservationNotificationService
     @Environment(AppRouter.self) private var router
     @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var pushPermission = PushPermissionManager()
     
     @State private var selectedTab: Tab = .actionRequired
     @State private var toastMessage: String?
@@ -37,6 +38,24 @@ struct NotificationsViewNew: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                if pushPermission.shouldShowPromptBanner {
+                    NotificationPermissionBanner(
+                        title: "Turn on notifications",
+                        message: "Get real-time updates about requests and pickups.",
+                        actionTitle: "Enable"
+                    ) {
+                        pushPermission.requestPermissionIfNeeded()
+                    }
+                } else if pushPermission.shouldShowDisabledBanner {
+                    NotificationPermissionBanner(
+                        title: "Notifications are off",
+                        message: "Enable alerts in Settings to stay up to date.",
+                        actionTitle: "Open Settings"
+                    ) {
+                        pushPermission.openSettings()
+                    }
+                }
+
                 NotificationsSegmentedControl(
                     selectedTab: $selectedTab,
                     actionCount: viewModel.actionable.count,
@@ -58,6 +77,7 @@ struct NotificationsViewNew: View {
         .navigationBarTitleDisplayMode(.large)
         .onAppear {
             CameraSessionManager.shared.stop()
+            pushPermission.refreshStatus()
         }
         .onDisappear {
             viewModel.cancelPendingRequests()
@@ -109,6 +129,7 @@ struct NotificationsViewNew: View {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
+                pushPermission.refreshStatus()
                 Task { await refreshAndLogCurrentTab() }
             }
         }
@@ -132,9 +153,9 @@ struct NotificationsViewNew: View {
             requestsListView(viewModel.actionable)
                 .onAppear {
                     viewModel.refresh()
+                }
         }
     }
-}
 
     @ViewBuilder
     private var updatesContent: some View {
@@ -996,5 +1017,43 @@ private struct NotificationRow: View {
             return url
         }
         return nil
+    }
+}
+
+private struct NotificationPermissionBanner: View {
+    let title: String
+    let message: String
+    let actionTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "bell.fill")
+                .foregroundColor(AppColor.brandGreen)
+                .font(.system(size: 18, weight: .semibold))
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(AppFont.body)
+                    .foregroundColor(AppColor.text)
+                Text(message)
+                    .font(AppFont.sub)
+                    .foregroundColor(AppColor.muted)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(actionTitle, action: action)
+                .font(AppFont.label)
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(AppColor.brandGreen)
+                .clipShape(Capsule())
+        }
+        .padding(12)
+        .background(AppColor.brandGreen.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }

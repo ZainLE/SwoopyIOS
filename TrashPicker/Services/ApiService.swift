@@ -709,6 +709,16 @@ private struct ReserveResponse: Decodable {
     let reservation_id: String
     let message: String?
 }
+private struct PushRegistrationPayload: Encodable {
+    let player_id: String
+    let subscription_id: String
+    let device_token: String?
+    let platform: String
+}
+
+private struct PushUnregisterPayload: Encodable {
+    let player_id: String
+}
 
 // MARK: - API Service
 
@@ -1482,6 +1492,33 @@ class ApiService: ObservableObject {
         }
         let message = extractErrorMessage(from: data)
         throw ApiHTTPError(statusCode: http.statusCode, message: message)
+    }
+
+    // MARK: - Push Registration
+
+    func registerPush(playerId: String, subscriptionId: String, deviceToken: String?) async throws {
+        let headers = try await authHeaders()
+        let payload = PushRegistrationPayload(
+            player_id: playerId,
+            subscription_id: subscriptionId,
+            device_token: deviceToken,
+            platform: "ios"
+        )
+        let body = try JSONEncoder().encode(payload)
+        var request = try buildRequest(path: "/me/push/register", method: .POST, body: body, headers: headers)
+        request.addXRequestId()
+        let (data, response) = try await send(request)
+        try handleIdempotentResponse(data: data, response: response, additionalSuccessCodes: [409])
+    }
+
+    func unregisterPush(playerId: String) async throws {
+        let headers = try await authHeaders()
+        let payload = PushUnregisterPayload(player_id: playerId)
+        let body = try JSONEncoder().encode(payload)
+        var request = try buildRequest(path: "/me/push/unregister", method: .POST, body: body, headers: headers)
+        request.addXRequestId()
+        let (data, response) = try await send(request)
+        try handleIdempotentResponse(data: data, response: response, additionalSuccessCodes: [409])
     }
     
     // MARK: - Posts

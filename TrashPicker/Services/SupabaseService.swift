@@ -51,6 +51,7 @@ final class SupabaseService: NSObject, ObservableObject {
     @Published private(set) var isAuthenticated: Bool = false
     @Published private(set) var didCheckSession = false
     @Published private(set) var authProviderRaw: String?
+    private var didAttemptProfileNameSync = false
     
     // Server-side profile (single source of truth for flow gating)
     @Published private(set) var serverProfile: ProfileDTO?
@@ -355,8 +356,8 @@ final class SupabaseService: NSObject, ObservableObject {
             return
         }
         
-        // If profile already has full_name, this is not first sign-in
-        if let existingName = profile.fullName, !existingName.isEmpty {
+        // If profile already has a name, this is not first sign-in
+        if profile.hasName {
             AppLogger.logProfile("Profile already has name, skipping Apple identity persistence")
             return
         }
@@ -371,7 +372,11 @@ final class SupabaseService: NSObject, ObservableObject {
             if !nameComponents.isEmpty {
                 let combinedName = nameComponents.joined(separator: " ")
                 do {
-                    try await updateProfileWithOnboarding(fullName: combinedName)
+                    try await updateProfileWithOnboarding(
+                        fullName: combinedName,
+                        firstName: fullName.givenName,
+                        lastName: fullName.familyName
+                    )
                     AppLogger.logProfile("Persisted Apple identity: name=\(combinedName)", level: .notice)
                 } catch {
                     AppLogger.logProfile("Failed to persist Apple identity: \(error.localizedDescription)", level: .error)
@@ -436,6 +441,7 @@ final class SupabaseService: NSObject, ObservableObject {
     @MainActor
     func signOut() async {
         AuthLogger.signOutTriggered()
+        await PushRegistrationManager.shared.unregisterForSignOut(trigger: "signOut")
         do { try await client.auth.signOut(scope: .local) } catch { }
         KeychainStore.clearSession()
         applyAuthSession(nil)
@@ -744,6 +750,7 @@ final class SupabaseService: NSObject, ObservableObject {
             cachedProfileUserId = uid
             profileLoadState = .loaded
             AppLogger.logProfile("Profile loaded: complete=\(profile.isComplete) onboarding=\(profile.onboardingCompleted)")
+            await ensureProfileNameFromAuthMetadataIfNeeded(profile: profile)
             
         } catch {
             AppLogger.logProfile("Profile fetch failed: \(error.localizedDescription)", level: .error)
@@ -788,6 +795,91 @@ final class SupabaseService: NSObject, ObservableObject {
         message.contains("not found") ||
         message.contains("json object requested")
     }
+
+    private func ensureProfileNameFromAuthMetadataIfNeeded(profile: ProfileDTO) async {
+        guard didAttemptProfileNameSync == false else { return }
+        didAttemptProfileNameSync = true
+
+        if profile.hasName {
+            AppLogger.logProfile("Profile name present; skipping auth metadata sync")
+            return
+        }
+
+        let provider = authProvider.lowercased()
+        let nameFromAuth = extractNameFromAuthMetadata()
+        let hasMetadataName = [nameFromAuth.fullName, nameFromAuth.firstName, nameFromAuth.lastName]
+            .compactMap { $0 }
+            .contains(where: { !$0.isEmpty })
+
+        if !hasMetadataName {
+            AppLogger.logProfile("No name in auth metadata (provider=\(provider)); leaving profile name empty")
+            return
+        }
+
+        AppLogger.logProfile(
+            "Auth metadata name found (provider=\(provider)) full=\(nameFromAuth.fullName ?? "nil") first=\(nameFromAuth.firstName ?? "nil") last=\(nameFromAuth.lastName ?? "nil")",
+            level: .notice
+        )
+
+        do {
+            try await updateProfileWithOnboarding(
+                fullName: nameFromAuth.fullName,
+                firstName: nameFromAuth.firstName,
+                lastName: nameFromAuth.lastName
+            )
+            AppLogger.logProfile("Persisted name from auth metadata to profiles", level: .notice)
+        } catch {
+            AppLogger.logProfile("Failed to persist auth metadata name: \(error.localizedDescription)", level: .error)
+        }
+    }
+
+    private func extractNameFromAuthMetadata() -> (fullName: String?, firstName: String?, lastName: String?) {
+        let fullName = authMetadataString(for: "full_name") ?? authMetadataString(for: "name")
+        let givenName = authMetadataString(for: "given_name")
+        let familyName = authMetadataString(for: "family_name")
+
+        var firstName = givenName
+        var lastName = familyName
+        var combinedFullName = fullName
+
+        if combinedFullName == nil {
+            let combined = [givenName, familyName]
+                .compactMap { $0 }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            if !combined.isEmpty {
+                combinedFullName = combined
+            }
+        }
+
+        if firstName == nil && lastName == nil, let full = combinedFullName {
+            let parts = full.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            firstName = parts.first.map(String.init)
+            if parts.count > 1 {
+                lastName = String(parts[1])
+            }
+        }
+
+        return (combinedFullName, firstName, lastName)
+    }
+
+    private func authMetadataString(for key: String) -> String? {
+        if let value = session?.user.userMetadata[key]?.stringValue {
+            return cleanMetadata(value)
+        }
+        if let description = session?.user.userMetadata[key]?.description {
+            return cleanMetadata(description)
+        }
+        return nil
+    }
+
+    private func cleanMetadata(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "null" {
+            return nil
+        }
+        return trimmed
+    }
     
     /// Update profile with onboarding completion flag
     /// This is the ONLY method that should set onboarding_completed on the server
@@ -816,13 +908,16 @@ final class SupabaseService: NSObject, ObservableObject {
         }
 
         // Build snake_case PATCH body for REST
+        let trimmedFullName = fullName?.trimmingCharacters(in: .whitespacesAndNewlines)
         struct LocalPatch: Encodable {
+            let full_name: String?
             let first_name: String?
             let last_name: String?
             let phone: String?
             let avatar_url: String?
         }
         let patchBody = LocalPatch(
+            full_name: (trimmedFullName?.isEmpty == false) ? trimmedFullName : nil,
             first_name: firstName,
             last_name: lastName,
             phone: normalizedPhone,
@@ -1000,6 +1095,29 @@ final class SupabaseService: NSObject, ObservableObject {
             #endif
             resetLists()
         }
+    }
+
+    func refreshMyReservations() async throws {
+        guard hasAuthToken else {
+            resetLists()
+            return
+        }
+        let api = ApiService(supabaseService: self)
+        let reservations = try await api.getMyReservations()
+        let reservationItems = reservations.map { mapPostToDTO($0.post, reservation: $0) }
+        myReservations = reservationItems
+        pending = reservationItems.filter { $0.status.lowercased() == "pending" }
+    }
+
+    func refreshMyPosts() async throws {
+        guard hasAuthToken else {
+            resetLists()
+            return
+        }
+        let api = ApiService(supabaseService: self)
+        let posts = try await api.getMyPosts()
+        let uploads = posts.map { mapPostToDTO($0, reservation: nil) }
+        myUploads = uploads
     }
     
     private func resetLists() {
@@ -1385,6 +1503,7 @@ private extension SupabaseService {
         cachedProfile = nil
         cachedProfileUserId = nil
         profileLoadState = .idle
+        didAttemptProfileNameSync = false
     }
 
     @MainActor

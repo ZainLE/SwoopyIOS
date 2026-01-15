@@ -7,6 +7,9 @@ final class OnboardingViewModel: ObservableObject {
     @AppStorage("onboardingFullName") private var storedFullName = ""
     @AppStorage("onboardingPhone") private var storedPhone = ""
     @AppStorage("onboardingCountryId") private var storedCountryId = Country.spain.id
+    @AppStorage("onboardingAvatarImagePath") private var storedAvatarImagePath = ""
+    @AppStorage("onboardingAvatarUploadState") private var storedAvatarUploadState = "none"
+    @AppStorage("onboardingAvatarUploadedURL") private var storedAvatarUploadURL = ""
     
     @Published var fullName: String = "" {
         didSet {
@@ -38,11 +41,18 @@ final class OnboardingViewModel: ObservableObject {
     @Published var isShowingPhotoLibrary = false
     @Published var isSaving = false
     @Published var errorMessage: String?
+    @Published var uploadErrorMessage: String?
+    @Published var didUploadPhoto = false
     @Published var uploadProgress: String = ""
     
     var canContinue: Bool {
         let names = splitName(trimmedFullName)
-        return !names.first.isEmpty && avatarImage != nil && isPhoneValid
+        let hasName = !names.first.isEmpty
+        let hasAvatar = avatarImage != nil
+        if shouldCollectName {
+            return hasName && hasAvatar && isPhoneValid
+        }
+        return hasAvatar && isPhoneValid
     }
     
     var trimmedFullName: String {
@@ -55,6 +65,10 @@ final class OnboardingViewModel: ObservableObject {
     
     var isPhoneValid: Bool {
         normalizedPhone != nil
+    }
+
+    var shouldCollectName: Bool {
+        !isSocialAuth
     }
     
     var firstNameCharCount: Int {
@@ -83,6 +97,13 @@ final class OnboardingViewModel: ObservableObject {
         } else {
             phone = selectedCountry.dialPrefix
         }
+        loadStoredAvatarIfAvailable()
+        didUploadPhoto = storedAvatarUploadState == "completed" && !storedAvatarUploadURL.isEmpty
+
+        #if DEBUG
+        let provider = authProvider
+        DLog("[ONBOARDING_PROVIDER] provider=\(provider) requiresName=\(shouldCollectName)")
+        #endif
     }
     
     func pickFromCamera() {
@@ -96,6 +117,11 @@ final class OnboardingViewModel: ObservableObject {
     func didPickImage(_ image: UIImage) {
         avatarImage = image
         errorMessage = nil
+        uploadErrorMessage = nil
+        didUploadPhoto = false
+        storedAvatarUploadState = "pending"
+        storedAvatarUploadURL = ""
+        persistAvatarImage(image)
     }
     
     func resetPickers() {
@@ -108,8 +134,10 @@ final class OnboardingViewModel: ObservableObject {
         guard canContinue else { return false }
         isSaving = true
         errorMessage = nil
+        uploadErrorMessage = nil
+        didUploadPhoto = false
         uploadProgress = ""
-        let name = trimmedFullName
+        let name = shouldCollectName ? trimmedFullName : ""
         let phoneValue = trimmedPhone
         let phoneSuffix = phoneValue.suffix(3)
         DLog("[OTP_SEND_START] flow=onboarding country=\(selectedCountry.id) last3=\(phoneSuffix)")
@@ -122,21 +150,31 @@ final class OnboardingViewModel: ObservableObject {
         }
         
         do {
-            // Step 1: Upload photo
-            uploadProgress = "Uploading profile photo..."
-            guard let image = avatarImage else {
-                throw SimpleError(message: "Please select a profile photo")
+            // Step 1: Upload photo if not already committed
+            if shouldUploadPhoto {
+                uploadProgress = "Uploading profile photo..."
+                guard let image = avatarImage else {
+                    throw SimpleError(message: "Please select a profile photo")
+                }
+                
+                // Validate image size before upload
+                guard let jpeg = image.jpegData(compressionQuality: 0.8) else {
+                    throw SimpleError(message: "Could not process image")
+                }
+                if jpeg.count > 5 * 1024 * 1024 {
+                    throw SimpleError(message: "Image must be under 5MB")
+                }
+                
+                do {
+                    let uploadedURL = try await uploadProfilePhoto(image)
+                    storedAvatarUploadURL = uploadedURL.absoluteString
+                    storedAvatarUploadState = "completed"
+                    didUploadPhoto = true
+                } catch {
+                    uploadErrorMessage = "Upload failed. Try again."
+                    throw error
+                }
             }
-            
-            // Validate image size before upload
-            guard let jpeg = image.jpegData(compressionQuality: 0.8) else {
-                throw SimpleError(message: "Could not process image")
-            }
-            if jpeg.count > 5 * 1024 * 1024 {
-                throw SimpleError(message: "Image must be under 5MB")
-            }
-            
-            _ = try await uploadProfilePhoto(image)
             
             // Step 2: Update profile with names and phone
             uploadProgress = "Updating profile..."
@@ -171,6 +209,14 @@ final class OnboardingViewModel: ObservableObject {
         let first = parts.first.map(String.init) ?? ""
         let last = parts.count > 1 ? String(parts[1]) : ""
         return (first, last)
+    }
+
+    private var authProvider: String {
+        SupabaseService.shared.authProvider.lowercased()
+    }
+
+    private var isSocialAuth: Bool {
+        authProvider == "apple" || authProvider == "google"
     }
     
     private func uploadProfilePhoto(_ image: UIImage) async throws -> URL {
@@ -376,6 +422,42 @@ final class OnboardingViewModel: ObservableObject {
     
     private var normalizedPhone: String? {
         try? PhoneNormalizer.normalizeToE164(rawInput: trimmedPhone, defaultCountryCode: selectedCountry.callingCode)
+    }
+
+    private var shouldUploadPhoto: Bool {
+        storedAvatarUploadState != "completed" || storedAvatarUploadURL.isEmpty
+    }
+
+    private func loadStoredAvatarIfAvailable() {
+        guard storedAvatarImagePath.isEmpty == false else { return }
+        let url = URL(fileURLWithPath: storedAvatarImagePath)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            storedAvatarImagePath = ""
+            storedAvatarUploadState = "none"
+            storedAvatarUploadURL = ""
+            return
+        }
+        if let data = try? Data(contentsOf: url),
+           let image = UIImage(data: data) {
+            avatarImage = image
+        }
+    }
+
+    private func persistAvatarImage(_ image: UIImage) {
+        guard let data = image.jpegData(compressionQuality: 0.9) else { return }
+        let fm = FileManager.default
+        guard let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let dir = base.appendingPathComponent("Onboarding", isDirectory: true)
+        if fm.fileExists(atPath: dir.path) == false {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        let url = dir.appendingPathComponent("avatar.jpg")
+        do {
+            try data.write(to: url, options: [.atomic])
+            storedAvatarImagePath = url.path
+        } catch {
+            // Best-effort persistence only
+        }
     }
 }
 

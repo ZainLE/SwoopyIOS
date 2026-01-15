@@ -176,6 +176,7 @@ struct ProfileView: View {
     @State private var isReportDetailModalVisible = false
     @State private var isReportSuccessModalVisible = false
     @State private var reportSuccessDismissTask: Task<Void, Never>?
+    @State private var showNotificationsFromPush = false
     
     init() {
         // Initialize both view models with shared services
@@ -209,6 +210,9 @@ struct ProfileView: View {
                 await profileManager.loadProfile()
                 await reloadNotificationBadges()
             }
+        }
+        .navigationDestination(isPresented: $showNotificationsFromPush) {
+            NotificationsView()
         }
         .fullScreenCover(isPresented: $reportShowCamera) {
             CameraScreen(
@@ -248,6 +252,9 @@ struct ProfileView: View {
         }
         .onReceive(svc.$myUploads) { uploads in
             viewModel.uploadsCount = uploads.count
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openNotifications)) { _ in
+            showNotificationsFromPush = true
         }
         .onAppear {
             Task {

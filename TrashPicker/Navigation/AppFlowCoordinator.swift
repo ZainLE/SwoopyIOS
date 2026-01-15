@@ -29,6 +29,10 @@ final class AppFlowCoordinator: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var hasMigratedLegacyFlags = false
     private var lastUserId: UUID?
+    private let pushIntentStore = PushIntentStore()
+    private var isConsumingPushIntent = false
+    private var lastConsumedIntentKey: String?
+    private var lastConsumedNotificationId: UUID?
 
     private var loadingTask: Task<Void, Never>?
     private var loadingStartedAt: Date?
@@ -161,6 +165,14 @@ final class AppFlowCoordinator: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.evaluatePhase(reason: "bootStage") }
             .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: .pushIntentStored)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                let reason = notification.userInfo?["reason"] as? String ?? "pushStored"
+                self?.consumePendingPushIfPossible(trigger: reason)
+            }
+            .store(in: &cancellables)
     }
 
     private func handleAuthPhaseChange() {
@@ -245,7 +257,7 @@ final class AppFlowCoordinator: ObservableObject {
         }
 
         // Step 4: Check profile completeness
-        guard profile.isComplete else {
+        guard isProfileComplete(profile) else {
             updatePhase(.profileCapture, reason: "profileIncomplete")
             return
         }
@@ -309,6 +321,16 @@ final class AppFlowCoordinator: ObservableObject {
         }
         
         AppLogger.logStorage("Deleted legacy UserDefaults keys")
+    }
+
+    private func isProfileComplete(_ profile: ProfileDTO) -> Bool {
+        let provider = supabase.authProvider.lowercased()
+        let requiresName = provider != "apple" && provider != "google"
+        #if DEBUG
+        DLog("[PROFILE_GATE] provider=\(provider) requiresName=\(requiresName) hasName=\(profile.hasName) hasPhone=\(profile.hasPhone) hasAvatar=\(profile.hasAvatar)")
+        #endif
+        let hasRequiredName = requiresName ? profile.hasName : true
+        return hasRequiredName && profile.hasPhone && profile.hasAvatar
     }
 
     private func enterLoadingFlow(reason: String) {
@@ -376,5 +398,61 @@ final class AppFlowCoordinator: ObservableObject {
 
         AppLogger.logFlow("state \(phase) → \(newPhase) (reason: \(reason))")
         phase = newPhase
+        if newPhase == .main {
+            consumePendingPushIfPossible(trigger: "phaseMain")
+        }
+    }
+
+    func consumePendingPushIfPossible(trigger: String) {
+        guard let intent = pushIntentStore.get() else { return }
+        if Date() > intent.expiresAt {
+            pushIntentStore.clear()
+            DLog("[PUSH_INTENT] expired dropped")
+            return
+        }
+        guard phase == .main else {
+            DLog("[PUSH] blocked phase=\(phase)")
+            DLog("[PUSH_GATE] blocked phase=\(phase)")
+            return
+        }
+        DLog("[PUSH_GATE] allowed phase=\(phase)")
+        guard isConsumingPushIntent == false else {
+            DLog("[PUSH_INTENT] deferred reason=consuming_in_progress")
+            return
+        }
+
+        let intentKey = [
+            intent.notificationId?.uuidString ?? "n/a",
+            intent.reservationId?.uuidString ?? "n/a",
+            intent.postId?.uuidString ?? "n/a",
+            intent.intentType ?? "n/a"
+        ].joined(separator: "|")
+
+        if let notificationId = intent.notificationId,
+           notificationId == lastConsumedNotificationId {
+            pushIntentStore.clear()
+            DLog("[PUSH_INTENT] ignored reason=duplicate notificationId=\(notificationId.uuidString)")
+            return
+        }
+        if intentKey == lastConsumedIntentKey {
+            pushIntentStore.clear()
+            DLog("[PUSH_INTENT] ignored reason=duplicate intent=\(intentKey)")
+            return
+        }
+
+        isConsumingPushIntent = true
+        pushIntentStore.clear()
+        lastConsumedIntentKey = intentKey
+        lastConsumedNotificationId = intent.notificationId
+        DLog("[PUSH] consumed trigger=\(trigger) \(intent.debugSummary)")
+        DLog("[PUSH_GATE] consumed trigger=\(trigger) \(intent.debugSummary)")
+
+        Task { [weak self] in
+            PushIntentRouter.shared.refreshAfterPush(intent: intent, reason: "consume")
+            await PushIntentRouter.shared.route(intent: intent)
+            await MainActor.run {
+                self?.isConsumingPushIntent = false
+            }
+        }
     }
 }

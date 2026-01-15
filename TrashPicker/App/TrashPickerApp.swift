@@ -118,8 +118,13 @@ private struct RootGateView: View {
     var body: some View {
         appShell
         .onAppear {
+            PushIntentRouter.shared.configure(notificationService: notificationService)
+            PushRegistrationManager.shared.configure(api: api, supabase: svc)
             startBootSequenceIfNeeded()
             markFirstInteractiveIfNeeded()
+            if svc.phase == .signedIn {
+                PushRegistrationManager.shared.syncRegistration(trigger: "appStart")
+            }
         }
         .onChange(of: svc.phase) { _, newPhase in
             if newPhase != .checking {
@@ -131,6 +136,7 @@ private struct RootGateView: View {
                     try? await notificationService.fetchNotifications()
                 }
                 boot.start(svc: svc, api: api)
+                PushRegistrationManager.shared.syncRegistration(trigger: "signedIn")
             } else if newPhase == .signedOut {
                 notificationService.reset()
                 boot.start(svc: svc, api: api)
@@ -143,6 +149,7 @@ private struct RootGateView: View {
                     Task {
                         try? await notificationService.fetchNotifications()
                     }
+                    PushRegistrationManager.shared.syncRegistration(trigger: "appActive")
                 }
             }
         }
@@ -279,9 +286,8 @@ private struct LoadingStageView: View {
 }
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
-    private let userDefaults = UserDefaults.standard
-    private let permissionPromptKey = "OneSignal.didPromptForPush"
     private var didLogAPNSToken = false
+    private let pushClickListener = PushClickListener()
     
     func application(_ application: UIApplication,
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -313,8 +319,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         OneSignal.initialize(appId, withLaunchOptions: launchOptions)
         OneSignal.User.pushSubscription.addObserver(self)
         logPushSubscriptionState(context: "post-init")
-        
-        requestNotificationPermissionIfNeeded()
+        configurePushOpenHandling()
         UIApplication.shared.registerForRemoteNotifications()
 
         // Smartlook Analytics initialization
@@ -344,30 +349,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         return true
     }
     
-    private func requestNotificationPermissionIfNeeded() {
-        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
-            guard let self else { return }
-            
-            switch settings.authorizationStatus {
-            case .notDetermined:
-                if self.userDefaults.bool(forKey: self.permissionPromptKey) {
-                    return
-                }
-                self.userDefaults.set(true, forKey: self.permissionPromptKey)
-                DispatchQueue.main.async {
-                    OneSignal.Notifications.requestPermission({ accepted in
-                        DLog("[OneSignal] User accepted notifications: \(accepted)")
-                        if accepted {
-                            UIApplication.shared.registerForRemoteNotifications()
-                        }
-                    }, fallbackToSettings: false)
-                }
-            default:
-                self.logPushSubscriptionState(context: "permission-status-\(settings.authorizationStatus.rawValue)")
-            }
-        }
-    }
-    
     private func logBootstrapInfo(appId: String) {
         let bundleId = Bundle.main.bundleIdentifier ?? "unknown"
         let appIdentifierPrefix = Bundle.main.object(forInfoDictionaryKey: "AppIdentifierPrefix") as? String
@@ -393,6 +374,33 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let token = subscription.token ?? "nil"
         let optedIn = subscription.optedIn
         DLog("[OneSignal] \(context) playerId=\(playerId) token=\(token) optedIn=\(optedIn)")
+    }
+
+    private func configurePushOpenHandling() {
+        OneSignal.Notifications.addClickListener(pushClickListener)
+    }
+}
+
+private final class PushClickListener: NSObject, OSNotificationClickListener {
+    func onClick(event: OSNotificationClickEvent) {
+        let additionalData = event.notification.additionalData ?? [:]
+        DLog("[PUSH] received keys=\(additionalData.keys)")
+        guard let intent = PendingPushIntent.from(additionalData: additionalData, source: .push) else {
+            DLog("[PUSH] ignored reason=missing_ids")
+            return
+        }
+        DLog("[PUSH] received intent=\(intent.debugSummary)")
+        let store = PushIntentStore()
+        if store.setIfNew(intent) {
+            DLog("[PUSH] stored intent=\(intent.debugSummary)")
+            NotificationCenter.default.post(
+                name: .pushIntentStored,
+                object: nil,
+                userInfo: ["reason": "pushReceived"]
+            )
+        } else if let notificationId = intent.notificationId {
+            DLog("[PUSH] ignored reason=duplicate notificationId=\(notificationId.uuidString)")
+        }
     }
 }
 
@@ -525,6 +533,7 @@ extension AppDelegate {
 extension AppDelegate: OSPushSubscriptionObserver {
     func onPushSubscriptionDidChange(state: OSPushSubscriptionChangedState) {
         logPushSubscriptionState(context: "subscription-change")
+        PushRegistrationManager.shared.handleSubscriptionChange(trigger: "subscriptionChange")
     }
 }
 

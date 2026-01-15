@@ -17,7 +17,8 @@ struct OnboardingFlow: View {
             WelcomeProfileScreen(
                 viewModel: viewModel,
                 onContinue: continueFlow,
-                onAvatarTapped: presentPhotoSource
+                onAvatarTapped: presentPhotoSource,
+                isShowingSourceSheet: $showPhotoSourceSheet
             )
             .navigationTitle("")
             .toolbar(.hidden, for: .navigationBar)
@@ -93,6 +94,7 @@ private struct WelcomeProfileScreen: View {
     @ObservedObject var viewModel: OnboardingViewModel
     var onContinue: () -> Void
     var onAvatarTapped: () -> Void
+    @Binding var isShowingSourceSheet: Bool
     
     @FocusState private var nameFocused: Bool
     @FocusState private var phoneFocused: Bool
@@ -133,7 +135,7 @@ private struct WelcomeProfileScreen: View {
         .scrollDismissesKeyboard(.immediately)
         .safeAreaInset(edge: .bottom) {
             PillButton(
-                title: "Get code",
+                title: viewModel.isSaving ? "Sending code..." : "Get code",
                 enabled: viewModel.canContinue && !viewModel.isSaving,
                 isLoading: viewModel.isSaving
             ) {
@@ -162,28 +164,51 @@ private struct WelcomeProfileScreen: View {
         VStack(spacing: 12) {
             AvatarPicker(image: viewModel.avatarImage, size: 128, onTap: onAvatarTapped)
                 .frame(maxWidth: .infinity)
-            CapsuleButton(title: "Upload image", action: onAvatarTapped)
+            CapsuleButton(
+                title: uploadButtonTitle,
+                isLoading: isUploadButtonLoading,
+                enabled: !viewModel.isSaving
+            ) {
+                guard !isUploadButtonLoading else { return }
+                onAvatarTapped()
+            }
+            if viewModel.didUploadPhoto {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(.green)
+                    Text("Image uploaded")
+                        .font(.caption)
+                        .foregroundStyle(AppColor.muted)
+                }
+            }
+            if let uploadError = viewModel.uploadErrorMessage, !uploadError.isEmpty {
+                Text(uploadError)
+                    .font(.caption)
+                    .foregroundColor(.red)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .center)
     }
     
     private var formFields: some View {
         VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 6) {
-                InputField(title: "Full Name", isRequired: true) {
-                    TextField("First Last", text: $viewModel.fullName)
-                        .textInputAutocapitalization(.words)
-                        .autocorrectionDisabled()
-                        .submitLabel(.next)
-                        .focused($nameFocused)
-                        .onSubmit { phoneFocused = true }
-                }
-                .accessibilityIdentifier("onboarding.fullName")
-                
-                if !nameValidationError.isEmpty {
-                    Text(nameValidationError)
-                        .font(.caption)
-                        .foregroundColor(.red)
+            if viewModel.shouldCollectName {
+                VStack(alignment: .leading, spacing: 6) {
+                    InputField(title: "Full Name", isRequired: true) {
+                        TextField("First Last", text: $viewModel.fullName)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled()
+                            .submitLabel(.next)
+                            .focused($nameFocused)
+                            .onSubmit { phoneFocused = true }
+                    }
+                    .accessibilityIdentifier("onboarding.fullName")
+
+                    if !nameValidationError.isEmpty {
+                        Text(nameValidationError)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
                 }
             }
 
@@ -209,6 +234,7 @@ private struct WelcomeProfileScreen: View {
     }
     
     private var nameValidationError: String {
+        guard viewModel.shouldCollectName else { return "" }
         let names = splitName(viewModel.trimmedFullName)
         if viewModel.trimmedFullName.isEmpty {
             return "" // Don't show error for empty field
@@ -247,6 +273,22 @@ private struct WelcomeProfileScreen: View {
         let first = parts.first.map(String.init) ?? ""
         let last = parts.count > 1 ? String(parts[1]) : ""
         return (first, last)
+    }
+
+    private var isUploadButtonLoading: Bool {
+        isSelectingPhoto || isUploadingPhoto
+    }
+    
+    private var uploadButtonTitle: String {
+        isUploadingPhoto ? "Uploading..." : "Upload image"
+    }
+
+    private var isSelectingPhoto: Bool {
+        isShowingSourceSheet || viewModel.isShowingCamera || viewModel.isShowingPhotoLibrary
+    }
+
+    private var isUploadingPhoto: Bool {
+        viewModel.isSaving && viewModel.uploadProgress.contains("Uploading")
     }
     
 }

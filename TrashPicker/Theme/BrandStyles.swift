@@ -50,22 +50,38 @@ struct PillButton: View {
 
 struct CapsuleButton: View {
     let title: String
+    var isLoading: Bool = false
+    var enabled: Bool = true
     var action: () -> Void
+    
+    private var isDisabled: Bool { isLoading || !enabled }
     
     var body: some View {
         Button(action: trigger) {
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .padding(.horizontal, 18)
-                .padding(.vertical, 8)
-                .background(BrandStyles.brandDark)
-                .foregroundStyle(Color.white)
-                .clipShape(Capsule(style: .continuous))
+            HStack(spacing: 8) {
+                if isLoading {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(.white)
+                        .scaleEffect(0.8)
+                        .accessibilityHidden(true)
+                }
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.white)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
+            .background(BrandStyles.brandDark)
+            .clipShape(Capsule(style: .continuous))
+            .opacity(isDisabled ? 0.7 : 1.0)
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled)
     }
     
     private func trigger() {
+        guard isDisabled == false else { return }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         action()
     }

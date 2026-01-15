@@ -8,4 +8,7 @@ extension Notification.Name {
     static let profileDidUpdate = Notification.Name("profileDidUpdate")
     static let reservationOptimisticInsert = Notification.Name("reservationOptimisticInsert")
     static let reservationOptimisticRemove = Notification.Name("reservationOptimisticRemove")
+    static let pushIntentStored = Notification.Name("pushIntentStored")
+    static let pushRouteToTab = Notification.Name("pushRouteToTab")
+    static let openNotifications = Notification.Name("openNotifications")
 }
