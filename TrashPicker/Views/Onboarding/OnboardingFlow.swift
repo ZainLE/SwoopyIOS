@@ -6,6 +6,7 @@ struct OnboardingFlow: View {
     @EnvironmentObject private var appFlow: AppFlowCoordinator
     @StateObject private var viewModel: OnboardingViewModel
     @State private var pickerItem: PhotosPickerItem?
+    @State private var isLoadingPickedImage = false
     @State private var showPhotoSourceSheet = false
     
     init(profileService: ProfileService = SupabaseProfileService()) {
@@ -18,18 +19,25 @@ struct OnboardingFlow: View {
                 viewModel: viewModel,
                 onContinue: continueFlow,
                 onAvatarTapped: presentPhotoSource,
-                isShowingSourceSheet: $showPhotoSourceSheet
+                isProcessingPhotoSelection: isLoadingPickedImage
             )
             .navigationTitle("")
             .toolbar(.hidden, for: .navigationBar)
         }
         .photosPicker(
-            isPresented: $viewModel.isShowingPhotoLibrary,
+            isPresented: Binding(
+                get: { viewModel.isShowingPhotoLibrary },
+                set: { isPresented in
+                    viewModel.isShowingPhotoLibrary = isPresented
+                }
+            ),
             selection: $pickerItem,
-            matching: .images
+            matching: .images,
+            preferredItemEncoding: .current
         )
         .onChange(of: pickerItem) { _, item in
             guard let item else { return }
+            isLoadingPickedImage = true
             Task {
                 await loadImage(from: item)
             }
@@ -47,17 +55,31 @@ struct OnboardingFlow: View {
         }
         .confirmationDialog("Upload image", isPresented: $showPhotoSourceSheet, titleVisibility: .visible) {
             Button("Take Photo") {
-                viewModel.pickFromCamera()
+                openCameraFromSheet()
             }
             Button("Choose Photo") {
-                viewModel.pickFromLibrary()
+                openPhotoLibraryFromSheet()
             }
             Button("Cancel", role: .cancel) {}
         }
     }
     
     private func presentPhotoSource() {
+        guard !viewModel.isSaving else { return }
+        isLoadingPickedImage = false
+        pickerItem = nil
+        viewModel.resetPickers()
         showPhotoSourceSheet = true
+    }
+
+    private func openCameraFromSheet() {
+        showPhotoSourceSheet = false
+        viewModel.pickFromCamera()
+    }
+
+    private func openPhotoLibraryFromSheet() {
+        showPhotoSourceSheet = false
+        viewModel.pickFromLibrary()
     }
     
     private func continueFlow() {
@@ -73,16 +95,23 @@ struct OnboardingFlow: View {
     }
     
     private func loadImage(from item: PhotosPickerItem) async {
+        defer {
+            Task { @MainActor in
+                isLoadingPickedImage = false
+                pickerItem = nil
+                viewModel.resetPickers()
+            }
+        }
+
         if let data = try? await item.loadTransferable(type: Data.self),
            let image = UIImage(data: data) {
             await MainActor.run {
                 viewModel.didPickImage(image)
             }
-        }
-        
-        await MainActor.run {
-            pickerItem = nil
-            viewModel.resetPickers()
+        } else {
+            await MainActor.run {
+                viewModel.uploadErrorMessage = "Couldn't load that photo. Please try another image."
+            }
         }
     }
 }
@@ -94,7 +123,7 @@ private struct WelcomeProfileScreen: View {
     @ObservedObject var viewModel: OnboardingViewModel
     var onContinue: () -> Void
     var onAvatarTapped: () -> Void
-    @Binding var isShowingSourceSheet: Bool
+    var isProcessingPhotoSelection: Bool
     
     @FocusState private var nameFocused: Bool
     @FocusState private var phoneFocused: Bool
@@ -136,14 +165,12 @@ private struct WelcomeProfileScreen: View {
         .safeAreaInset(edge: .bottom) {
             PillButton(
                 title: viewModel.isSaving ? "Sending code..." : "Get code",
-                enabled: viewModel.canContinue && !viewModel.isSaving,
+                enabled: !viewModel.isSaving,
                 isLoading: viewModel.isSaving
             ) {
-                guard viewModel.canContinue, !viewModel.isSaving else { return }
-                nameFocused = false
-                phoneFocused = false
-                onContinue()
+                handleContinueTap()
             }
+            .accessibilityIdentifier("onboarding.getCode")
             .padding(.horizontal, 24)
             .padding(.bottom, 16)
         }
@@ -165,22 +192,14 @@ private struct WelcomeProfileScreen: View {
             AvatarPicker(image: viewModel.avatarImage, size: 128, onTap: onAvatarTapped)
                 .frame(maxWidth: .infinity)
             CapsuleButton(
-                title: uploadButtonTitle,
+                title: "Upload image",
                 isLoading: isUploadButtonLoading,
                 enabled: !viewModel.isSaving
             ) {
                 guard !isUploadButtonLoading else { return }
                 onAvatarTapped()
             }
-            if viewModel.didUploadPhoto {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                    Text("Image uploaded")
-                        .font(.caption)
-                        .foregroundStyle(AppColor.muted)
-                }
-            }
+            .accessibilityIdentifier("onboarding.uploadImage")
             if let uploadError = viewModel.uploadErrorMessage, !uploadError.isEmpty {
                 Text(uploadError)
                     .font(.caption)
@@ -276,19 +295,35 @@ private struct WelcomeProfileScreen: View {
     }
 
     private var isUploadButtonLoading: Bool {
-        isSelectingPhoto || isUploadingPhoto
-    }
-    
-    private var uploadButtonTitle: String {
-        isUploadingPhoto ? "Uploading..." : "Upload image"
+        isProcessingPhotoSelection
     }
 
-    private var isSelectingPhoto: Bool {
-        isShowingSourceSheet || viewModel.isShowingCamera || viewModel.isShowingPhotoLibrary
+    private func handleContinueTap() {
+        guard !viewModel.isSaving else { return }
+        guard viewModel.canContinue else {
+            viewModel.errorMessage = validationMessage
+            Haptics.play(.error)
+            return
+        }
+        nameFocused = false
+        phoneFocused = false
+        onContinue()
     }
 
-    private var isUploadingPhoto: Bool {
-        viewModel.isSaving && viewModel.uploadProgress.contains("Uploading")
+    private var validationMessage: String {
+        if viewModel.avatarImage == nil {
+            return "Please upload a profile photo to continue."
+        }
+        if viewModel.shouldCollectName {
+            let names = splitName(viewModel.trimmedFullName)
+            if names.first.isEmpty {
+                return "Please enter your full name."
+            }
+        }
+        if !viewModel.isPhoneValid {
+            return "Please enter a valid phone number in international format."
+        }
+        return "Please complete the required fields."
     }
     
 }

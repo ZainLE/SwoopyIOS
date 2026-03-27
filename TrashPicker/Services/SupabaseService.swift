@@ -933,6 +933,8 @@ final class SupabaseService: NSObject, ObservableObject {
             // Call dedicated endpoint to mark onboarding complete
             let onboardingResult = try await api.rawRequest("/me/onboarding/complete", method: .POST)
             try ensureSuccess(onboardingResult, action: "complete onboarding")
+            applyLocalOnboardingCompleted()
+            return
         }
 
         // Refresh local profile from server
@@ -945,7 +947,39 @@ final class SupabaseService: NSObject, ObservableObject {
         let api = ApiService(supabaseService: self)
         let result = try await api.rawRequest("/me/onboarding/complete", method: .POST)
         try ensureSuccess(result, action: "complete onboarding")
-        await fetchProfile()
+
+        // Write directly to Supabase so the flag survives app restarts regardless
+        // of whether the custom API endpoint persisted it.
+        if let uid = userId?.uuidString {
+            _ = try? await client.database
+                .from("profiles")
+                .update(["onboarding_completed": true])
+                .eq("id", value: uid)
+                .execute()
+        }
+
+        applyLocalOnboardingCompleted()
+    }
+
+    @MainActor
+    private func applyLocalOnboardingCompleted() {
+        guard let profile = serverProfile else { return }
+        let updated = ProfileDTO(
+            id: profile.id,
+            fullName: profile.fullName,
+            firstName: profile.firstName,
+            lastName: profile.lastName,
+            phone: profile.phone,
+            avatarUrl: profile.avatarUrl,
+            city: profile.city,
+            phoneVerified: profile.phoneVerified,
+            onboardingCompleted: true,
+            updatedAt: profile.updatedAt
+        )
+        serverProfile = updated
+        cachedProfile = updated   // persist across restarts (offline fallback)
+        cachedProfileUserId = profile.id
+        profileLoadState = .loaded
     }
     
     // MARK: - Phone Verification (OTP)

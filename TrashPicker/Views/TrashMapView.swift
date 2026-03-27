@@ -64,7 +64,7 @@ final class MapVM: ObservableObject {
         // Build pins from street posts provided by FeedViewModel
         let posts = feedVM.items
         let myIdLower = currentUserId?.lowercased()
-        let streetPosts = posts.filter { $0.mode == .street }
+        let streetPosts = posts.filter { $0.mode == .street && !HiddenPostsStore.shared.isHidden($0.id) }
         
         self.pins = streetPosts.compactMap { (post) -> MapPin? in
             if let myId = myIdLower, post.ownerId.lowercased() == myId {

@@ -24,13 +24,53 @@ struct AnimatedLogoOrbit: View {
     private func setupScene() {
         let newScene = AnimatedLogoOrbitScene()
         newScene.images = images
+        newScene.preloadedAssetTextures = Self.preloadAssetTextures(for: images)
         newScene.scaleMode = .resizeFill
         scene = newScene
+    }
+
+    /// Preload custom image asset textures on the main thread so UIKit calls
+    /// don't run on SpriteKit's background render thread and silently fail.
+    private static func preloadAssetTextures(for imageNames: [String]) -> [String: SKTexture] {
+        let badgeDiameter: CGFloat = 20.0  // badgeRadius * 2
+        let bundles: [Bundle] = [Bundle.main, Bundle(for: AnimatedLogoOrbitScene.self)]
+        var result: [String: SKTexture] = [:]
+
+        for name in imageNames {
+            guard let image = bundles.compactMap({ UIImage(named: name, in: $0, compatibleWith: nil) }).first,
+                  image.size.width > 0, image.size.height > 0 else { continue }
+
+            let scale = UIScreen.main.scale
+            let format = UIGraphicsImageRendererFormat.default()
+            format.scale = scale
+            format.opaque = false
+            let renderSize = CGSize(width: badgeDiameter, height: badgeDiameter)
+            let renderer = UIGraphicsImageRenderer(size: renderSize, format: format)
+            let circularImage = renderer.image { _ in
+                let rect = CGRect(origin: .zero, size: renderSize)
+                UIBezierPath(ovalIn: rect).addClip()
+                let aspect = max(rect.width / image.size.width, rect.height / image.size.height)
+                let drawSize = CGSize(width: image.size.width * aspect, height: image.size.height * aspect)
+                let drawOrigin = CGPoint(
+                    x: (rect.width - drawSize.width) / 2.0,
+                    y: (rect.height - drawSize.height) / 2.0
+                )
+                image.draw(in: CGRect(origin: drawOrigin, size: drawSize))
+            }
+
+            let texture = SKTexture(image: circularImage)
+            texture.usesMipmaps = true
+            texture.filteringMode = .linear
+            result[name] = texture
+        }
+
+        return result
     }
 }
 
 class AnimatedLogoOrbitScene: SKScene {
     var images: [String] = []
+    var preloadedAssetTextures: [String: SKTexture] = [:]
     
     let dotsPerCircle = 23
     let numCircles = 4
@@ -173,37 +213,8 @@ class AnimatedLogoOrbitScene: SKScene {
     }
 
     private func createAssetNode(named name: String) -> SKNode? {
-        let bundles: [Bundle] = [Bundle.main, Bundle(for: AnimatedLogoOrbitScene.self)]
-        let image = bundles.compactMap { UIImage(named: name, in: $0, compatibleWith: nil) }.first
-        guard let image else { return nil }
-        let targetDiameter = max(badgeRadius * 2, 0)
-
-        // Pre-render a circular image at device scale for crisp edges and proper aspect fill
-        let scale = UIScreen.main.scale
-        let rendererFormat = UIGraphicsImageRendererFormat.default()
-        rendererFormat.scale = scale
-        rendererFormat.opaque = false
-        let renderSize = CGSize(width: targetDiameter, height: targetDiameter)
-        let renderer = UIGraphicsImageRenderer(size: renderSize, format: rendererFormat)
-        let circularImage = renderer.image { ctx in
-            let rect = CGRect(origin: .zero, size: renderSize)
-            let path = UIBezierPath(ovalIn: rect)
-            path.addClip()
-
-            // Aspect-fill the source image into the circle rect
-            let imgSize = image.size
-            guard imgSize.width > 0, imgSize.height > 0 else { return }
-            let aspect = max(rect.width / imgSize.width, rect.height / imgSize.height)
-            let drawSize = CGSize(width: imgSize.width * aspect, height: imgSize.height * aspect)
-            let drawOrigin = CGPoint(x: (rect.width - drawSize.width) / 2.0, y: (rect.height - drawSize.height) / 2.0)
-            let drawRect = CGRect(origin: drawOrigin, size: drawSize)
-            image.draw(in: drawRect)
-        }
-
-        let texture = SKTexture(image: circularImage)
-        texture.usesMipmaps = true
-        texture.filteringMode = .linear
-
+        guard let texture = preloadedAssetTextures[name] else { return nil }
+        let targetDiameter = badgeRadius * 2
         let sprite = SKSpriteNode(texture: texture)
         sprite.size = CGSize(width: targetDiameter, height: targetDiameter)
         sprite.position = .zero

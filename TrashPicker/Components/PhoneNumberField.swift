@@ -55,7 +55,11 @@ struct PhoneNumberField: View {
                     .submitLabel(.done)
                     .onSubmit { onSubmit?() }
                     .onChange(of: nationalDigits) { _, newValue in
-                        let sanitized = sanitizeDigits(newValue)
+                        var sanitized = sanitizeDigits(newValue)
+                        // Strip country code if iOS autofill included it
+                        if sanitized.hasPrefix(country.callingCode) && sanitized.count > country.callingCode.count {
+                            sanitized = String(sanitized.dropFirst(country.callingCode.count))
+                        }
                         if sanitized != newValue {
                             nationalDigits = sanitized
                         }

@@ -12,7 +12,6 @@ struct OnboardingFlowView: View {
     @State private var isCompleting = false
     @State private var toastMessage: String?
     @EnvironmentObject private var appFlow: AppFlowCoordinator
-    @EnvironmentObject private var svc: SupabaseService
     private var pageCount: Int { pages.count }
     
     private let pages: [Page] = [
@@ -90,12 +89,21 @@ struct OnboardingFlowView: View {
             
             Spacer()
             
-            Button("Skip") {
+            Button {
                 handleCompletionRequest()
+            } label: {
+                if isCompleting {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Color(hex: "8A8E8C"))
+                } else {
+                    Text("Skip")
+                }
             }
             .font(.subheadline.weight(.regular))
             .buttonStyle(.plain)
             .foregroundStyle(Color(hex: "8A8E8C"))
+            .disabled(isCompleting)
         }
         .padding(.horizontal, 24)
         .padding(.top, 16)
@@ -139,54 +147,20 @@ struct OnboardingFlowView: View {
     }
     
     private func handleCompletionRequest() {
-        Task { await completeIntroIfNeeded() }
+        guard !isCompleting else { return }
+        isCompleting = true
+        Haptics.play(.tabSelect)
+        Task { await completeIntro() }
     }
 
     @MainActor
-    private func completeIntroIfNeeded() async {
-        guard !isCompleting else { return }
-        isCompleting = true
-        let success: Bool
-
-        // Use cached profile to avoid flashing the loading gate; refresh only if missing
-        var profile = svc.serverProfile
-        if profile == nil {
-            await svc.fetchProfile()
-            profile = svc.serverProfile
-        }
-        let provider = svc.authProvider.lowercased()
-        let missingFields = missingRequiredFields(from: profile, provider: provider)
-        let hasName = profile?.hasName ?? false
-        let hasPhone = profile?.hasPhone ?? false
-        let hasAvatar = profile?.hasAvatar ?? false
-        let isPhoneVerified = profile?.isPhoneVerified ?? false
-        #if DEBUG
-        DLog("[ONBOARDING_INTRO] provider=\(provider) requiresName=\(provider != "apple" && provider != "google") missing=\(missingFields)")
-        #endif
-        AppLogger.logProfile(
-            "Intro completion check - name:\(hasName) phone:\(hasPhone) avatar:\(hasAvatar) missing:\(missingFields)",
-            level: .notice
-        )
-
-        if !isPhoneVerified {
-            success = false
-            appFlow.requirePhoneVerification()
-        } else if missingFields.isEmpty {
-            success = await appFlow.markIntroComplete()
-        } else {
-            success = false
-            appFlow.requireProfileCapture(message: "Please finish your profile: \(missingFields.joined(separator: ", "))")
-        }
-
-        isCompleting = false
+    private func completeIntro() async {
+        let success = await appFlow.markIntroComplete()
         if success {
             Haptics.play(.success)
         } else {
-            if missingFields.isEmpty == false {
-                showToast("Please finish your profile: \(missingFields.joined(separator: ", "))")
-            } else {
-                showToast("Couldn't complete onboarding. Please try again.")
-            }
+            isCompleting = false
+            showToast("Couldn't complete onboarding. Please try again.")
         }
     }
 
@@ -195,22 +169,6 @@ struct OnboardingFlowView: View {
             return isCompleting ? "Finishing…" : "Finish"
         }
         return "Next"
-    }
-
-    private func missingRequiredFields(from profile: ProfileDTO?, provider: String) -> [String] {
-        let requiresName = provider != "apple" && provider != "google"
-        guard let profile else {
-            if requiresName {
-                return ["name", "phone", "avatar"]
-            }
-            return ["phone", "avatar"]
-        }
-        var missing: [String] = []
-        if requiresName && !profile.hasName { missing.append("name") }
-        if !profile.hasPhone { missing.append("phone") }
-        if !profile.hasAvatar { missing.append("avatar") }
-        if !profile.isPhoneVerified { missing.append("phone verification") }
-        return missing
     }
 
     private func showToast(_ message: String) {

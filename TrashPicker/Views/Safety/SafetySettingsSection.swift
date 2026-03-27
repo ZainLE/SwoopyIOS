@@ -9,7 +9,7 @@ import SwiftUI
 
 struct SafetySettingsSection: View {
     @AppStorage("feature_safety_v1") private var featureSafety = true
-    @ObservedObject private var hiddenStore = HiddenContentStore.shared
+    @AppStorage("safety_demo_mode") private var demoMode = true
     
     var body: some View {
         Section {
@@ -26,14 +26,21 @@ struct SafetySettingsSection: View {
                 }
             }
             .tint(AppTheme.ColorToken.primary)
-
-            Toggle(isOn: $hiddenStore.hideReportedContent) {
+            
+            // Demo mode toggle (for App Review)
+            Toggle(isOn: $demoMode) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Hide reported content")
-                        .font(AppTheme.Typography.body)
-                        .foregroundColor(AppTheme.ColorToken.text)
+                    HStack(spacing: 6) {
+                        Text("Demo Mode")
+                            .font(AppTheme.Typography.body)
+                            .foregroundColor(AppTheme.ColorToken.text)
+                        
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(AppTheme.ColorToken.accent)
+                    }
                     
-                    Text("Filter posts you have reported")
+                    Text("For App Review: uses mock responses")
                         .font(AppTheme.Typography.footnote)
                         .foregroundColor(AppTheme.ColorToken.mutedGray)
                 }
@@ -43,6 +50,17 @@ struct SafetySettingsSection: View {
         } header: {
             Text("Safety & Moderation")
                 .font(AppTheme.Typography.headline)
+        } footer: {
+            if demoMode {
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle")
+                        .foregroundColor(AppTheme.ColorToken.accent)
+                    Text("Demo mode is active. Reports will use mock responses for testing.")
+                        .font(AppTheme.Typography.footnote)
+                        .foregroundColor(AppTheme.ColorToken.mutedGray)
+                }
+                .padding(.top, 8)
+            }
         }
     }
 }
@@ -52,96 +70,42 @@ struct SafetySettingsView: View {
     @Environment(\.dismiss) private var dismiss
     
     var body: some View {
-        Form {
-            SafetySettingsSection()
-            
-            Section {
-                SafetyChecklistRow(
-                    icon: "eye.slash",
-                    title: "Filter objectionable content",
-                    detail: "Posts you report are hidden from your feed and reservations while our team reviews them."
-                )
+        NavigationStack {
+            Form {
+                SafetySettingsSection()
                 
-                SafetyChecklistRow(
-                    icon: "flag.fill",
-                    title: "Flag abusive posts",
-                    detail: "Click on Make a report to report a post and let us know."
-                )
-                
-                SafetyChecklistRow(
-                    icon: "hand.raised.fill",
-                    title: "Block abusive users",
-                    detail: "Block from the same menu to remove their posts and prevent them from contacting you."
-                )
-                
-                SafetyChecklistRow(
-                    icon: "clock.badge.checkmark",
-                    title: "24h moderation response",
-                    detail: "We review every report, remove violating content, and suspend offending accounts within 24 hours."
-                )
-            } header: {
-                Text("Moderation Coverage")
-                    .font(AppTheme.Typography.headline)
-            }
-            
-            Section {
-                HStack(spacing: 8) {
-                    Image(systemName: "envelope.fill")
-                        .foregroundColor(AppTheme.ColorToken.primary)
-                    Text("contact@swoopy.eu")
+                Section {
+                    Text("Report and block features help keep Swoopy safe for everyone.")
                         .font(AppTheme.Typography.body)
                         .foregroundColor(AppTheme.ColorToken.mutedGray)
+                    
+                    Text("• Reports are reviewed within 24 hours")
+                        .font(AppTheme.Typography.footnote)
+                        .foregroundColor(AppTheme.ColorToken.mutedGray)
+                    
+                    Text("• Blocked users can't see your posts or contact you")
+                        .font(AppTheme.Typography.footnote)
+                        .foregroundColor(AppTheme.ColorToken.mutedGray)
+                    
+                    Text("• All actions are reversible in Settings")
+                        .font(AppTheme.Typography.footnote)
+                        .foregroundColor(AppTheme.ColorToken.mutedGray)
                 }
-                Text("Reports and blocks help keep Swoopy safe for everyone.")
-                    .font(AppTheme.Typography.footnote)
-                    .foregroundColor(AppTheme.ColorToken.mutedGray)
-                    .padding(.top, 2)
-            } header: {
-                Text("Support")
-                    .font(AppTheme.Typography.headline)
             }
-        }
-        .navigationTitle("Safety & Moderation")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("Done") {
-                    dismiss()
+            .navigationTitle("Safety")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .foregroundColor(AppTheme.ColorToken.primary)
                 }
-                .foregroundColor(AppTheme.ColorToken.primary)
             }
         }
-    }
-}
-
-private struct SafetyChecklistRow: View {
-    let icon: String
-    let title: String
-    let detail: String
-    
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 18))
-                .foregroundColor(AppTheme.ColorToken.primary)
-                .frame(width: 22)
-            
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(AppTheme.Typography.body.weight(.semibold))
-                    .foregroundColor(AppTheme.ColorToken.text)
-                
-                Text(detail)
-                    .font(AppTheme.Typography.footnote)
-                    .foregroundColor(AppTheme.ColorToken.mutedGray)
-            }
-        }
-        .padding(.vertical, 4)
     }
 }
 
 #Preview {
-    NavigationStack {
-        SafetySettingsView()
-    }
+    SafetySettingsView()
 }

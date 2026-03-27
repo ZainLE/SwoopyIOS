@@ -79,7 +79,7 @@ extension EnvironmentValues {
 #endif
 
 // MARK: - Hidden Posts Store (24h dismissed, 2h reserved)
-private class HiddenPostsStore {
+class HiddenPostsStore {
     static let shared = HiddenPostsStore()
     private let dismissedKey = "feed.dismissed"
     private let reservedKey = "feed.reserved"
@@ -1345,6 +1345,7 @@ extension SwipeDeckView {
                         onPass: onPass,
                         onReserve: onReserve
                     )
+                    .id("active-\(cardIdentity(activeCard))")
                     .zIndex(2)
                     .allowsHitTesting(!deckState.isAnimating && !isReserving)
                 }
@@ -1358,12 +1359,23 @@ extension SwipeDeckView {
                         onPass: {},
                         onReserve: {}
                     )
+                    .id("next-\(cardIdentity(nextCard))")
                     .zIndex(1)
                     .allowsHitTesting(false)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             .animation(.spring(response: 0.32, dampingFraction: 0.88), value: deckState.activeIndex)
+        }
+
+        private func cardIdentity(_ item: Any) -> String {
+            if let post = item as? Post {
+                return post.id
+            }
+            if let ckItem = item as? CKTrashItem {
+                return String(describing: ckItem.id)
+            }
+            return String(describing: ObjectIdentifier(type(of: item)))
         }
     }
     

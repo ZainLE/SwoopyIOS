@@ -119,9 +119,9 @@ struct NotificationPayload: Hashable {
     init(raw: [String: AnyCodable]?) {
         ownerPhone = raw?.string("owner_phone") ?? raw?.string("ownerPhone")
         contactInfoShared = raw?.bool("contact_info_shared") ?? raw?.bool("contactInfoShared")
-        ownerName = raw?.string("owner_name") ?? raw?.string("ownerName")
+        ownerName = sanitizePersonDisplayName(raw?.string("owner_name") ?? raw?.string("ownerName"))
         ownerAvatarUrl = raw?.string("owner_avatar_url") ?? raw?.string("ownerAvatarUrl")
-        requesterName = raw?.string("requester_name") ?? raw?.string("requesterName")
+        requesterName = sanitizePersonDisplayName(raw?.string("requester_name") ?? raw?.string("requesterName"))
         requesterAvatarUrl = raw?.string("requester_avatar_url") ?? raw?.string("requesterAvatarUrl")
         takerAvatarUrl = raw?.string("taker_avatar_url") ?? raw?.string("takerAvatarUrl") ?? requesterAvatarUrl
         itemTitle = raw?.string("item_title") ?? raw?.string("itemTitle")
@@ -229,7 +229,7 @@ struct NotificationItem: Decodable, Identifiable {
         reservationId = try container.decodeIfPresent(String.self, forKey: .reservationId)
         postId = try container.decodeIfPresent(String.self, forKey: .postId)
         counterpartyUserId = try container.decodeIfPresent(String.self, forKey: .counterpartyUserId)
-        counterpartyName = try container.decodeIfPresent(String.self, forKey: .counterpartyName)
+        counterpartyName = sanitizePersonDisplayName(try container.decodeIfPresent(String.self, forKey: .counterpartyName))
         counterpartyAvatarURL = try container.decodeIfPresent(String.self, forKey: .counterpartyAvatarURL)
         counterpartyPhone = try container.decodeIfPresent(String.self, forKey: .counterpartyPhone)
         itemTitle = try container.decodeIfPresent(String.self, forKey: .itemTitle)
@@ -299,11 +299,10 @@ struct NotificationRowLegacy: Decodable {
         let cleanPhone = contact_phone?.trimmingCharacters(in: .whitespacesAndNewlines)
         let phone = (cleanPhone?.isEmpty == false) ? cleanPhone : nil
         
-        // Handle optional names with fallback
-        let firstName = counterparty.first_name?.trimmingCharacters(in: .whitespaces) ?? ""
-        let lastName = counterparty.last_name?.trimmingCharacters(in: .whitespaces) ?? ""
-        let fullName = "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
-        let counterpartyName = fullName.isEmpty ? "Unknown" : fullName
+        let counterpartyName = sanitizePersonDisplayName(
+            firstName: counterparty.first_name,
+            lastName: counterparty.last_name
+        ) ?? "Unknown"
         let avatarURL = counterparty.photo_url.flatMap(URL.init(string:))
         
         // Determine persistence based on type
@@ -347,6 +346,31 @@ struct NotificationRowLegacy: Decodable {
 enum NotificationTabKind {
     case actionRequired
     case updates
+}
+
+func sanitizePersonDisplayName(_ raw: String?) -> String? {
+    guard let raw else { return nil }
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+
+    let tokens = trimmed.split(whereSeparator: \.isWhitespace).map(String.init)
+    let filtered = tokens.filter { token in
+        let cleaned = token
+            .trimmingCharacters(in: .punctuationCharacters)
+            .lowercased()
+        return cleaned != "none" && cleaned != "null" && cleaned != "nil"
+    }
+
+    let value = filtered.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    return value.isEmpty ? nil : value
+}
+
+func sanitizePersonDisplayName(firstName: String?, lastName: String?) -> String? {
+    let combined = [firstName, lastName]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
+    return sanitizePersonDisplayName(combined)
 }
 
 // MARK: - App Notification Model

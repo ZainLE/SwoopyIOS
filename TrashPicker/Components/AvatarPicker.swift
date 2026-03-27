@@ -5,7 +5,6 @@ struct AvatarPicker: View {
     var image: UIImage?
     var size: CGFloat = 128
     var onTap: () -> Void
-    
     var body: some View {
         Button(action: onTap) {
             ZStack {

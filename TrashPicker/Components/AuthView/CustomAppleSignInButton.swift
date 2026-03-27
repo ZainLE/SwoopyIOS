@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Custom “Sign in with Apple” button that preserves Apple HIG styling
+/// Custom "Sign in with Apple" button that preserves Apple HIG styling
 /// while keeping the label fixed in English.
 struct CustomAppleSignInButton: View {
     enum Style {
@@ -44,24 +44,22 @@ struct CustomAppleSignInButton: View {
                     .font(.system(size: 17, weight: .semibold))
             }
             .foregroundColor(style.foregroundColor)
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, minHeight: 44)
-        .padding(.horizontal, 20)
-        .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .background(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(style.backgroundColor)
-        )
-        .overlay {
-            if let borderColor = style.borderColor {
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .padding(.horizontal, 20)
+            .background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(borderColor, lineWidth: 1)
+                    .fill(style.backgroundColor)
+            )
+            .overlay {
+                if let borderColor = style.borderColor {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(borderColor, lineWidth: 1)
+                }
             }
+            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityLabel("Sign in with Apple")
+            .accessibilityAddTraits(.isButton)
         }
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .accessibilityLabel("Sign in with Apple")
-        .accessibilityAddTraits(.isButton)
     }
 }
-

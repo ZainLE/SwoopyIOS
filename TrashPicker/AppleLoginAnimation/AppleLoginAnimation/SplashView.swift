@@ -25,8 +25,8 @@ struct SplashView: View {
     SplashView(
         logo: "SwoopyLogo",
         images: [
-            "mappin.and.ellipse",
-            "shippingbox",
+            "FirstItem",
+            "SecondItem",
             "leaf.fill",
             "sparkles",
             "person.2.fill",

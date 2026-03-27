@@ -19,6 +19,7 @@ struct FeedCard: View {
     let onPass: () -> Void
     let onReserve: () -> Void
     @Environment(AppRouter.self) private var router
+    @EnvironmentObject private var api: ApiService
 #if DEBUG
     @Environment(\.feedDebugContext) private var feedDebugContext
 #endif
@@ -363,9 +364,31 @@ struct FeedCard: View {
 
             tapZonesView()
             pagerDotsView()
+            safetyMenuOverlay
         }
         .frame(width: cardWidth, height: imageHeight)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: cardRadius, topTrailingRadius: cardRadius))
+    }
+
+    @ViewBuilder
+    private var safetyMenuOverlay: some View {
+        if let post = item as? Post {
+            VStack {
+                HStack {
+                    Spacer()
+                    SafetyMenuView(
+                        postId: post.id,
+                        userId: post.ownerId,
+                        userName: post.owner?.fullName
+                    )
+                    .environmentObject(api)
+                    .padding(.top, 12)
+                    .padding(.trailing, 12)
+                }
+                Spacer()
+            }
+            .zIndex(5)
+        }
     }
 
     @ViewBuilder

@@ -177,11 +177,12 @@ struct ProfileView: View {
     @State private var isReportSuccessModalVisible = false
     @State private var reportSuccessDismissTask: Task<Void, Never>?
     @State private var showNotificationsFromPush = false
+    @State private var avatarRefreshNonce = 0
     
     init() {
         // Initialize both view models with shared services
         self._viewModel = StateObject(wrappedValue: ProfileVM(supabaseService: SupabaseService.shared))
-        self._profileManager = StateObject(wrappedValue: ProfileManager(apiService: ApiService(supabaseService: SupabaseService.shared)))
+        self._profileManager = StateObject(wrappedValue: ProfileManager(apiService: ApiService(supabaseService: SupabaseService.shared), initialProfile: SupabaseService.shared.serverProfile))
     }
     
     var body: some View {
@@ -255,6 +256,10 @@ struct ProfileView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .openNotifications)) { _ in
             showNotificationsFromPush = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .profileDidUpdate)) { _ in
+            avatarRefreshNonce += 1
+            Task { await profileManager.loadProfile() }
         }
         .onAppear {
             Task {
@@ -350,15 +355,18 @@ struct ProfileView: View {
                 HStack(spacing: 16) {
                     // Avatar with fallback to system icon
                     Group {
-                        if let avatarUrl = profileManager.avatarUrl, let url = URL(string: avatarUrl) {
-                            AsyncImage(url: url) { image in
-                                image
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fill)
-                            } placeholder: {
-                                Image(systemName: "person.circle.fill")
-                                    .font(.system(size: 48))
-                                    .foregroundColor(AppColor.brandGreen)
+                        if let avatarURL = resolvedAvatarURL {
+                            ResilientAsyncImage(url: avatarURL) { phase in
+                                switch phase {
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                default:
+                                    Image(systemName: "person.circle.fill")
+                                        .font(.system(size: 48))
+                                        .foregroundColor(AppColor.brandGreen)
+                                }
                             }
                             .frame(width: 48, height: 48)
                             .clipShape(Circle())
@@ -415,6 +423,18 @@ struct ProfileView: View {
             Text("User Information")
                 .font(AppFont.body.weight(.semibold))
         }
+    }
+
+    private var resolvedAvatarURL: URL? {
+        let raw = (profileManager.avatarUrl ?? svc.serverProfile?.avatarUrl)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let raw, !raw.isEmpty else { return nil }
+        guard var components = URLComponents(string: raw) else { return URL(string: raw) }
+        var queryItems = components.queryItems ?? []
+        queryItems.removeAll { $0.name == "tpv" }
+        queryItems.append(URLQueryItem(name: "tpv", value: "\(avatarRefreshNonce)"))
+        components.queryItems = queryItems
+        return components.url ?? URL(string: raw)
     }
     
     @ViewBuilder

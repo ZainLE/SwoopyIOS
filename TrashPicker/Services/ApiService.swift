@@ -415,10 +415,7 @@ struct Profile: Codable {
     
     /// Computed full name from first and last name
     var fullName: String? {
-        let first = firstName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let last = lastName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let combined = [first, last].filter { !$0.isEmpty }.joined(separator: " ")
-        return combined.isEmpty ? nil : combined
+        sanitizePersonDisplayName(firstName: firstName, lastName: lastName)
     }
     
     /// Display name with fallback
@@ -610,11 +607,7 @@ struct IncomingRequest: Decodable, Identifiable {
     var endAtDate: Date? { endAt?.value }
 
     var requesterName: String? {
-        let first = requester?.firstName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let last = requester?.lastName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let combined = [first, last].filter { !$0.isEmpty }.joined(separator: " ")
-        if !combined.isEmpty { return combined }
-        return requester?.firstName ?? requester?.lastName
+        sanitizePersonDisplayName(firstName: requester?.firstName, lastName: requester?.lastName)
     }
 }
 
@@ -1385,11 +1378,10 @@ class ApiService: ObservableObject {
     }
     
     private func convertLegacyToItem(_ row: NotificationRowLegacy, category: NotificationCategory) throws -> NotificationItem {
-        // Handle optional names with fallback
-        let firstName = row.counterparty.first_name?.trimmingCharacters(in: .whitespaces) ?? ""
-        let lastName = row.counterparty.last_name?.trimmingCharacters(in: .whitespaces) ?? ""
-        let fullName = "\(firstName) \(lastName)".trimmingCharacters(in: .whitespaces)
-        let counterpartyName = fullName.isEmpty ? "Someone" : fullName
+        let counterpartyName = sanitizePersonDisplayName(
+            firstName: row.counterparty.first_name,
+            lastName: row.counterparty.last_name
+        ) ?? "Someone"
         
         // Clean contact phone
         let cleanPhone = row.contact_phone?.trimmingCharacters(in: .whitespacesAndNewlines)

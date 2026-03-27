@@ -5,29 +5,29 @@ enum AppTheme {
     // MARK: - Color System
     struct ColorToken {
         // Primary colors (merged from all sources)
-        static let primary   = Color(hex: "00513F")  // dark green (from original AppTheme and random tokens)
-        static let accent    = Color(hex: "B4DD4E")  // lime (from original AppTheme and random tokens)
-        static let mutedGray = Color(hex: "656565")  // (from original AppTheme and random tokens)
-        static let surface   = Color(.systemBackground)  // (from original AppTheme and Colors.swift)
-        static let text      = Color.primary  // (from original AppTheme and Colors.swift)
-        static let textInv   = Color.white  // (from original AppTheme and Colors.swift)
-        static let stroke    = primary  // (from original AppTheme); also available as secondary.opacity(0.2) via legacy
-        static let bg        = Color(.systemGroupedBackground)  // (from original AppTheme)
+        static let primary   = Color(hex: "00513F")  
+        static let accent    = Color(hex: "B4DD4E")  
+        static let mutedGray = Color(hex: "656565")  
+        static let surface   = Color(.systemBackground)  
+        static let text      = Color.primary  
+        static let textInv   = Color.white  
+        static let stroke    = primary  
+        static let bg        = Color(.systemGroupedBackground)
         
         // Additional colors from Colors.swift
-        static let brandGreen = Color(hex: "00513F")  // floating pill, accents
-        static let cta = Color(hex: "B4DD4E")  // primary CTA buttons
-        static let darkGreen = Color(hex: "00513F")  // legacy compatibility
-        static let muted = Color.secondary  // secondary text
-        static let textMuted = Color(hex: "656565")  // muted text
+        static let brandGreen = Color(hex: "00513F")  
+        static let cta = Color(hex: "B4DD4E")  
+        static let darkGreen = Color(hex: "00513F")  
+        static let muted = Color.secondary  
+        static let textMuted = Color(hex: "656565")  
         
         // Brand tokens from Color extension in Colors.swift
         static let brandDark = Color(hex: "00513F")
         static let brandLime = Color(hex: "B4DD4E")
         
         // New colors from random tokens
-        static let danger = Color(hex: "B62403")  // #B62403 (e.g., for errors or warnings)
-        static let success = Color(hex: "6AA54A")  // #6AA54A (e.g., for confirmations)
+        static let danger = Color(hex: "B62403")  
+        static let success = Color(hex: "6AA54A")  
     }
     
     // MARK: - Layout Tokens
@@ -57,17 +57,17 @@ enum AppTheme {
         static let footnote = Font.system(size: 12, weight: .regular)
         
         // Extended typography for comprehensive coverage
-        static let h1 = Font.system(size: 28, weight: .bold)           // From Typography.swift
-        static let h2 = Font.system(size: 22, weight: .bold)           // From Typography.swift
-        static let h2Alt = Font.system(size: 28, weight: .semibold)    // From AppFont struct
-        static let h3 = Font.system(size: 18, weight: .semibold)       // From Typography.swift
-        static let h3Alt = Font.system(size: 22, weight: .semibold)    // From AppFont struct
-        static let bodyAlt = Font.system(size: 17, weight: .regular)   // From AppFont struct
-        static let sub = Font.system(size: 14, weight: .regular)       // From Typography.swift
-        static let subAlt = Font.system(size: 15, weight: .regular)    // From AppFont struct
-        static let label = Font.system(size: 15, weight: .semibold)    // From Typography.swift
-        static let labelAlt = Font.system(size: 14, weight: .medium)   // From AppFont struct
-        static let captionAlt = Font.system(size: 13, weight: .regular) // From AppFont struct
+        static let h1 = Font.system(size: 28, weight: .bold)           
+        static let h2 = Font.system(size: 22, weight: .bold)           
+        static let h2Alt = Font.system(size: 28, weight: .semibold)    
+        static let h3 = Font.system(size: 18, weight: .semibold)       
+        static let h3Alt = Font.system(size: 22, weight: .semibold)    
+        static let bodyAlt = Font.system(size: 17, weight: .regular)   
+        static let sub = Font.system(size: 14, weight: .regular)
+        static let subAlt = Font.system(size: 15, weight: .regular)    
+        static let label = Font.system(size: 15, weight: .semibold)    
+        static let labelAlt = Font.system(size: 14, weight: .medium)   
+        static let captionAlt = Font.system(size: 13, weight: .regular) 
     }
 }
 
@@ -97,7 +97,7 @@ enum AppColor {
     static let cta: Color = AppTheme.ColorToken.cta
     static let darkGreen: Color = AppTheme.ColorToken.darkGreen
     static let surface: Color = AppTheme.ColorToken.surface
-    static let stroke: Color = Color.secondary.opacity(0.2)  // Specific opacity from Colors.swift
+    static let stroke: Color = Color.secondary.opacity(0.2) 
     static let textInv: Color = AppTheme.ColorToken.textInv
 }
 

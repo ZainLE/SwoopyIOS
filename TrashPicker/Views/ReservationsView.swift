@@ -543,45 +543,31 @@ struct ReservationsView: View {
         @Binding var contactReservation: ReservationRow?
         let dialPhoneNumber: (String) -> Void
         let copyPhoneNumber: (String) -> Void
-        
+
+        private var isPresented: Binding<Bool> {
+            Binding(
+                get: { showContactOptions && contactReservation != nil },
+                set: { presenting in
+                    if !presenting {
+                        contactReservation = nil
+                        showContactOptions = false
+                    }
+                }
+            )
+        }
+
         func body(content: Content) -> some View {
             content
-                .popover(
-                    isPresented: Binding(
-                        get: { showContactOptions && contactReservation != nil },
-                        set: { presenting in
-                            if !presenting {
-                                contactReservation = nil
-                                showContactOptions = false
-                            }
-                        }
-                    ),
-                    attachmentAnchor: .rect(.bounds),
-                    arrowEdge: .top
+                .confirmationDialog(
+                    contactReservation?.contactDisplayNumber ?? "",
+                    isPresented: isPresented,
+                    titleVisibility: .visible
                 ) {
-                    dialogPopover(for: contactReservation)
+                    if let phone = contactReservation?.contactDisplayNumber {
+                        Button("Call \(phone)") { dialPhoneNumber(phone) }
+                        Button("Copy Number") { copyPhoneNumber(phone) }
+                    }
                 }
-        }
-        
-        @ViewBuilder
-        private func dialogPopover(for reservation: ReservationRow?) -> some View {
-            VStack(spacing: 10) {
-                if let phone = reservation?.contactDisplayNumber {
-                    Button("Call \(phone)") { dialPhoneNumber(phone) }
-                        .buttonStyle(.borderedProminent)
-                    Button("Copy number") { copyPhoneNumber(phone) }
-                        .buttonStyle(.bordered)
-                } else {
-                    Text("Contact not available yet")
-                        .foregroundColor(.secondary)
-                }
-                Button("Close", role: .cancel) {
-                    contactReservation = nil
-                    showContactOptions = false
-                }
-            }
-            .padding()
-            .presentationCompactAdaptation(.popover)
         }
     }
 

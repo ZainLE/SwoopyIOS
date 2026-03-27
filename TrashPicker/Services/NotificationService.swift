@@ -89,7 +89,9 @@ final class NotificationService: NotificationProviding {
         let counterpartyUUID = item.counterpartyUserId.flatMap(UUID.init(uuidString:))
         let payloadModel = item.payload.map(NotificationPayload.init(raw:))
 
-        let preferredName = payloadModel?.requesterName ?? payloadModel?.ownerName ?? item.counterpartyName
+        let preferredName = sanitizePersonDisplayName(payloadModel?.requesterName)
+            ?? sanitizePersonDisplayName(payloadModel?.ownerName)
+            ?? sanitizePersonDisplayName(item.counterpartyName)
         let preferredAvatar = payloadModel?.takerAvatarUrl
             ?? payloadModel?.requesterAvatarUrl
             ?? payloadModel?.ownerAvatarUrl

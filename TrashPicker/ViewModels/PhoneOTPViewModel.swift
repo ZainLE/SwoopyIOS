@@ -52,14 +52,26 @@ final class PhoneOTPViewModel: ObservableObject {
     private var timerTask: Task<Void, Never>?
     private let cooldownKey = "phoneotp.cooldown.until"
     private let verificationIdKey = "phoneotp.firebase.verificationId"
+    private let phoneKey = "phoneotp.phone"
     private var sendTask: Task<Void, Never>?
     private let debugEventsKey = "phoneotp.debug.events"
     private var didLogAppCheckToken = false
     
     init(phone: String?, supabase: SupabaseService = .shared) {
-        let startingCountry = Country.matchingPhone(phone ?? "") ?? .spain
+        // Prefer the phone stored alongside the verificationId (written by OnboardingViewModel
+        // immediately before navigating here) because it is always in sync with the pending
+        // Firebase session. The server profile phone is stale at this point — the profile
+        // refresh triggered by markProfileComplete() hasn't completed yet. Using a stale server
+        // phone while the verificationId was issued for a different number produces a backend
+        // "phone mismatch" error even when the correct OTP is entered.
+        let otpSessionPhone = UserDefaults.standard.string(forKey: "phoneotp.phone").flatMap {
+            $0.isEmpty ? nil : $0
+        }
+        let resolvedPhone = otpSessionPhone
+            ?? (phone?.isEmpty == false ? phone : nil)
+        let startingCountry = Country.matchingPhone(resolvedPhone ?? "") ?? .spain
         self.selectedCountry = startingCountry
-        let initialPhone = phone?.isEmpty == false ? phone! : startingCountry.dialPrefix
+        let initialPhone = resolvedPhone ?? startingCountry.dialPrefix
         self.phoneNumber = PhoneOTPViewModel.sanitizedPhone(initialPhone, country: startingCountry)
         self.supabase = supabase
         hydrateState()
@@ -278,7 +290,21 @@ final class PhoneOTPViewModel: ObservableObject {
         try? PhoneNormalizer.normalizeToE164(rawInput: phoneNumber, defaultCountryCode: selectedCountry.callingCode)
     }
     
+    private func isPhoneAlreadyTaken(_ error: Error) -> Bool {
+        let msg = error.localizedDescription.lowercased()
+        if msg.contains("23505") || msg.contains("unique") || msg.contains("duplicate key") || msg.contains("already linked") {
+            return true
+        }
+        if let httpError = error as? ApiHTTPError, httpError.statusCode == 409 {
+            return true
+        }
+        return false
+    }
+
     private func friendlyError(_ error: Error) -> String {
+        if isPhoneAlreadyTaken(error) {
+            return "This number is already linked with another account."
+        }
         if let simple = error as? SimpleError {
             return simple.message
         }
@@ -338,6 +364,8 @@ final class PhoneOTPViewModel: ObservableObject {
             resendRemaining = 0
             verificationId = nil
             otpCode = ""
+            UserDefaults.standard.removeObject(forKey: phoneKey)
+            OnboardingViewModel.clearStoredData()
             DLog("[OTP_FLOW] advancedToNextPhase")
         } else {
             DLog("[OTP_VERIFY_FAIL] profileVerified=false")
@@ -350,7 +378,7 @@ final class PhoneOTPViewModel: ObservableObject {
         return try await withCheckedThrowingContinuation { continuation in
             PhoneAuthProvider.provider().verifyPhoneNumber(
                 phone,
-                uiDelegate: nil,
+                uiDelegate: FirebaseAuthUIDelegate.shared,
                 multiFactorSession: nil,
                 completion: { verificationID, error in
                     DLog("[OTP_DIAGNOSTICS] verifyPhoneNumber invoked")

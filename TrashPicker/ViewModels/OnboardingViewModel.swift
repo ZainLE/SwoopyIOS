@@ -10,6 +10,18 @@ final class OnboardingViewModel: ObservableObject {
     @AppStorage("onboardingAvatarImagePath") private var storedAvatarImagePath = ""
     @AppStorage("onboardingAvatarUploadState") private var storedAvatarUploadState = "none"
     @AppStorage("onboardingAvatarUploadedURL") private var storedAvatarUploadURL = ""
+
+    /// Called after phone verification completes so stale data isn't re-shown on the next
+    /// onboarding pass (e.g. a fresh login or profile-recapture request).
+    static func clearStoredData() {
+        let d = UserDefaults.standard
+        d.removeObject(forKey: "onboardingFullName")
+        d.removeObject(forKey: "onboardingPhone")
+        d.removeObject(forKey: "onboardingCountryId")
+        d.removeObject(forKey: "onboardingAvatarImagePath")
+        d.removeObject(forKey: "onboardingAvatarUploadState")
+        d.removeObject(forKey: "onboardingAvatarUploadedURL")
+    }
     
     @Published var fullName: String = "" {
         didSet {
@@ -31,9 +43,9 @@ final class OnboardingViewModel: ObservableObject {
     @Published var selectedCountry: Country = .spain {
         didSet {
             storedCountryId = selectedCountry.id
-            if phone.isEmpty {
-                phone = selectedCountry.dialPrefix
-            }
+            let oldPrefix = oldValue.dialPrefix
+            let nationalPart = phone.hasPrefix(oldPrefix) ? String(phone.dropFirst(oldPrefix.count)) : ""
+            phone = selectedCountry.dialPrefix + nationalPart
         }
     }
     @Published var avatarImage: UIImage?
@@ -82,6 +94,7 @@ final class OnboardingViewModel: ObservableObject {
     private let profileService: ProfileService
     private let otpCooldownKey = "phoneotp.cooldown.until"
     private let otpVerificationIdKey = "phoneotp.firebase.verificationId"
+    private let otpPhoneKey = "phoneotp.phone"
     
     init(profileService: ProfileService = MockProfileService()) {
         self.profileService = profileService
@@ -107,11 +120,19 @@ final class OnboardingViewModel: ObservableObject {
     }
     
     func pickFromCamera() {
-        isShowingCamera = true
+        resetPickers()
+        Task { @MainActor in
+            await Task.yield()
+            self.isShowingCamera = true
+        }
     }
     
     func pickFromLibrary() {
-        isShowingPhotoLibrary = true
+        resetPickers()
+        Task { @MainActor in
+            await Task.yield()
+            self.isShowingPhotoLibrary = true
+        }
     }
     
     func didPickImage(_ image: UIImage) {
@@ -191,10 +212,23 @@ final class OnboardingViewModel: ObservableObject {
             
             // Step 3: Send OTP via Firebase before navigating
             uploadProgress = "Sending code..."
-            let verificationId = try await sendFirebaseOTP(to: normalizedPhone)
-            storeInitialOTPCooldown()
-            storeVerificationId(verificationId)
-            
+            // If a cooldown is still active for this same phone, skip re-sending to avoid
+            // Firebase rate-limit errors when the user navigates back and taps "Get Code" again.
+            let existingCooldown = UserDefaults.standard.double(forKey: otpCooldownKey)
+            let cooldownRemaining = existingCooldown - Date().timeIntervalSince1970
+            let storedOTPPhone = UserDefaults.standard.string(forKey: otpPhoneKey)
+            let hasSameActiveCode = cooldownRemaining > 0
+                && UserDefaults.standard.string(forKey: otpVerificationIdKey) != nil
+                && storedOTPPhone == normalizedPhone
+            if hasSameActiveCode {
+                DLog("[OTP_SEND_SKIP] cooldownActive=\(Int(cooldownRemaining))s phone=same")
+            } else {
+                let verificationId = try await sendFirebaseOTP(to: normalizedPhone)
+                storeInitialOTPCooldown()
+                storeVerificationId(verificationId)
+            }
+            storePhoneForOTP(normalizedPhone)
+
             storedFullName = name
             storedPhone = normalizedPhone
             return true
@@ -326,9 +360,13 @@ final class OnboardingViewModel: ObservableObject {
         switch http.statusCode {
         case 200...299:
             return
-        case 400, 422, 500:
-            // Check for phone format constraint violation (Postgres 23514)
+        case 400, 409, 422, 500:
             let text = String(data: data, encoding: .utf8) ?? ""
+            // Postgres unique constraint violation — phone already taken by another account
+            if text.contains("23505") || text.contains("unique") || text.contains("duplicate key") || http.statusCode == 409 {
+                throw SimpleError(message: "This number is already linked with another account.")
+            }
+            // Postgres check constraint violation — bad phone format
             if text.contains("phone_format_check") || text.contains("23514") {
                 throw SimpleError(message: "Please enter a valid phone number in international format, e.g. +34660580637")
             }
@@ -356,7 +394,7 @@ final class OnboardingViewModel: ObservableObject {
         return try await withCheckedThrowingContinuation { continuation in
             PhoneAuthProvider.provider().verifyPhoneNumber(
                 phone,
-                uiDelegate: nil,
+                uiDelegate: FirebaseAuthUIDelegate.shared,
                 multiFactorSession: nil,
                 completion: { verificationID, error in
                 if let error {
@@ -400,7 +438,11 @@ final class OnboardingViewModel: ObservableObject {
     private func storeVerificationId(_ id: String) {
         UserDefaults.standard.set(id, forKey: otpVerificationIdKey)
     }
-    
+
+    private func storePhoneForOTP(_ phone: String) {
+        UserDefaults.standard.set(phone, forKey: otpPhoneKey)
+    }
+
     private func storeInitialOTPCooldown(seconds: Int = 60) {
         let until = Date().timeIntervalSince1970 + Double(seconds)
         UserDefaults.standard.set(until, forKey: otpCooldownKey)

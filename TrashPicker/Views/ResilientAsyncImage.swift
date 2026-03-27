@@ -1,17 +1,14 @@
 import SwiftUI
 
-/// AsyncImage that retries when returning to the foreground or when the URL changes.
-/// Prevents images getting “stuck” in the empty state after tab/app switches.
+/// Image loader that checks NSCache first, then downloads via URLSession.
+/// Images stay cached across tab switches and map navigation.
 struct ResilientAsyncImage<Content: View>: View {
     @Environment(\.scenePhase) private var scenePhase
-    @State private var reloadToken = UUID()
-    @State private var didLoad = false
-    @State private var retryCount = 0
-    @State private var retryTask: Task<Void, Never>?
+    @State private var phase: AsyncImagePhase = .empty
+    @State private var loadTask: Task<Void, Never>?
 
     let url: URL?
     let content: (AsyncImagePhase) -> Content
-    private let maxRetries = 3
 
     init(url: URL?, @ViewBuilder content: @escaping (AsyncImagePhase) -> Content) {
         self.url = url
@@ -19,73 +16,49 @@ struct ResilientAsyncImage<Content: View>: View {
     }
 
     var body: some View {
-        AsyncImage(url: url, transaction: Transaction(animation: .default)) { phase in
-            content(phase)
-                .onAppear { handlePhase(phase) }
-                .onChange(of: phaseKey(phase)) { _ in handlePhase(phase) }
+        content(phase)
+            .onAppear { startLoad() }
+            .onChange(of: url?.absoluteString) { _, _ in
+                loadTask?.cancel()
+                phase = .empty
+                startLoad()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active, case .empty = phase { startLoad() }
+            }
+            .onDisappear { loadTask?.cancel() }
+    }
+
+    private func startLoad() {
+        guard let url else {
+            phase = .empty
+            return
         }
-        .id(reloadToken)
-        .onAppear {
-            if !didLoad {
-                triggerReload()
+
+        // Serve instantly from cache if available
+        if let cached = ImageCache.shared.image(for: url) {
+            phase = .success(Image(uiImage: cached))
+            return
+        }
+
+        loadTask?.cancel()
+        loadTask = Task {
+            do {
+                let (data, _) = try await URLSession.shared.data(from: url)
+                guard !Task.isCancelled else { return }
+                if let uiImage = UIImage(data: data) {
+                    ImageCache.shared.store(uiImage, for: url)
+                    await MainActor.run { phase = .success(Image(uiImage: uiImage)) }
+                } else {
+                    await MainActor.run { phase = .failure(URLError(.cannotDecodeContentData)) }
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run { phase = .failure(error) }
+                // Retry once after a short delay on network failure
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                if !Task.isCancelled { startLoad() }
             }
         }
-        .onChange(of: scenePhase) { newPhase in
-            if newPhase == .active, !didLoad {
-                triggerReload()
-            }
-        }
-        .onChange(of: url?.absoluteString) { _, _ in
-            didLoad = false
-            retryCount = 0
-            cancelRetry()
-            triggerReload()
-        }
-        .onDisappear { cancelRetry() }
-    }
-
-    private func phaseKey(_ phase: AsyncImagePhase) -> String {
-        switch phase {
-        case .empty: return "empty"
-        case .success: return "success"
-        case .failure: return "failure"
-        @unknown default: return "unknown"
-        }
-    }
-
-    @MainActor
-    private func handlePhase(_ phase: AsyncImagePhase) {
-        switch phase {
-        case .success:
-            didLoad = true
-            retryCount = 0
-            cancelRetry()
-        case .failure, .empty:
-            didLoad = false
-            scheduleRetryIfNeeded()
-        @unknown default:
-            break
-        }
-    }
-
-    private func triggerReload() {
-        reloadToken = UUID()
-    }
-
-    @MainActor
-    private func scheduleRetryIfNeeded() {
-        guard retryCount < maxRetries else { return }
-        cancelRetry()
-        retryTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 700_000_000) // 0.7s
-            if Task.isCancelled { return }
-            retryCount += 1
-            triggerReload()
-        }
-    }
-
-    private func cancelRetry() {
-        retryTask?.cancel()
-        retryTask = nil
     }
 }

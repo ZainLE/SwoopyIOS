@@ -2,11 +2,7 @@ import Foundation
 
 /// Maps HTTP responses to user-friendly error messages, preventing raw HTML from appearing in UI
 struct APIErrorMapper {
-    /// Extracts a friendly error message from an HTTP response
-    /// - Parameters:
-    ///   - http: The HTTP response
-    ///   - data: The response body data
-    /// - Returns: A user-friendly error message
+
     static func friendlyMessage(http: HTTPURLResponse, data: Data) -> String {
         // Try to parse JSON error first
         let contentType = http.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""

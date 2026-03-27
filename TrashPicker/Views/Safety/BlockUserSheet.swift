@@ -130,7 +130,7 @@ struct BlockUserSheet: View {
         Haptics.play(.tabSelect)
         
         do {
-            await blockStore.block(userId: userId)
+            try await blockStore.block(userId: userId)
             
             isSubmitting = false
             ToastCenter.shared.show(SafetyStrings.blocked)
@@ -140,7 +140,7 @@ struct BlockUserSheet: View {
             
         } catch {
             isSubmitting = false
-            errorText = "We couldn't block this user. Please try again."
+            errorText = "We blocked this user locally, but couldn't notify the server. Please try again."
             Haptics.play(.error)
             DLog("[SAFETY] block_err \(error.localizedDescription)")
         }

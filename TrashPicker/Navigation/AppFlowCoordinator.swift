@@ -97,7 +97,7 @@ final class AppFlowCoordinator: ObservableObject {
         } catch {
             AppLogger.logProfile("Failed to mark onboarding complete: \(error.localizedDescription)", level: .error)
             // Retry once after a short delay
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
             do {
                 try await supabase.markOnboardingComplete()
                 await MainActor.run {
@@ -105,6 +105,11 @@ final class AppFlowCoordinator: ObservableObject {
                 }
                 return true
             } catch {
+                await supabase.fetchProfile()
+                if supabase.serverProfile?.onboardingCompleted == true {
+                    evaluatePhase(reason: "introComplete_profileAlreadyComplete")
+                    return true
+                }
                 AppLogger.logProfile("Retry failed to mark onboarding complete: \(error.localizedDescription)", level: .fault)
                 return false
             }
@@ -187,6 +192,11 @@ final class AppFlowCoordinator: ObservableObject {
 
     private func handleUserChange(_ userId: UUID?) {
         if userId != lastUserId {
+            // Different user — wipe any locally cached onboarding form data so
+            // the next user doesn't see the previous user's pre-filled phone/name.
+            if lastUserId != nil {
+                OnboardingViewModel.clearStoredData()
+            }
             lastUserId = userId
             hasMigratedLegacyFlags = false
             profileErrorMessage = nil
@@ -258,6 +268,10 @@ final class AppFlowCoordinator: ObservableObject {
 
         // Step 4: Check profile completeness
         guard isProfileComplete(profile) else {
+            // Don't regress from phoneVerification back to profileCapture during a
+            // background profile refresh — the user just submitted the form and the
+            // server hasn't returned the updated profile yet.
+            if phase == .phoneVerification { return }
             updatePhase(.profileCapture, reason: "profileIncomplete")
             return
         }

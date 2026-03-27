@@ -12,9 +12,10 @@ final class ProfileManager: ObservableObject {
     private let apiService: ApiService
     private var loadTask: Task<Void, Never>?
     
-    init(apiService: ApiService) {
+    init(apiService: ApiService, initialProfile: ProfileDTO? = nil) {
         self.apiService = apiService
-        
+        self.profile = initialProfile
+
         // Listen for profile update notifications
         NotificationCenter.default.addObserver(
             forName: .profileDidUpdate,

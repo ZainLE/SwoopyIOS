@@ -25,15 +25,18 @@ final class BlockStore: ObservableObject {
         return blockedIds.contains(uuid)
     }
 
-    func block(userId: String) async {
+    func block(userId: String) async throws {
         guard let api else { return }
+        addLocal(userId: userId)
         do {
-            try await api.blockUser(userId: userId)
-            addLocal(userId: userId)
+            async let blockCall: Void = api.blockUser(userId: userId)
+            async let reportCall = api.reportUser(userId: userId)
+            _ = try await (blockCall, reportCall)
         } catch {
             #if DEBUG
             DLog("[BLOCK] block_fail user=\(userId) err=\(error.localizedDescription)")
             #endif
+            throw error
         }
     }
 
