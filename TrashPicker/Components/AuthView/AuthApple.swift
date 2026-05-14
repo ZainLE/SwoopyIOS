@@ -141,8 +141,19 @@ final class AppleSignInCoordinator: NSObject, ASAuthorizationControllerDelegate,
     }
 
     func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        UIApplication.shared.connectedScenes
-            .compactMap { ($0 as? UIWindowScene)?.keyWindow }
-            .first ?? ASPresentationAnchor()
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        // Prefer the foreground-active scene's key window
+        if let window = scenes.first(where: { $0.activationState == .foregroundActive })?.keyWindow {
+            return window
+        }
+        // keyWindow can be nil in iPad compatibility mode — search all windows
+        let allWindows = scenes.flatMap { $0.windows }
+        if let keyWindow = allWindows.first(where: { $0.isKeyWindow }) {
+            return keyWindow
+        }
+        if let visibleWindow = allWindows.first(where: { !$0.isHidden }) {
+            return visibleWindow
+        }
+        return allWindows.first ?? UIWindow()
     }
 }

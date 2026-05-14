@@ -45,12 +45,18 @@ private struct LoopingCircleVideoRepresentable: UIViewRepresentable {
         override class var layerClass: AnyClass {
             AVPlayerLayer.self
         }
-        
+
+        // On iPad, window resizing events (multitasking, Slide Over, Stage Manager) can
+        // trigger UIKit to reconstruct views through a path that bypasses layerClass,
+        // causing a hard crash if we force-unwrap. Return a fallback layer instead.
         var playerLayer: AVPlayerLayer {
-            guard let layer = self.layer as? AVPlayerLayer else {
-                fatalError("Expected AVPlayerLayer backing layer")
+            if let avLayer = self.layer as? AVPlayerLayer {
+                return avLayer
             }
-            return layer
+            let fallback = AVPlayerLayer()
+            self.layer.addSublayer(fallback)
+            fallback.frame = self.layer.bounds
+            return fallback
         }
     }
     

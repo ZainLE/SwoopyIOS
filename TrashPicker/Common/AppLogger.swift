@@ -1,5 +1,6 @@
 import Foundation
 import OSLog
+import FirebaseCrashlytics
 
 /// Centralized logging infrastructure using OSLog with privacy redaction.
 /// All logs default to `.private` for sensitive data; mark only known-safe strings as `.public`.
@@ -42,11 +43,13 @@ enum AppLogger {
             auth.notice("\(location) \(message)")
         case .error:
             auth.error("\(location) \(message)")
+            CrashlyticsService.log("[auth:error] \(location) \(message)")
         case .fault:
             auth.fault("\(location) \(message)")
+            CrashlyticsService.log("[auth:fault] \(location) \(message)")
         }
     }
-    
+
     /// Log profile operations (DEBUG only for info, always for errors)
     static func logProfile(_ message: String, level: LogLevel = .debug, file: String = #file, line: Int = #line) {
         let location = "[\(extractFileName(file)):\(line)]"
@@ -63,11 +66,13 @@ enum AppLogger {
             profile.notice("\(location) \(message)")
         case .error:
             profile.error("\(location) \(message)")
+            CrashlyticsService.log("[profile:error] \(location) \(message)")
         case .fault:
             profile.fault("\(location) \(message)")
+            CrashlyticsService.log("[profile:fault] \(location) \(message)")
         }
     }
-    
+
     /// Log network operations (DEBUG only for info, always for errors)
     static func logNetwork(_ message: String, level: LogLevel = .debug, file: String = #file, line: Int = #line) {
         let location = "[\(extractFileName(file)):\(line)]"
@@ -84,11 +89,13 @@ enum AppLogger {
             network.notice("\(location) \(message)")
         case .error:
             network.error("\(location) \(message)")
+            CrashlyticsService.log("[network:error] \(location) \(message)")
         case .fault:
             network.fault("\(location) \(message)")
+            CrashlyticsService.log("[network:fault] \(location) \(message)")
         }
     }
-    
+
     /// Log storage operations (DEBUG only)
     static func logStorage(_ message: String, level: LogLevel = .debug, file: String = #file, line: Int = #line) {
         let location = "[\(extractFileName(file)):\(line)]"
@@ -105,8 +112,10 @@ enum AppLogger {
             storage.notice("\(location) \(message)")
         case .error:
             storage.error("\(location) \(message)")
+            CrashlyticsService.log("[storage:error] \(location) \(message)")
         case .fault:
             storage.fault("\(location) \(message)")
+            CrashlyticsService.log("[storage:fault] \(location) \(message)")
         }
     }
     

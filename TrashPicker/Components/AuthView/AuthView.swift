@@ -561,6 +561,15 @@ struct AuthView: View {
         )
         appleCoordinator = coordinator
         coordinator.start()
+
+        // Clear the loading state after 60 seconds so the user can try again.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            guard loading == .apple else { return }
+            loading = nil
+            appleCoordinator = nil
+            errorMessage = "Sign in timed out. Please try again."
+        }
     }
     
     private func signInWithGoogle() {

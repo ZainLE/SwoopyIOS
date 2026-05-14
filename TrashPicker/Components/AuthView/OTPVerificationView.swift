@@ -9,6 +9,7 @@ struct OTPVerificationView: View {
     @State private var secondsRemaining = 30
     @State private var canResend = false
     @State private var errorMessage: String?
+    @State private var countdownTask: Task<Void, Never>?
     @FocusState private var isFocused: Bool
     
     @Environment(\.dismiss) var dismiss
@@ -114,19 +115,22 @@ struct OTPVerificationView: View {
             isFocused = true
             startTimer()
         }
+        .onDisappear {
+            countdownTask?.cancel()
+        }
     }
-    
+
     private func startTimer() {
         secondsRemaining = 30
         canResend = false
-        
-        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { timer in
-            if secondsRemaining > 0 {
-                secondsRemaining -= 1
-            } else {
-                timer.invalidate()
-                canResend = true
+        countdownTask?.cancel()
+        countdownTask = Task { @MainActor in
+            while secondsRemaining > 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                if Task.isCancelled { return }
+                secondsRemaining = max(0, secondsRemaining - 1)
             }
+            canResend = true
         }
     }
     
@@ -163,6 +167,7 @@ struct OTPVerificationView: View {
             // Fetch latest profile; AppFlowCoordinator will route to profile capture/onboarding as needed
             await svc.fetchProfile()
 
+            isVerifying = false
             dismiss()
         } catch {
             errorMessage = "Invalid code. Please try again."

@@ -53,8 +53,6 @@ struct AccountDetailsView: View {
     @State private var isUpdatingPassword = false
     @State private var showPasswordResetConfirmation = false
     
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -110,7 +108,7 @@ struct AccountDetailsView: View {
             }
             .overlayPreferenceValue(DeleteButtonAnchorKey.self) { anchor in
                 GeometryReader { proxy in
-                    if let anchor, showDeleteConfirmation, !isRegularWidth {
+                    if let anchor, showDeleteConfirmation {
                         let rect = proxy[anchor]
                         let measuredHeight = deleteSheetHeight > 0 ? deleteSheetHeight : 220
                         ZStack {
@@ -406,8 +404,7 @@ struct AccountDetailsView: View {
     }
     
     private var deleteAccountButton: some View {
-        let isRegular = isRegularWidth
-        return Button(action: handleDeleteTapped) {
+        Button(action: handleDeleteTapped) {
             HStack {
                 Spacer()
                 if isDeletingAccount {
@@ -435,31 +432,6 @@ struct AccountDetailsView: View {
                     .anchorPreference(key: DeleteButtonAnchorKey.self, value: .bounds) { anchor in anchor }
             }
         )
-        .popover(
-            isPresented: Binding(
-                get: { showDeleteConfirmation && isRegular },
-                set: { newValue in
-                    if !newValue {
-                        cancelDeleteFlow()
-                    }
-                }
-            ),
-            attachmentAnchor: .rect(.bounds),
-            arrowEdge: .top
-        ) {
-            DeleteAccountSheet(
-                message: "This permanently deletes your profile, posts, and reservations.",
-                confirmTitle: biometricButtonTitle,
-                cancelTitle: "Cancel",
-                confirmIconName: biometricIconName,
-                cornerRadius: deleteButtonCornerRadius,
-                isDeleting: isDeletingAccount,
-                canConfirm: canAuthenticateWithDevice && !isDeletingAccount,
-                onConfirm: confirmDeleteWithBiometrics,
-                onCancel: cancelDeleteFlow
-            )
-            .frame(maxWidth: 360)
-        }
     }
     
     @ViewBuilder
@@ -502,10 +474,6 @@ struct AccountDetailsView: View {
         default:
             return "key.fill"
         }
-    }
-    
-    private var isRegularWidth: Bool {
-        horizontalSizeClass == .regular
     }
     
     private var isFormValid: Bool {

@@ -5,6 +5,7 @@ import SmartlookAnalytics
 import FirebaseCore
 import FirebaseAppCheck
 import FirebaseAuth
+import FirebaseCrashlytics
 
 @main
 struct TrashPickerApp: App {
@@ -132,12 +133,14 @@ private struct RootGateView: View {
             }
             if newPhase == .signedIn {
                 AppBoot.markShellToSignedIn()
+                CrashlyticsService.setUserId(svc.userId?.uuidString)
                 Task {
                     try? await notificationService.fetchNotifications()
                 }
                 boot.start(svc: svc, api: api)
                 PushRegistrationManager.shared.syncRegistration(trigger: "signedIn")
             } else if newPhase == .signedOut {
+                CrashlyticsService.setUserId(nil)
                 notificationService.reset()
                 boot.start(svc: svc, api: api)
             }
@@ -294,6 +297,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         // Initialize Firebase early for Auth/URL handling
         installAppCheckProvider()
         FirebaseApp.configure()
+        Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(true)
         logRuntimeSecurityState()
         logFirebaseURLSchemePresence()
         Task.detached {

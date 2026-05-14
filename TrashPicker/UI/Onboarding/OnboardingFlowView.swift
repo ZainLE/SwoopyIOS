@@ -75,6 +75,9 @@ struct OnboardingFlowView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: toastMessage)
+        .onDisappear {
+            isCompleting = false
+        }
         .onChange(of: index) { newValue in
             let clamped = min(max(newValue, 0), max(pageCount - 1, 0))
             if clamped != newValue {

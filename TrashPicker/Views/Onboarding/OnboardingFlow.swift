@@ -53,14 +53,16 @@ struct OnboardingFlow: View {
                 }
             )
         }
-        .confirmationDialog("Upload image", isPresented: $showPhotoSourceSheet, titleVisibility: .visible) {
-            Button("Take Photo") {
-                openCameraFromSheet()
-            }
-            Button("Choose Photo") {
-                openPhotoLibraryFromSheet()
-            }
-            Button("Cancel", role: .cancel) {}
+        // confirmationDialog presents as a popover on iPad and requires an anchor,
+        // causing it to silently fail without one. A sheet works on all devices.
+        .sheet(isPresented: $showPhotoSourceSheet) {
+            PhotoSourceSheet(
+                onCamera: { showPhotoSourceSheet = false; openCameraFromSheet() },
+                onLibrary: { showPhotoSourceSheet = false; openPhotoLibraryFromSheet() },
+                onCancel: { showPhotoSourceSheet = false }
+            )
+            .presentationDetents([.height(180)])
+            .presentationDragIndicator(.visible)
         }
     }
     
@@ -88,7 +90,6 @@ struct OnboardingFlow: View {
             let ok = await viewModel.completeOnboarding()
             if ok {
                 appFlow.requirePhoneVerification()
-                appFlow.markProfileComplete()
                 Haptics.play(.success)
             }
         }
@@ -124,10 +125,17 @@ private struct WelcomeProfileScreen: View {
     var onContinue: () -> Void
     var onAvatarTapped: () -> Void
     var isProcessingPhotoSelection: Bool
-    
+
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @FocusState private var nameFocused: Bool
     @FocusState private var phoneFocused: Bool
-    
+
+    // In landscape the screen height is ~375pt; 140pt bottom padding would consume
+    // 37% of the screen and leave almost no visible content area.
+    private var scrollBottomPadding: CGFloat {
+        verticalSizeClass == .compact ? 80 : 140
+    }
+
     var body: some View {
         ZStack {
             ScrollView {
@@ -157,7 +165,7 @@ private struct WelcomeProfileScreen: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 24)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.bottom, 140)
+                .padding(.bottom, scrollBottomPadding)
             }
         }
         .scrollIndicators(.hidden)
@@ -326,6 +334,34 @@ private struct WelcomeProfileScreen: View {
         return "Please complete the required fields."
     }
     
+}
+
+// MARK: - Photo Source Sheet
+
+private struct PhotoSourceSheet: View {
+    let onCamera: () -> Void
+    let onLibrary: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Button(action: onCamera) {
+                Label("Take Photo", systemImage: "camera")
+                    .frame(maxWidth: .infinity)
+                    .padding()
+            }
+            Divider()
+            Button(action: onLibrary) {
+                Label("Choose Photo", systemImage: "photo.on.rectangle")
+                    .frame(maxWidth: .infinity)
+                    .padding()
+            }
+            Divider()
+            Button("Cancel", role: .cancel, action: onCancel)
+                .frame(maxWidth: .infinity)
+                .padding()
+        }
+    }
 }
 
 // MARK: - Shared UI

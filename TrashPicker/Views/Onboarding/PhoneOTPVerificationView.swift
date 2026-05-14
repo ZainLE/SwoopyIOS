@@ -203,8 +203,6 @@ struct PhoneOTPVerificationView: View {
         switch viewModel.phase {
         case .verified:
             Task { await completeAndContinue() }
-        case .codeSent, .idle, .sendingCode:
-            Task { await viewModel.verifyCode() }
         case .verifyingCode, .sendingCode:
             break
         default:

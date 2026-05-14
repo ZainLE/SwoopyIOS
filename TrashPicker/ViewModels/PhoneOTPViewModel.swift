@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import FirebaseAuth
 import FirebaseAppCheck
+import FirebaseCrashlytics
 
 @MainActor
 final class PhoneOTPViewModel: ObservableObject {
@@ -161,6 +162,8 @@ final class PhoneOTPViewModel: ObservableObject {
             logDiagnostics(context: "sendCode", error: error as NSError?)
             let nsError = error as NSError
             logEvent("OTP_SEND_ERROR domain=\(nsError.domain) code=\(nsError.code) message=\(nsError.localizedDescription)")
+            CrashlyticsService.record(error, context: "otp_send",
+                extra: ["isResend": "\(isResend)", "domain": nsError.domain, "code": "\(nsError.code)"])
         }
     }
     
@@ -206,6 +209,12 @@ final class PhoneOTPViewModel: ObservableObject {
                 logBackendVerifyFail(error: error)
                 let nsError = error as NSError
                 logEvent("BACKEND_VERIFY_RESULT failure domain=\(nsError.domain) code=\(nsError.code)")
+                CrashlyticsService.record(error, context: "otp_backend_verify",
+                    extra: ["phase": "backendVerify", "domain": nsError.domain, "code": "\(nsError.code)"])
+            } else {
+                let nsError = error as NSError
+                CrashlyticsService.record(error, context: "otp_firebase_verify",
+                    extra: ["phase": "firebaseVerify", "domain": nsError.domain, "code": "\(nsError.code)"])
             }
             phase = .codeSent
             errorMessage = friendlyError(error)
@@ -346,32 +355,19 @@ final class PhoneOTPViewModel: ObservableObject {
     // MARK: - Firebase helpers
     @MainActor
     private func handlePostBackendSuccess() async {
-        await supabase.fetchProfile()
-        var verified = supabase.serverProfile?.isPhoneVerified ?? false
-        if !verified {
-            for _ in 0..<2 {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                await supabase.fetchProfile()
-                verified = supabase.serverProfile?.isPhoneVerified ?? false
-                if verified { break }
-            }
-        }
-        DLog("[PROFILE_REFRESH_OK] phoneVerified=\(verified)")
-        if verified {
-            DLog("[OTP_VERIFY_OK] profileVerified=true")
-            phase = .verified
-            timerTask?.cancel()
-            resendRemaining = 0
-            verificationId = nil
-            otpCode = ""
-            UserDefaults.standard.removeObject(forKey: phoneKey)
-            OnboardingViewModel.clearStoredData()
-            DLog("[OTP_FLOW] advancedToNextPhase")
-        } else {
-            DLog("[OTP_VERIFY_FAIL] profileVerified=false")
-            phase = .codeSent
-            errorMessage = "Verification succeeded, but we couldn’t confirm your phone. Please try again."
-        }
+        // Backend returned 200 OK from verifyPhoneOTP — the phone IS verified.
+        // Advance immediately; the profile was already refreshed inside
+        // verifyPhoneCode(refreshProfile: true) and completeAndContinue()
+        // will fetch again before routing via AppFlowCoordinator.
+        phase = .verified
+        timerTask?.cancel()
+        resendRemaining = 0
+        verificationId = nil
+        otpCode = ""
+        UserDefaults.standard.removeObject(forKey: phoneKey)
+        OnboardingViewModel.clearStoredData()
+        DLog("[OTP_VERIFY_OK] backendConfirmed")
+        DLog("[OTP_FLOW] advancedToNextPhase")
     }
     
     private func sendFirebaseCode(to phone: String) async throws {

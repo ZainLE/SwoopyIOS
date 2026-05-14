@@ -1500,9 +1500,10 @@ private extension SupabaseService {
         }
 
         func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-            window
-            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first?.keyWindow
-            ?? UIWindow()
+            if let w = window { return w }
+            let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            if let w = scenes.first(where: { $0.activationState == .foregroundActive })?.keyWindow { return w }
+            return scenes.flatMap { $0.windows }.first ?? UIWindow()
         }
 
         func authorizationController(controller: ASAuthorizationController,

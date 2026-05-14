@@ -8,6 +8,7 @@ final class FirebaseAuthUIDelegate: NSObject, AuthUIDelegate {
 
     func present(_ viewControllerToPresent: UIViewController, animated flag: Bool, completion: (() -> Void)? = nil) {
         guard let topVC = UIApplication.shared.topMostViewController else {
+            CrashlyticsService.log("[FirebaseAuthUIDelegate] present failed — no topMostViewController (iPad compatibility mode?)")
             completion?()
             return
         }
@@ -25,11 +26,18 @@ final class FirebaseAuthUIDelegate: NSObject, AuthUIDelegate {
 
 private extension UIApplication {
     var topMostViewController: UIViewController? {
-        guard
-            let windowScene = connectedScenes
-                .first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene,
-            let root = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController
-        else { return nil }
+        let scenes = connectedScenes.compactMap { $0 as? UIWindowScene }
+        let allWindows = scenes.flatMap { $0.windows }
+
+        // On iPad (compatibility mode) isKeyWindow can return nil on the
+        // foreground scene, causing reCAPTCHA to silently fail to present.
+        // Walk through windows with the same priority order used in AuthApple.
+        let root: UIViewController? =
+            scenes.first(where: { $0.activationState == .foregroundActive })?.keyWindow?.rootViewController
+            ?? allWindows.first(where: { $0.isKeyWindow })?.rootViewController
+            ?? allWindows.first(where: { !$0.isHidden })?.rootViewController
+
+        guard let root else { return nil }
         return topVC(from: root)
     }
 
