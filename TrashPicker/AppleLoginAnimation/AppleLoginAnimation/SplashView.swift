@@ -6,10 +6,15 @@ struct SplashView: View {
     
     var body: some View {
         ZStack {
+            // Explicit opaque background: without it, view-tree swaps during
+            // launch phase changes let the black UIWindow show through for a frame.
+            Color(.systemBackground)
+                .ignoresSafeArea()
+
             AnimatedLogoOrbit(
                 images: images
             )
-            
+
             Image(logo)
                 .resizable()
                 .aspectRatio(contentMode: .fit)

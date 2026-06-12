@@ -330,6 +330,17 @@ struct FeedCard: View {
         }
 #endif
         .onReceive(timer) { _ in currentTime = Date() }
+        .onChange(of: deckState.isAnimating) { _, animating in
+            // Button-tap actions don't go through the drag gesture, so run the
+            // same fly-off animation here. Drag-initiated swipes already set a
+            // non-zero dragOffset and are skipped.
+            guard animating, isActiveCard, !isDragging, dragOffset == .zero,
+                  let direction = deckState.exitDirection else { return }
+            let exitX = direction == .right ? cardWidth + 100 : -(cardWidth + 100)
+            withAnimation(.easeOut(duration: 0.3)) {
+                dragOffset = CGSize(width: exitX, height: 0)
+            }
+        }
         .overlay(reservingOverlayView())
         .fullScreenCover(isPresented: $showDetailOverlay) {
             expandedCardView()

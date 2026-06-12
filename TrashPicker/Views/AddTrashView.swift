@@ -26,6 +26,7 @@ struct AddTrashView: View {
     @State private var slotMenuIndex: Int? = nil
     @State private var showCamera = false
     @State private var showLibrary = false
+    @State private var showPhotoActionSheet = false
 
     @State private var condition: ConditionUI = .good            // required
 
@@ -83,6 +84,7 @@ struct AddTrashView: View {
                                 // Find first empty slot or use slot 0
                                 let emptySlot = slots.firstIndex(of: nil) ?? 0
                                 slotMenuIndex = emptySlot
+                                showPhotoActionSheet = true
                             }) {
                                 Image(systemName: "camera.fill")
                                     .font(.system(size: 20, weight: .medium))
@@ -96,7 +98,10 @@ struct AddTrashView: View {
                         // 3 photo tiles (4:3 aspect ratio, 12pt radius, dashed border)
                         PhotoTilesView(
                             slots: $slots,
-                            openMenu: { index in slotMenuIndex = index }
+                            openMenu: { index in
+                            slotMenuIndex = index
+                            showPhotoActionSheet = true
+                        }
                         )
                         
                         if photos.isEmpty && saving == false && showValidation {
@@ -243,13 +248,14 @@ struct AddTrashView: View {
                         .foregroundColor(AppTheme.ColorToken.primary)
                 }
             }
-            .confirmationDialog(menuTitle, isPresented: Binding(
-                get: { slotMenuIndex != nil },
-                set: { if !$0 { slotMenuIndex = nil } }
-            ), titleVisibility: .visible) {
+            // confirmationDialog silently fails on iPad without a popover anchor.
+            // A sheet works reliably on all devices.
+            .sheet(isPresented: $showPhotoActionSheet) {
                 if let idx = slotMenuIndex {
-                    if slots[idx] == nil {
-                        Button("Take Photo") {
+                    PhotoActionSheet(
+                        isOccupied: slots[idx] != nil,
+                        onCamera: {
+                            showPhotoActionSheet = false
                             Task {
                                 let ok = await CameraSessionManager.shared.ensurePermission()
                                 if ok {
@@ -257,16 +263,20 @@ struct AddTrashView: View {
                                     showCamera = true
                                 }
                             }
-                        }
-                        Button("Choose from Library") { showLibrary = true }
-                    } else {
-                        Button("Replace Photo") { showLibrary = true }
-                        Button("Remove Photo", role: .destructive) {
+                        },
+                        onLibrary: {
+                            showPhotoActionSheet = false
+                            showLibrary = true
+                        },
+                        onRemove: {
                             slots[idx] = nil
                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        }
-                    }
-                    Button("Cancel", role: .cancel) {}
+                            showPhotoActionSheet = false
+                        },
+                        onCancel: { showPhotoActionSheet = false }
+                    )
+                    .presentationDetents([.height(180)])
+                    .presentationDragIndicator(.visible)
                 }
             }
             .fullScreenCover(isPresented: $showCamera) {
@@ -318,11 +328,6 @@ struct AddTrashView: View {
                 }
             }
         }
-    }
-
-    private var menuTitle: String {
-        if let idx = slotMenuIndex, slots[idx] == nil { return "Add Photo" }
-        return "Photo"
     }
 
     // MARK: - Actions
@@ -667,6 +672,50 @@ private struct LibraryPicker: UIViewControllerRepresentable {
                 }
             }
             group.notify(queue: .main) { self.onFinish(images) }
+        }
+    }
+}
+
+// MARK: - Photo Action Sheet
+
+private struct PhotoActionSheet: View {
+    let isOccupied: Bool
+    let onCamera: () -> Void
+    let onLibrary: () -> Void
+    let onRemove: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if isOccupied {
+                Button(action: onLibrary) {
+                    Label("Replace Photo", systemImage: "photo.on.rectangle")
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                }
+                Divider()
+                Button(role: .destructive, action: onRemove) {
+                    Label("Remove Photo", systemImage: "trash")
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                }
+            } else {
+                Button(action: onCamera) {
+                    Label("Take Photo", systemImage: "camera")
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                }
+                Divider()
+                Button(action: onLibrary) {
+                    Label("Choose from Library", systemImage: "photo.on.rectangle")
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                }
+            }
+            Divider()
+            Button("Cancel", role: .cancel, action: onCancel)
+                .frame(maxWidth: .infinity)
+                .padding()
         }
     }
 }

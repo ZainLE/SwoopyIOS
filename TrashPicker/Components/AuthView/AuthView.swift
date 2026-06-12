@@ -589,13 +589,13 @@ struct AuthView: View {
     }
     
     private func openPrivacyPolicy() {
-        if let url = URL(string: "https://privacy.swoopy.eu/") {
+        if let url = URL(string: "https://api.swoopy.eu/custom-api/privacy") {
             UIApplication.shared.open(url)
         }
     }
-    
+
     private func openTerms() {
-        if let url = URL(string: "https://terms.swoopy.eu/") {
+        if let url = URL(string: "https://api.swoopy.eu/custom-api/terms") {
             UIApplication.shared.open(url)
         }
     }

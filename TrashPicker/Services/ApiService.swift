@@ -1742,8 +1742,28 @@ class ApiService: ObservableObject {
                 userReservation: serverPost.user_reservation
             )
         }
-        posts.forEach { LocationCache.shared.store(post: $0) }
-        return posts
+        // Closest first: prefer the server-computed distance, fall back to a
+        // local computation from the query coordinate; posts with no location
+        // sort last. Newest first breaks ties so equal-distance posts are stable.
+        let origin = CLLocation(latitude: query.lat, longitude: query.lng)
+        func sortDistanceKm(_ post: Post) -> Double? {
+            if let d = post.distance { return d }
+            guard let c = post.exactCoordinate ?? post.approxCoordinate else { return nil }
+            return CLLocation(latitude: c.latitude, longitude: c.longitude).distance(from: origin) / 1000.0
+        }
+        let sorted = posts.sorted { a, b in
+            switch (sortDistanceKm(a), sortDistanceKm(b)) {
+            case let (da?, db?):
+                if da != db { return da < db }
+                return (a.createdAt ?? .distantPast) > (b.createdAt ?? .distantPast)
+            case (.some, .none): return true
+            case (.none, .some): return false
+            case (.none, .none):
+                return (a.createdAt ?? .distantPast) > (b.createdAt ?? .distantPast)
+            }
+        }
+        sorted.forEach { LocationCache.shared.store(post: $0) }
+        return sorted
     }
 
     // MARK: - Reservations (My) — tolerant to backend keys

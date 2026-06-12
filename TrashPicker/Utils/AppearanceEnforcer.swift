@@ -15,6 +15,9 @@ enum AppearanceEnforcer {
             guard let windowScene = scene as? UIWindowScene else { continue }
             for window in windowScene.windows {
                 window.overrideUserInterfaceStyle = .light
+                // The default window background is black; any frame where the
+                // SwiftUI tree is mid-swap would flash black without this.
+                window.backgroundColor = .systemBackground
             }
         }
     }

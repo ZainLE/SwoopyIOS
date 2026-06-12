@@ -44,13 +44,3 @@ struct BlockPayload: Codable {
     let userId: String
     let notes: String?
 }
-
-enum SafetyDemoMode {
-    static var isEnabled: Bool {
-        UserDefaults.standard.bool(forKey: "safety_demo_mode")
-    }
-    
-    static func setEnabled(_ enabled: Bool) {
-        UserDefaults.standard.set(enabled, forKey: "safety_demo_mode")
-    }
-}

@@ -119,6 +119,9 @@ private struct RootGateView: View {
     var body: some View {
         appShell
         .onAppear {
+            // Re-run now that the window exists — the init()-time call runs
+            // before any window is connected, so its background never got set.
+            AppearanceEnforcer.forceLight()
             PushIntentRouter.shared.configure(notificationService: notificationService)
             PushRegistrationManager.shared.configure(api: api, supabase: svc)
             startBootSequenceIfNeeded()
@@ -158,15 +161,32 @@ private struct RootGateView: View {
         }
     }
 
+    /// Phases that show the splash. Kept in ONE branch of `content` so SwiftUI
+    /// preserves the splash view across launch phase changes — separate switch
+    /// branches destroy and recreate it, flashing the window background through.
+    private var showsSplash: Bool {
+        switch appFlow.phase {
+        case .launching, .loadingProfile, .loading: return true
+        default: return false
+        }
+    }
+
     @ViewBuilder
     private var content: some View {
+        if showsSplash {
+            loadingSplash
+        } else {
+            phaseContent
+        }
+    }
+
+    @ViewBuilder
+    private var phaseContent: some View {
         switch appFlow.phase {
-        case .launching:
+        case .launching, .loadingProfile, .loading:
             loadingSplash
         case .auth:
             AuthView()
-        case .loadingProfile:
-            loadingSplash
         case .profileError:
             ProfileErrorGateView(
                 message: appFlow.profileErrorMessage,
@@ -185,8 +205,6 @@ private struct RootGateView: View {
             }
         case .introShowcase:
             OnboardingFlowView()
-        case .loading:
-            loadingSplash
         case .main:
             RootView()
         }
@@ -242,12 +260,10 @@ private struct RootGateView: View {
             .environmentObject(appFlow)
             .overlay(alignment: .top) {
                 if let msg = boot.bannerMessage {
-                    Text(msg)
-                        .font(.footnote)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(.ultraThinMaterial, in: Capsule())
+                    SwoopyToast(message: msg, style: .info)
+                        .padding(.horizontal)
                         .padding(.top, 12)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
             }
 #if DEBUG
@@ -503,19 +519,35 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
 
 extension AppDelegate {
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        guard didLogAPNSToken == false else { return }
-        didLogAPNSToken = true
-        let token = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
-        DLog("[PUSH] APNs token received (required for Firebase phone auth reCAPTCHA-less flow) token=\(token)")
         #if DEBUG
         let tokenType: AuthAPNSTokenType = .sandbox
         #else
         let tokenType: AuthAPNSTokenType = .prod
         #endif
+        // Always forward to Firebase — token can refresh mid-session and Firebase must have the current one
+        // to use silent push for phone auth. If stale, Firebase falls back to reCAPTCHA.
         Auth.auth().setAPNSToken(deviceToken, type: tokenType)
-        DLog("[APNS_TOKEN_OK] forwardedToFirebase=true env=\(tokenType == .prod ? "prod" : "sandbox")")
-        OneSignal.User.pushSubscription.optIn()
-        // OneSignal Swift SDK v5+ handles APNs token internally; no manual setDeviceToken API.
+        if !didLogAPNSToken {
+            didLogAPNSToken = true
+            let token = deviceToken.map { String(format: "%02.2hhx", $0) }.joined()
+            DLog("[PUSH] APNs token received token=\(token)")
+            DLog("[APNS_TOKEN_OK] forwardedToFirebase=true env=\(tokenType == .prod ? "prod" : "sandbox")")
+        }
+        // Only opt in when the system says notifications are actually authorized.
+        // Calling optIn() while OneSignal's cached permission state is notDetermined/denied
+        // triggers its built-in "Open Settings" fallback alert (stale-state window right
+        // after the user grants permission). Intentional prompting goes through
+        // PushPermissionManager.requestPermissionIfNeeded(fallbackToSettings: false).
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                DispatchQueue.main.async {
+                    OneSignal.User.pushSubscription.optIn()
+                }
+            default:
+                DLog("[PUSH] skipping optIn, authorizationStatus=\(settings.authorizationStatus.rawValue)")
+            }
+        }
     }
     
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {

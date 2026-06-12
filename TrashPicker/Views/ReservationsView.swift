@@ -1052,11 +1052,16 @@ struct ReservationsView: View {
     }
 
     private var toastMessageView: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
+            Image(systemName: toastIsError ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundColor(toastIsError ? .white : AppTheme.ColorToken.accent)
+
             Text(toastMessage)
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
 
             if let retryAction = toastRetryAction {
                 Button("Retry") {
@@ -1064,14 +1069,21 @@ struct ReservationsView: View {
                     toastRetryAction = nil
                     retryAction()
                 }
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.white)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundColor(AppTheme.ColorToken.accent)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background((toastIsError ? Color.red : Color.black).opacity(0.85))
-        .clipShape(Capsule())
+        .padding(.horizontal, 18)
+        .padding(.vertical, 13)
+        .background(
+            (toastIsError ? AppTheme.ColorToken.danger : AppTheme.ColorToken.primary),
+            in: Capsule()
+        )
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+        .shadow(
+            color: (toastIsError ? AppTheme.ColorToken.danger : AppTheme.ColorToken.primary).opacity(0.35),
+            radius: 14, y: 6
+        )
         .padding(.horizontal, AppTheme.Spacing.chromeSide)
         .padding(.bottom, 100)
     }
@@ -1128,7 +1140,7 @@ struct ReservationsView: View {
 
             Haptics.play(.success)
             markReservationCompletedAndFadeOut(reservationId: reservationId, postId: reservation.postId)
-            showToastMessage("Reservation completed ✅")
+            showToastMessage("Reservation completed")
             Task { await loadReservations() }
 
             if ConsentManager.shared.analytics == .provided {
@@ -1144,7 +1156,7 @@ struct ReservationsView: View {
         } catch {
             if shouldTreatAsResolved(error) {
                 markReservationCompletedAndFadeOut(reservationId: reservationId, postId: reservation.postId)
-                showToastMessage("Reservation completed ✅")
+                showToastMessage("Reservation completed")
                 Task { await loadReservations() }
                 FeedViewModel.requestFeedRefresh()
             } else {
@@ -1214,7 +1226,7 @@ struct ReservationsView: View {
 
             Haptics.play(.success)
             removeReservation(reservationId: reservationId, postId: reservation.postId)
-            showToastMessage("Reservation canceled")
+            showToastMessage("Reservation cancelled")
             // Trigger refetches for reservations and notifications consumers
             NotificationCenter.default.post(name: .refreshReservations, object: reservationId)
             FeedViewModel.requestFeedRefresh()

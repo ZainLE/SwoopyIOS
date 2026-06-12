@@ -802,7 +802,7 @@ extension BigCardOverlay {
         guard let postID else { return }
         Task {
             do {
-                _ = try await api.reportPost(postId: postID)
+                _ = try await api.reportPost(postId: postID, category: reason.category, notes: nil)
                 HiddenContentStore.shared.add(postId: postID)
             } catch {
                 DLog("[REPORT] post_report_error=\(error.localizedDescription)")

@@ -45,29 +45,14 @@ struct ToastView: View {
             Spacer()
             
             if let text = toastCenter.text {
-                HStack(spacing: 12) {
-                    Image(systemName: toastCenter.isError ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundColor(toastCenter.isError ? .red : AppTheme.ColorToken.accent)
-                    
-                    Text(text)
-                        .font(AppTheme.Typography.body)
-                        .foregroundColor(AppTheme.ColorToken.text)
-                        .multilineTextAlignment(.leading)
-                    
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(.ultraThinMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
+                SwoopyToast(
+                    message: text,
+                    style: toastCenter.isError ? .error : .success,
+                    onTap: { toastCenter.dismiss() }
+                )
                 .padding(.horizontal, 16)
                 .padding(.bottom, 100) // Above tab bar
                 .transition(.move(edge: .bottom).combined(with: .opacity))
-                .onTapGesture {
-                    toastCenter.dismiss()
-                }
             }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: toastCenter.text)

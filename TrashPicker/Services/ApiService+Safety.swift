@@ -27,22 +27,18 @@ extension ApiService {
     /// - Parameter postId: Identifier of the post being reported
     /// - Returns: ReportResponse containing backend report ID
     @MainActor
-    func reportPost(postId: String) async throws -> ReportResponse {
-        // Demo mode: mock success for App Review
-        if SafetyDemoMode.isEnabled {
-            #if DEBUG
-            DLog("[SAFETY] reportPost demo_mode post=\(postId)")
-            #endif
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            return ReportResponse(ok: true, reportId: UUID().uuidString)
-        }
-
+    func reportPost(postId: String, category: ReportPayload.Category, notes: String?) async throws -> ReportResponse {
         let url = try resolvedURL(for: "/report/post/\(postId)")
         var request = URLRequest(url: url)
         request.httpMethod = HTTPMethod.POST.rawValue
 
         let headers = try await getAuthHeaders()
         headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+
+        var body: [String: Any] = ["category": category.rawValue]
+        if let notes, !notes.isEmpty { body["notes"] = notes }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -68,22 +64,18 @@ extension ApiService {
     /// - Parameter userId: Identifier of the user being reported
     /// - Returns: ReportResponse containing backend report ID
     @MainActor
-    func reportUser(userId: String) async throws -> ReportResponse {
-        // Demo mode: mock success for App Review
-        if SafetyDemoMode.isEnabled {
-            #if DEBUG
-            DLog("[SAFETY] reportUser demo_mode user=\(userId)")
-            #endif
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            return ReportResponse(ok: true, reportId: UUID().uuidString)
-        }
-
+    func reportUser(userId: String, category: ReportPayload.Category, notes: String?) async throws -> ReportResponse {
         let url = try resolvedURL(for: "/report/user/\(userId)")
         var request = URLRequest(url: url)
         request.httpMethod = HTTPMethod.POST.rawValue
 
         let headers = try await getAuthHeaders()
         headers.forEach { request.setValue($0.value, forHTTPHeaderField: $0.key) }
+
+        var body: [String: Any] = ["category": category.rawValue]
+        if let notes, !notes.isEmpty { body["notes"] = notes }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
@@ -110,15 +102,6 @@ extension ApiService {
     /// - Throws: ApiServiceError on network failure
     @MainActor
     func blockUser(userId: String) async throws {
-        // Demo mode: mock success for App Review
-        if SafetyDemoMode.isEnabled {
-            #if DEBUG
-            DLog("[SAFETY] blockUser demo_mode user=\(userId)")
-            #endif
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            return
-        }
-
         let url = try resolvedURL(for: "/block/\(userId)")
         var request = URLRequest(url: url)
         request.httpMethod = HTTPMethod.POST.rawValue
@@ -144,15 +127,6 @@ extension ApiService {
     /// - Throws: ApiServiceError on network failure
     @MainActor
     func unblockUser(userId: String) async throws {
-        // Demo mode: mock success
-        if SafetyDemoMode.isEnabled {
-            #if DEBUG
-            DLog("[SAFETY] unblockUser demo_mode user=\(userId)")
-            #endif
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            return
-        }
-
         let url = try resolvedURL(for: "/block/\(userId)")
         var request = URLRequest(url: url)
         request.httpMethod = HTTPMethod.DELETE.rawValue
@@ -187,13 +161,16 @@ extension ApiService {
 
         switch http.statusCode {
         case 200...299:
-            // Try to decode as a raw array or wrapped object
-            if let ids = try? JSONDecoder().decode([String].self, from: data) {
-                return ids
+            // Server returns [{user_id, name, avatar_url}]
+            struct BlockEntry: Decodable {
+                let userId: String
+                enum CodingKeys: String, CodingKey { case userId = "user_id" }
             }
-            struct BlocksResponse: Decodable { let blocks: [String]? }
-            if let wrapped = try? JSONDecoder().decode(BlocksResponse.self, from: data),
-               let ids = wrapped.blocks {
+            if let entries = try? JSONDecoder().decode([BlockEntry].self, from: data) {
+                return entries.map(\.userId)
+            }
+            // Fallback: plain string array
+            if let ids = try? JSONDecoder().decode([String].self, from: data) {
                 return ids
             }
             return []

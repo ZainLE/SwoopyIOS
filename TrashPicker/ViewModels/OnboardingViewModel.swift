@@ -202,14 +202,19 @@ final class OnboardingViewModel: ObservableObject {
             guard let normalizedPhone else {
                 throw SimpleError(message: "Please enter a valid phone number")
             }
-            try await updateProfileFields(
-                firstName: names.first,
-                lastName: names.last,
-                phone: normalizedPhone,
-                defaultCountryCode: selectedCountry.callingCode
-            )
-            DLog("[OTP_PROFILE_OK] country=\(selectedCountry.id) last3=\(phoneSuffix)")
-            
+            // Run the profile PATCH concurrently with the Firebase OTP send below —
+            // the backend only needs the phone saved before verify, which happens
+            // after the user types the code. Serializing the two round-trips here
+            // just delays the SMS.
+            let profileTask = Task { [names, selectedCountry] in
+                try await self.updateProfileFields(
+                    firstName: names.first,
+                    lastName: names.last,
+                    phone: normalizedPhone,
+                    defaultCountryCode: selectedCountry.callingCode
+                )
+            }
+
             // Step 3: Send OTP via Firebase before navigating
             uploadProgress = "Sending code..."
             // If a cooldown is still active for this same phone, skip re-sending to avoid
@@ -220,12 +225,19 @@ final class OnboardingViewModel: ObservableObject {
             let hasSameActiveCode = cooldownRemaining > 0
                 && UserDefaults.standard.string(forKey: otpVerificationIdKey) != nil
                 && storedOTPPhone == normalizedPhone
-            if hasSameActiveCode {
-                DLog("[OTP_SEND_SKIP] cooldownActive=\(Int(cooldownRemaining))s phone=same")
-            } else {
-                let verificationId = try await sendFirebaseOTP(to: normalizedPhone)
-                storeInitialOTPCooldown()
-                storeVerificationId(verificationId)
+            do {
+                if hasSameActiveCode {
+                    DLog("[OTP_SEND_SKIP] cooldownActive=\(Int(cooldownRemaining))s phone=same")
+                } else {
+                    let verificationId = try await sendFirebaseOTP(to: normalizedPhone)
+                    storeInitialOTPCooldown()
+                    storeVerificationId(verificationId)
+                }
+                try await profileTask.value
+                DLog("[OTP_PROFILE_OK] country=\(selectedCountry.id) last3=\(phoneSuffix)")
+            } catch {
+                profileTask.cancel()
+                throw error
             }
             storePhoneForOTP(normalizedPhone)
 

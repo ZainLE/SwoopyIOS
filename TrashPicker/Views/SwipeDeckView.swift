@@ -87,13 +87,28 @@ class HiddenPostsStore {
     private let reservedTTL: TimeInterval = 2 * 3600  
     
     func saveDismissed(_ ids: Set<String>) {
-        let dict = ids.reduce(into: [String: Date]()) { $0[$1] = Date() }
-        UserDefaults.standard.set(dict, forKey: dismissedKey)
+        save(ids, key: dismissedKey, ttl: dismissedTTL)
     }
-    
+
     func saveReserved(_ ids: Set<String>) {
-        let dict = ids.reduce(into: [String: Date]()) { $0[$1] = Date() }
-        UserDefaults.standard.set(dict, forKey: reservedKey)
+        save(ids, key: reservedKey, ttl: reservedTTL)
+    }
+
+    /// Keep each id's ORIGINAL hide timestamp — re-saving the set must not
+    /// reset the TTL clock, or hidden posts would never come back. IDs missing
+    /// from `ids` were explicitly unhidden and are dropped.
+    private func save(_ ids: Set<String>, key: String, ttl: TimeInterval) {
+        let existing = (UserDefaults.standard.dictionary(forKey: key) as? [String: Date]) ?? [:]
+        let now = Date()
+        var dict: [String: Date] = [:]
+        for id in ids {
+            if let original = existing[id], now.timeIntervalSince(original) < ttl {
+                dict[id] = original
+            } else {
+                dict[id] = now
+            }
+        }
+        UserDefaults.standard.set(dict, forKey: key)
     }
     
     func loadDismissed() -> Set<String> {
@@ -180,6 +195,7 @@ struct SwipeDeckView: View {
 
     // Deck state management - single source of truth
     @StateObject private var deckState = DeckState()
+    @StateObject private var safetyFeedback = SafetySuccessFeedback.shared
     
     // Hidden posts tracking with 24h TTL
     @State private var dismissedIds: Set<String> = []
@@ -271,6 +287,16 @@ struct SwipeDeckView: View {
         baseView
             .overlay { errorOverlay }
             .overlay { successOverlay }
+            .overlay {
+                if let msg = safetyFeedback.pending {
+                    SafetySuccessCard(message: msg) {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            safetyFeedback.clear()
+                        }
+                    }
+                    .animation(.easeInOut(duration: 0.25), value: safetyFeedback.pending != nil)
+                }
+            }
 #if DEBUG
             .overlay(alignment: .topLeading) {
                 if UserDefaults.standard.bool(forKey: "debug.distanceHUD"),
@@ -350,11 +376,13 @@ struct SwipeDeckView: View {
             let visiblePosts = newItems.filter { post in
                 !dismissedIds.contains(post.id) && !reservedIds.contains(post.id)
             }
-            deckState.updateItems(visiblePosts)
+            deckState.filterItems(visiblePosts)
         }
         .onChange(of: feedVM.isLoading) { _, loading in
-            // Sync loading state with FeedViewModel
-            isLoading = loading
+            // Sync loading state with FeedViewModel, but never replace a
+            // populated deck with a full-screen spinner — background refreshes
+            // (post-reserve, post-upload) should be invisible.
+            isLoading = loading && feedVM.items.isEmpty
         }
     }
 
@@ -392,7 +420,12 @@ struct SwipeDeckView: View {
             if lastAuth != currentAuth && (currentAuth == 3 || currentAuth == 4) {
                 authStatusAtLastFetch = Int(currentAuth)
                 let now = Date()
-                if let lastFetch = lastFeedFetchAt, now.timeIntervalSince(lastFetch) < 1.5 {
+                // The recent-fetch debounce only applies when we actually have
+                // content — with an empty feed (first run, just granted
+                // permission) this fetch IS the initial load.
+                if let lastFetch = lastFeedFetchAt,
+                   now.timeIntervalSince(lastFetch) < 1.5,
+                   !feedVM.items.isEmpty {
                     #if DEBUG
                     DLog("[FEED gate] auth change ignored (recent fetch <1.5s)")
                     #endif
@@ -401,7 +434,11 @@ struct SwipeDeckView: View {
                 #if DEBUG
                 DLog("[FEED gate] auth changed to authorized → refetch")
                 #endif
-                await loadFeedWithOneShotLocation()
+                await loadFeedWithOneShotLocation(force: true)
+            } else if currentAuth == 2 {
+                // Denied: stop the first-run loading state so the empty-state
+                // CTA shows instead of an endless spinner.
+                await MainActor.run { isLoading = false }
             }
         }
     }
@@ -614,26 +651,21 @@ struct SwipeDeckView: View {
         if let errorMessage = deckState.errorMessage {
             VStack {
                 Spacer()
-                Text(errorMessage)
-                    .padding()
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                SwoopyToast(message: errorMessage, style: .error)
                     .padding(.horizontal)
+                    .padding(.bottom, 100)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            .animation(.easeInOut, value: deckState.errorMessage)
+            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: deckState.errorMessage)
         }
     }
-    
+
     @ViewBuilder
     private var successOverlay: some View {
         if showSuccess, let successMessage {
             VStack {
                 Spacer()
-                Text(successMessage)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white)
-                    .padding()
-                    .background(AppTheme.ColorToken.primary, in: RoundedRectangle(cornerRadius: 12))
+                SwoopyToast(message: successMessage, style: .success)
                     .padding(.horizontal)
                     .padding(.bottom, 100)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -698,10 +730,10 @@ struct SwipeDeckView: View {
             HiddenPostsStore.shared.saveReserved(reservedIds)
             trackReservationMade(post: post)
 
-            await fetchFeedBridge()
             withAnimation(.easeOut(duration: 0.18)) {
                 sheetMode = .info
             }
+            Task { await fetchFeedBridge() }
         } catch {
             if !didRemovePlaceholder {
                 postOptimisticReservationRemove(tempId)
@@ -764,146 +796,129 @@ struct SwipeDeckView: View {
         #endif
         
         dbg("ACTION", "reserve start \(post.id.prefix(8))")
-        
+
         // Haptic feedback for primary action (reserve button tap)
         Haptics.play(.primaryAction)
-        
+
+        // Optimistic UI: advance the deck and confirm immediately; the network
+        // call runs in the background and rolls back on failure. Blocking the
+        // card animation on the round-trip is what made swipes feel frozen.
         isReserving = true
-        deckState.isActing = true
-        
+
         let requestId = UUID().uuidString
         let tempId = "optimistic-\(requestId)"
         let placeholderRow = ReservationRow(optimisticFrom: post, reservationId: tempId)
         postOptimisticReservationInsert(placeholderRow)
-        var didRemovePlaceholder = false
 
-        do {
-            // Reserve: call real API
-            let reservationId = try await fetchWithRetry(svc: svc) {
+        await deckState.triggerReserve()
+        markReserved(postId: post.id)
+        isReserving = false
+
+        successMessage = "Reserved for 2 hours"
+        showSuccess = true
+        Haptics.play(.success)
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            showSuccess = false
+        }
+
+        Task { @MainActor in
+            do {
+                let reservationId = try await fetchWithRetry(svc: svc) {
+                    #if DEBUG || RESERVATIONS_DIAGNOSTICS
+                    try await api.reservePost(post.id, requestId: requestId, corr: corr)
+                    #else
+                    try await api.reservePost(post.id, requestId: requestId)
+                    #endif
+                }
+
+                dbg("ACTION", "reserve ok \(reservationId.prefix(8))")
+
                 #if DEBUG || RESERVATIONS_DIAGNOSTICS
-                try await api.reservePost(post.id, requestId: requestId, corr: corr)
-                #else
-                try await api.reservePost(post.id, requestId: requestId)
+                Diag.log(.store, "reserve.success", fields: [
+                    "corr": corr,
+                    "reservationId": reservationId,
+                    "postId": post.id
+                ])
+                Diag.assertMainThread(corr: corr, context: "reserve.state_update")
                 #endif
-            }
-            
-            dbg("ACTION", "reserve ok \(reservationId.prefix(8))")
 
-            #if DEBUG || RESERVATIONS_DIAGNOSTICS
-            Diag.log(.store, "reserve.success", fields: [
-                "corr": corr,
-                "reservationId": reservationId,
-                "postId": post.id
-            ])
-            Diag.assertMainThread(corr: corr, context: "reserve.state_update")
-            #endif
-
-            if !didRemovePlaceholder {
                 postOptimisticReservationRemove(tempId)
-                didRemovePlaceholder = true
-            }
-            let optimisticRow = ReservationRow(optimisticFrom: post, reservationId: reservationId)
-            postOptimisticReservationInsert(optimisticRow)
-            NotificationCenter.default.post(name: .refreshReservations, object: reservationId)
-            
-            // Trigger card animation
-            try await deckState.triggerReserve()
-            
-            // Mark locally (2h TTL) and remove card
-            markReserved(postId: post.id)
-            
-            // Analytics: ReservationMade (consent-gated)
-            trackReservationMade(post: post)
-            
-            // Trigger feed refresh via notification
-            FeedViewModel.requestFeedRefresh()
+                let optimisticRow = ReservationRow(optimisticFrom: post, reservationId: reservationId)
+                postOptimisticReservationInsert(optimisticRow)
+                NotificationCenter.default.post(name: .refreshReservations, object: reservationId)
 
-            // Show success toast
-            successMessage = "Reserved for 2h 🎉"
-            showSuccess = true
-            
-            // Haptic feedback for successful reservation
-            Haptics.play(.success)
-            
-            isReserving = false
-            deckState.isActing = false
-            
-            // Hide success after 2 seconds
-            Task {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                showSuccess = false
-            }
-            
-        } catch let error as ReserveError {
-            dbg("ACTION", "reserve fail \(error.localizedDescription)")
-            
-            #if DEBUG || RESERVATIONS_DIAGNOSTICS
-            Diag.log(.error, "reserve.failed", fields: [
-                "corr": corr,
-                "errorType": "ReserveError",
-                "error": error.localizedDescription
-            ])
-            #endif
-            
-            if !didRemovePlaceholder {
-                postOptimisticReservationRemove(tempId)
-                didRemovePlaceholder = true
-            }
-            
-            isReserving = false
-            deckState.isActing = false
-            
-            // Map error to user-friendly message
-            switch error {
-            case .ownPost:
-                errorMessage = "You can't reserve your own post"
-            case .alreadyReserved:
-                errorMessage = "Already reserved by someone else"
-            case .expired:
-                errorMessage = "This post has expired"
-            case .unauthorized:
+                // Analytics: ReservationMade (consent-gated)
+                trackReservationMade(post: post)
+            } catch {
                 #if DEBUG || RESERVATIONS_DIAGNOSTICS
-                Diag.logAuthStateChange(corr: corr, event: "auth.unauthorized", reason: "reserve failed with 401")
+                Diag.log(.error, "reserve.failed", fields: [
+                    "corr": corr,
+                    "errorType": error is ReserveError ? "ReserveError" : "unknown",
+                    "error": error.localizedDescription
+                ])
+                if case ReserveError.unauthorized = error {
+                    Diag.logAuthStateChange(corr: corr, event: "auth.unauthorized", reason: "reserve failed with 401")
+                }
                 #endif
-                errorMessage = "Please sign in again to continue."
-                showAuthError = true
-            case .notFound:
-                errorMessage = "Post not found"
-            case .backend(let msg):
-                errorMessage = msg
-            case .network:
-                errorMessage = "Can't reach the server right now. Please try again."
+                rollbackOptimisticReserve(post: post, tempId: tempId, error: error)
             }
-            
-            // Haptic feedback for reservation errors
-            Haptics.play(.error)
-            
-            showError = true
-            
-        } catch {
-            dbg("ACTION", "reserve fail \(error.localizedDescription)")
-            
-            #if DEBUG || RESERVATIONS_DIAGNOSTICS
-            Diag.log(.error, "reserve.failed", fields: [
-                "corr": corr,
-                "errorType": "unknown",
-                "error": error.localizedDescription
-            ])
-            #endif
-            
-            if !didRemovePlaceholder {
-                postOptimisticReservationRemove(tempId)
+        }
+    }
+
+    /// Undo the optimistic reserve: drop the placeholder reservation and, when
+    /// the item is still available (network/server hiccup), put the card back
+    /// on top of the deck so the user can retry.
+    @MainActor
+    private func rollbackOptimisticReserve(post: Post, tempId: String, error: Error) {
+        dbg("ACTION", "reserve fail \(error.localizedDescription)")
+
+        postOptimisticReservationRemove(tempId)
+        showSuccess = false
+        Haptics.play(.error)
+
+        let message: String
+        var cardStillAvailable = false
+
+        switch error as? ReserveError {
+        case .ownPost:
+            message = "You can't reserve your own post"
+        case .alreadyReserved:
+            message = "Already reserved by someone else"
+        case .expired:
+            message = "This post has expired"
+        case .notFound:
+            message = "Post not found"
+        case .unauthorized:
+            errorMessage = "Please sign in again to continue."
+            showAuthError = true
+            return
+        case .backend(let msg):
+            message = msg
+            cardStillAvailable = true
+        case .network:
+            message = "Can't reach the server right now. Please try again."
+            cardStillAvailable = true
+        case nil:
+            message = "Couldn't reserve this item. Please try again."
+            cardStillAvailable = true
+        }
+
+        if cardStillAvailable {
+            reservedIds.remove(post.id)
+            HiddenPostsStore.shared.saveReserved(reservedIds)
+            deckState.filterItems(visible)
+            if let idx = (deckState.items as? [Post])?.firstIndex(where: { $0.id == post.id }) {
+                deckState.activeIndex = idx
             }
-            
-            isReserving = false
-            deckState.isActing = false
-            
-            errorMessage = "Couldn't reserve this item. Please try again."
-            
-            // Haptic feedback for generic error
-            Haptics.play(.error)
-            
-            showError = true
+        }
+
+        deckState.errorMessage = message
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if deckState.errorMessage == message {
+                deckState.errorMessage = nil
+            }
         }
     }
     
@@ -1029,7 +1044,7 @@ CATransaction.commit()
             dbg("FEED", "self-filter removed=\(fetchedPosts.count - filtered.count)")
 
             lastServerPayload = Set(filtered.map { $0.id })
-            feedVM.items = filtered
+            feedVM.setBaseItems(filtered)
             let visiblePosts = visible
             deckState.updateItems(visiblePosts)
 
@@ -1119,10 +1134,21 @@ CATransaction.commit()
     }
 
     @MainActor
-    private func loadFeedWithOneShotLocation() async {
+    private func loadFeedWithOneShotLocation(force: Bool = false) async {
         guard !feedVM.isLoading else { return } // Don't re-fetch if FeedViewModel is already loading
         showError = false
         showAuthError = false
+
+        // First run: request authorization so the permission dialog appears.
+        // A location fix can't arrive until the user answers — firstFix would
+        // just time out and we'd fetch with a garbage coordinate. Show loading
+        // and let handleLocationAuthChange kick off the real fetch (or clear
+        // loading on denial) once the user responds.
+        if LocationService.shared.mgr.authorizationStatus == .notDetermined {
+            isLoading = true
+            LocationService.shared.requestWhenInUseIfNeeded()
+            return
+        }
 
         do {
             let fix = try await LocationService.shared.firstFix(preferFreshWithin: 1_000)
@@ -1137,7 +1163,11 @@ CATransaction.commit()
             let sourceLabel = fix.source == .fresh ? "fresh" : "cached"
             DLog("[FEED gate] strategy=preferFreshWithin(1000ms) result=\(sourceLabel) age=\(String(format: "%.1f", fix.age))s hdop=\(String(format: "%.1f", fix.hdop))m")
             #endif
-            feedVM.refresh(currentLocation: coord)
+            if force {
+                feedVM.forceRefresh(currentLocation: coord)
+            } else {
+                feedVM.refresh(currentLocation: coord)
+            }
             lastFeedFetchAt = Date()
             lastGateFix = fix
             authStatusAtLastFetch = Int(LocationService.shared.mgr.authorizationStatus.rawValue)
@@ -1149,18 +1179,32 @@ CATransaction.commit()
             }
         } catch {
             #if DEBUG
-            DLog("[FEED gate] skip (reason=no-usable-location error=\(error.localizedDescription))")
+            DLog("[FEED gate] location unavailable (error=\(error.localizedDescription))")
             #endif
-            isLoading = false
-            // Don't show error - just show empty state
+            // Only fetch with a real cached coordinate. The old hardcoded
+            // (1.0, 1.0) fallback queried the middle of the Atlantic, returned
+            // zero posts, and blocked the permission-grant refetch while in
+            // flight — the "first load shows nothing" bug.
+            if let fallback = LocationService.shared.lastKnownCoordinate,
+               LocationReadiness.isUsable(fallback) {
+                if force {
+                    feedVM.forceRefresh(currentLocation: fallback)
+                } else {
+                    feedVM.refresh(currentLocation: fallback)
+                }
+            } else {
+                isLoading = false
+            }
         }
     }
-    
+
     // MARK: - Helper Functions
 
     @MainActor
     private func fetchFeedBridge() async {
-        await loadFeedWithOneShotLocation()
+        // User-initiated (pull-to-refresh, retry, post-upload, post-reserve):
+        // always hit the network, bypassing the same-location skip guard.
+        await loadFeedWithOneShotLocation(force: true)
     }
 
     private func scheduleMaterialImprovementCheck(baseline: LocationFixResult) {
@@ -1213,6 +1257,11 @@ CATransaction.commit()
         guard svc.hasAuthToken, didKickOff == false else { return }
         guard !didKickOff else { return }
         didKickOff = true
+        // Restore the TTL'd hidden sets — without this, posts dismissed or
+        // reserved in a previous session reappear (and the in-memory sets the
+        // visible filter uses start out of sync with storage).
+        dismissedIds = HiddenPostsStore.shared.loadDismissed()
+        reservedIds = HiddenPostsStore.shared.loadReserved()
         await loadFeedWithOneShotLocation()
     }
 }
@@ -1345,7 +1394,7 @@ extension SwipeDeckView {
                         onPass: onPass,
                         onReserve: onReserve
                     )
-                    .id("active-\(cardIdentity(activeCard))")
+                    .id(cardIdentity(activeCard))
                     .zIndex(2)
                     .allowsHitTesting(!deckState.isAnimating && !isReserving)
                 }
@@ -1359,7 +1408,7 @@ extension SwipeDeckView {
                         onPass: {},
                         onReserve: {}
                     )
-                    .id("next-\(cardIdentity(nextCard))")
+                    .id(cardIdentity(nextCard))
                     .zIndex(1)
                     .allowsHitTesting(false)
                 }
@@ -1684,15 +1733,13 @@ extension SwipeDeckView {
         private var bannerOverlay: some View {
             VStack {
                 if let mapError {
-                    Text(mapError)
-                        .font(.footnote)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.black.opacity(0.75))
-                        .clipShape(Capsule())
-                        .padding(.top, 64)
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                    SwoopyToast(
+                        message: mapError,
+                        style: mapError.hasPrefix("Reserved") ? .success : .info
+                    )
+                    .padding(.top, 64)
+                    .padding(.horizontal)
+                    .transition(.move(edge: .top).combined(with: .opacity))
                 }
                 Spacer()
             }
@@ -2165,10 +2212,9 @@ extension SwipeDeckView {
 
             fetchCountThisPan += 1
             isFetching = true
-            defer { 
+            defer {
                 isFetching = false
-                lastFetchedCoordKey = coordKey
-                
+
                 let ms = Int(Date().timeIntervalSince(start) * 1000)
                 Metrics.avgFeedMs(ms)
                 Metrics.fetchCountPerPan(fetchCountThisPan)
@@ -2194,8 +2240,11 @@ extension SwipeDeckView {
                             try await api.getFeed(query: query)
                         }
                         posts = result
-                        feedVM.items = result
+                        feedVM.setBaseItems(result)
                         mapError = nil
+                        // Only record the fetched coordinate on success so a
+                        // cancelled fetch doesn't suppress the debounced retry.
+                        lastFetchedCoordKey = coordKey
                         pruneSelectionIfNeeded()
                         dbg("MAP", "loaded \(result.count) posts")
                         return
@@ -2220,6 +2269,16 @@ extension SwipeDeckView {
                     throw TimeoutError.timedOut
                 }
             } catch {
+                // A cancelled fetch (user panned/zoomed again before it finished)
+                // is not a failure — the debounced follow-up fetch will refresh.
+                let nsError = error as NSError
+                if error is CancellationError
+                    || (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled)
+                    || Task.isCancelled {
+                    dbg("MAP", "fetch cancelled (region changed) — staying silent")
+                    return
+                }
+
                 dbg("MAP", "Failed to fetch posts: \(error.localizedDescription)")
                 // Only show error if we have no posts to display
                 if posts.isEmpty {
@@ -2289,7 +2348,7 @@ extension SwipeDeckView {
                 let optimisticRow = ReservationRow(optimisticFrom: post, reservationId: reservationId)
                 postOptimisticReservationInsert(optimisticRow)
                 NotificationCenter.default.post(name: .refreshReservations, object: reservationId)
-                let successMessage = "Reserved for 2h 🎉"
+                let successMessage = "Reserved for 2 hours"
                 mapError = successMessage
                 collapseAll(reason: .dismiss)
                 scheduleBannerDismiss(for: successMessage)

@@ -30,7 +30,7 @@ final class BlockStore: ObservableObject {
         addLocal(userId: userId)
         do {
             async let blockCall: Void = api.blockUser(userId: userId)
-            async let reportCall = api.reportUser(userId: userId)
+            async let reportCall = api.reportUser(userId: userId, category: .harassmentOrAbuse, notes: nil)
             _ = try await (blockCall, reportCall)
         } catch {
             #if DEBUG
@@ -73,10 +73,8 @@ final class BlockStore: ObservableObject {
         do {
             let ids = try await api.fetchMyBlocks()
             let uuids = ids.compactMap(UUID.init)
-            if !uuids.isEmpty {
-                blockedIds = Set(uuids)
-                persist()
-            }
+            blockedIds = Set(uuids)
+            persist()
         } catch {
             // Ignore remote failure; keep local cache
         }

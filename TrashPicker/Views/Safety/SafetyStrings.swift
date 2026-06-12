@@ -4,7 +4,6 @@
 //
 //  Localized strings for UGC Safety & Report System
 //
-
 import Foundation
 
 enum SafetyStrings {
@@ -21,19 +20,18 @@ enum SafetyStrings {
     static let blockConfirmBody = NSLocalizedString("They won't be able to contact you or reserve your posts.", comment: "Block confirmation body")
     static let blocked = NSLocalizedString("User blocked.", comment: "User blocked success message")
     static let unblock = NSLocalizedString("Unblock", comment: "Unblock button")
-    static let demoHint = NSLocalizedString("Demo: this uses a mock response for App Review.", comment: "Demo mode hint")
-    
+
     // Category labels
     static let categorySpam = NSLocalizedString("Spam", comment: "Report category: Spam")
-    static let categoryHarassment = NSLocalizedString("Harassment or Abuse", comment: "Report category: Harassment")
-    static let categoryHate = NSLocalizedString("Hate or Violence", comment: "Report category: Hate")
-    static let categoryFraud = NSLocalizedString("Fraud or Scam", comment: "Report category: Fraud")
-    static let categoryIllegal = NSLocalizedString("Illegal or Unsafe", comment: "Report category: Illegal")
+    static let categoryHarassment = NSLocalizedString("Harassment / Abuse", comment: "Report category: Harassment")
+    static let categoryHate = NSLocalizedString("Hate / Violence", comment: "Report category: Hate")
+    static let categoryFraud = NSLocalizedString("Fraud / Scam", comment: "Report category: Fraud")
+    static let categoryIllegal = NSLocalizedString("Illegal Item / Activity", comment: "Report category: Illegal")
     static let categoryInappropriate = NSLocalizedString("Inappropriate Content", comment: "Report category: Inappropriate")
     static let categoryNudity = NSLocalizedString("Nudity or Sexual Content", comment: "Report category: Nudity")
     static let categoryImpersonation = NSLocalizedString("Impersonation", comment: "Report category: Impersonation")
     static let categoryOther = NSLocalizedString("Other", comment: "Report category: Other")
-    
+
     // Moderation banners
     static let underReview = NSLocalizedString("Under review", comment: "Content under review banner")
     static let removed = NSLocalizedString("Removed for review", comment: "Content removed banner")

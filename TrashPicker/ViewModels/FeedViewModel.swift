@@ -67,6 +67,12 @@ final class FeedViewModel: ObservableObject {
         }
     }
     
+    /// Update base items from an external fetch (map view, inline fetch) and apply block/hidden filter.
+    func setBaseItems(_ newItems: [Post]) {
+        baseItems = newItems
+        applyBlockFilter()
+    }
+
     /// Force refresh regardless of location similarity (for post-upload triggers)
     func forceRefresh(currentLocation: CLLocationCoordinate2D, radiusKm: Double = 10.0) {
         currentTask?.cancel()

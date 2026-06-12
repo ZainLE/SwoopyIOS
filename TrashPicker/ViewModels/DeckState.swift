@@ -15,6 +15,9 @@ class DeckState: ObservableObject {
     @Published var isAnimating: Bool = false
     @Published var isActing: Bool = false
     @Published var errorMessage: String?
+    /// Direction the active card is exiting in, so the card view can run the
+    /// fly-off animation even when the action came from a button tap.
+    @Published var exitDirection: TransitionDirection?
     
     // Computed properties
     var hasCards: Bool { !items.isEmpty }
@@ -37,57 +40,63 @@ class DeckState: ObservableObject {
         isAnimating = false
         isActing = false
     }
+
+    /// Update items while preserving the current card position (for filter updates, not full reloads).
+    func filterItems<T: Identifiable>(_ newItems: [T]) where T.ID: Equatable {
+        let typedCurrent = items as? [T]
+        let currentId: T.ID? = (typedCurrent != nil && activeIndex < (typedCurrent?.count ?? 0))
+            ? typedCurrent?[activeIndex].id
+            : nil
+        items = newItems
+        if let id = currentId, let newIndex = newItems.firstIndex(where: { $0.id == id }) {
+            activeIndex = newIndex
+        } else {
+            activeIndex = min(activeIndex, max(0, newItems.count - 1))
+        }
+    }
     
+    /// Matches the 0.3s fly-off animation in FeedCard's drag gesture; we advance
+    /// just before the gesture's dragOffset reset fires so the old card view is
+    /// gone before it could snap back to center.
+    private let cardExitDuration: UInt64 = 280_000_000
+
     func triggerPass() async {
-        guard canAct, let card = activeCard else { return }
-        
+        await triggerAdvance(direction: .left)
+    }
+
+    func triggerReserve() async {
+        await triggerAdvance(direction: .right)
+    }
+
+    private func triggerAdvance(direction: TransitionDirection) async {
+        guard canAct, activeCard != nil else { return }
+
         isActing = true
         defer { isActing = false }
-        
-        do {
-            // Start animation
-            await startCardTransition(direction: .left)
-            
-            // Remove card and advance
-            await advanceToNextCard()
-            
-        } catch {
-            await handleError("Failed to pass item")
-        }
+
+        // Keep the next card staged (visible) while the active card flies off.
+        await startCardTransition(direction: direction)
+        try? await Task.sleep(nanoseconds: cardExitDuration)
+
+        // Remove card and advance
+        advanceToNextCard()
     }
-    
-    func triggerReserve() async throws {
-        guard canAct, let card = activeCard else { return }
-        
-        isActing = true
-        
-        do {
-            // Start animation
-            await startCardTransition(direction: .right)
-            
-            // The actual reservation will be handled by the parent view
-            // This just manages the UI state transition
-            
-        } catch {
-            await handleError("Failed to reserve item")
-            isActing = false
-            throw error
-        }
-    }
-    
+
     // MARK: - Internal State Management
-    
+
     @MainActor
     private func startCardTransition(direction: TransitionDirection) async {
+        exitDirection = direction
         isAnimating = true
-        
+
         // Animation will be handled by the view layer
         // This just manages the state flags
     }
-    
+
     @MainActor
     func completeCardTransition() {
         isAnimating = false
+        exitDirection = nil
     }
     
     @MainActor
@@ -102,8 +111,9 @@ class DeckState: ObservableObject {
         if activeIndex >= items.count && !items.isEmpty {
             activeIndex = items.count - 1
         }
-        
+
         isAnimating = false
+        exitDirection = nil
     }
     
     @MainActor

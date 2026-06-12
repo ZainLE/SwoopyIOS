@@ -131,18 +131,23 @@ final class PhoneOTPViewModel: ObservableObject {
             verificationId = nil
             logAppCheckStatus()
             
-            if supabase.serverProfile?.phone != normalized {
-                do {
-                    try await supabase.updateProfileWithOnboarding(phone: normalized)
-                } catch {
-                    phase = .idle
-                    errorMessage = friendlyError(error)
-                    logDiagnostics(context: "updateProfile", error: error as NSError?)
-                    return
+            // Run the backend profile update concurrently with the Firebase SMS
+            // request — the backend only needs the phone saved before verify
+            // (which happens after the user types the code), so serializing the
+            // two round-trips here just delays the SMS.
+            let profileTask: Task<Void, Error>? = (supabase.serverProfile?.phone != normalized)
+                ? Task { [supabase] in try await supabase.updateProfileWithOnboarding(phone: normalized) }
+                : nil
+
+            do {
+                try await sendFirebaseCode(to: normalized)
+                if let profileTask {
+                    try await profileTask.value
                 }
+            } catch {
+                profileTask?.cancel()
+                throw error
             }
-            
-            try await sendFirebaseCode(to: normalized)
             if isResend {
                 remainingResends = max(0, remainingResends - 1)
             }
@@ -432,7 +437,10 @@ final class PhoneOTPViewModel: ObservableObject {
             throw SimpleError(message: "Could not verify phone. Please try again.")
         }
         return try await withCheckedThrowingContinuation { continuation in
-            user.getIDTokenForcingRefresh(true) { token, error in
+            // The sign-in that just completed already minted a fresh ID token
+            // with the phone claim; forcing another mint here is a wasted
+            // network round-trip that made "Verify Now" feel slow.
+            user.getIDTokenForcingRefresh(false) { token, error in
                 if let error {
                     continuation.resume(throwing: error)
                     return

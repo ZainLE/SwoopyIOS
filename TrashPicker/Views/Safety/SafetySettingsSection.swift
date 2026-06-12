@@ -9,8 +9,7 @@ import SwiftUI
 
 struct SafetySettingsSection: View {
     @AppStorage("feature_safety_v1") private var featureSafety = true
-    @AppStorage("safety_demo_mode") private var demoMode = true
-    
+
     var body: some View {
         Section {
             // Feature flag toggle
@@ -19,48 +18,17 @@ struct SafetySettingsSection: View {
                     Text("Safety Features")
                         .font(AppTheme.Typography.body)
                         .foregroundColor(AppTheme.ColorToken.text)
-                    
+
                     Text("Report content and block users")
                         .font(AppTheme.Typography.footnote)
                         .foregroundColor(AppTheme.ColorToken.mutedGray)
                 }
             }
             .tint(AppTheme.ColorToken.primary)
-            
-            // Demo mode toggle (for App Review)
-            Toggle(isOn: $demoMode) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text("Demo Mode")
-                            .font(AppTheme.Typography.body)
-                            .foregroundColor(AppTheme.ColorToken.text)
-                        
-                        Image(systemName: "checkmark.seal.fill")
-                            .font(.system(size: 14))
-                            .foregroundColor(AppTheme.ColorToken.accent)
-                    }
-                    
-                    Text("For App Review: uses mock responses")
-                        .font(AppTheme.Typography.footnote)
-                        .foregroundColor(AppTheme.ColorToken.mutedGray)
-                }
-            }
-            .tint(AppTheme.ColorToken.primary)
-            
+
         } header: {
             Text("Safety & Moderation")
                 .font(AppTheme.Typography.headline)
-        } footer: {
-            if demoMode {
-                HStack(spacing: 8) {
-                    Image(systemName: "info.circle")
-                        .foregroundColor(AppTheme.ColorToken.accent)
-                    Text("Demo mode is active. Reports will use mock responses for testing.")
-                        .font(AppTheme.Typography.footnote)
-                        .foregroundColor(AppTheme.ColorToken.mutedGray)
-                }
-                .padding(.top, 8)
-            }
         }
     }
 }

@@ -87,6 +87,8 @@ struct PhoneNumberField: View {
         }
         .sheet(isPresented: $isPickerPresented) {
             CountryPickerSheet(selected: $country)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
     }
     
