@@ -77,9 +77,20 @@ struct LeaderboardView: View {
 
     @State private var loadState: LoadState = .loading
 
+    /// Rows as currently rendered. Usually mirrors the response order, but the
+    /// rank-up animation briefly holds the caller's row at its previous
+    /// position before sliding it up (Task: Duolingo-style rank-up).
+    @State private var displayEntries: [LeaderboardEntry] = []
+    @State private var pulsingMyRow = false
+    @State private var rankUpTask: Task<Void, Never>?
+
     private let primaryColor = Color(hex: "00513F")
     private let accentColor = Color(hex: "B4DD4E")
     private let mutedColor = Color(hex: "656565")
+
+    /// Never slide the caller's row more than this many positions — beyond
+    /// that the theater stops reading as "my row moved" inside a LazyVStack.
+    private static let maxRankUpSlide = 4
 
     private var myUserId: String? {
         svc.userId?.uuidString.lowercased()
@@ -106,6 +117,7 @@ struct LeaderboardView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await load() }
         .refreshable { await load() }
+        .onDisappear { rankUpTask?.cancel() }
     }
 
     @MainActor
@@ -113,6 +125,7 @@ struct LeaderboardView: View {
         do {
             let response = try await api.getLeaderboard()
             loadState = .loaded(response)
+            prepareDisplayEntries(response)
         } catch {
             DLog("[LEADERBOARD] load failed: \(error.localizedDescription)")
             if case .loaded = loadState { return } // keep stale data on refresh failure
@@ -120,17 +133,97 @@ struct LeaderboardView: View {
         }
     }
 
-    /// The caller's in-list row: matched by user id, with the caller's rank
-    /// from `me` as a fallback so a missing/differently-formatted user_id
-    /// can't produce a duplicate pinned "You" row.
-    private func isCallerRow(_ entry: LeaderboardEntry, me: LeaderboardMe?) -> Bool {
-        if let myUserId, let entryId = entry.userId?.lowercased(), entryId == myUserId {
-            return true
+    // MARK: - Rank-up animation
+
+    /// Scoped by userId (prevents cross-account leakage) and week start (a new
+    /// week resets everyone's rank, so last week's number is meaningless).
+    private func lastSeenRankKey(weekStart: String?) -> String? {
+        guard let myUserId else { return nil }
+        return "leaderboard.lastSeenRank.\(myUserId).\(weekStart ?? "unknown-week")"
+    }
+
+    /// Decides what the list initially shows. If the caller's rank improved
+    /// since the last visit and their row is visible, render it at its old
+    /// position first, then slide it up so the progress is felt, not implied.
+    @MainActor
+    private func prepareDisplayEntries(_ response: LeaderboardResponse) {
+        rankUpTask?.cancel()
+        pulsingMyRow = false
+
+        let entries = response.entries
+        let myIndex = entries.firstIndex(where: isCallerRow)
+        let currentRank = myIndex.flatMap { entries[$0].rank } ?? response.me?.rank
+
+        var lastSeenRank: Int?
+        if let key = lastSeenRankKey(weekStart: response.weekStart) {
+            lastSeenRank = UserDefaults.standard.object(forKey: key) as? Int
+            if let currentRank {
+                UserDefaults.standard.set(currentRank, forKey: key)
+            }
         }
-        if let meRank = me?.rank, let entryRank = entry.rank, meRank == entryRank {
-            return true
+
+        guard
+            let myIndex,
+            let currentRank,
+            let lastSeenRank,
+            currentRank < lastSeenRank
+        else {
+            displayEntries = entries
+            return
         }
-        return false
+
+        let steps = min(lastSeenRank - currentRank, Self.maxRankUpSlide)
+        let startIndex = min(entries.count - 1, myIndex + steps)
+        guard startIndex > myIndex else {
+            displayEntries = entries
+            return
+        }
+
+        var initial = entries
+        let myRow = initial.remove(at: myIndex)
+        initial.insert(myRow, at: startIndex)
+        displayEntries = initial
+        runRankUpAnimation(from: startIndex, to: myIndex)
+    }
+
+    /// Slides the caller's row up one position at a time with a spring, a
+    /// haptic tick per row passed, and a success haptic + highlight pulse on
+    /// arrival.
+    @MainActor
+    private func runRankUpAnimation(from startIndex: Int, to endIndex: Int) {
+        rankUpTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+
+            var index = startIndex
+            while index > endIndex {
+                guard Task.isCancelled == false else { return }
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                    displayEntries.swapAt(index, index - 1)
+                }
+                Haptics.play(.tabSelect)
+                index -= 1
+                try? await Task.sleep(nanoseconds: 350_000_000)
+            }
+
+            guard Task.isCancelled == false else { return }
+            Haptics.play(.success)
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                pulsingMyRow = true
+            }
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            withAnimation(.easeOut(duration: 0.4)) {
+                pulsingMyRow = false
+            }
+        }
+    }
+
+    /// The caller's in-list row, matched strictly by user id (case-insensitive).
+    /// Never fall back to rank equality: ties share a rank, so that would mark
+    /// someone else's row as "(you)". If the caller's row can't be identified
+    /// by id, the pinned "You" row below the list covers them instead.
+    private func isCallerRow(_ entry: LeaderboardEntry) -> Bool {
+        guard let myUserId, let entryId = entry.userId?.lowercased() else { return false }
+        return entryId == myUserId
     }
 
     private func displayName(for entry: LeaderboardEntry) -> String {
@@ -143,7 +236,8 @@ struct LeaderboardView: View {
 
     @ViewBuilder
     private func board(_ response: LeaderboardResponse) -> some View {
-        let isMeInList = response.entries.contains { isCallerRow($0, me: response.me) }
+        let isMeInList = response.entries.contains(where: isCallerRow)
+        let rows = displayEntries.isEmpty ? response.entries : displayEntries
 
         VStack(spacing: 0) {
             header(response)
@@ -157,14 +251,14 @@ struct LeaderboardView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(response.entries) { entry in
+                        ForEach(rows) { entry in
                             entryRow(
                                 rank: entry.rank,
                                 name: displayName(for: entry),
                                 avatarUrl: entry.avatarUrl.flatMap { URL(string: $0) },
                                 tier: entry.tier,
                                 pickups: entry.weeklyPickups,
-                                isMe: isCallerRow(entry, me: response.me)
+                                isMe: isCallerRow(entry)
                             )
                         }
                     }
@@ -195,6 +289,39 @@ struct LeaderboardView: View {
         .background(accentColor.opacity(0.25))
     }
 
+    /// Visual treatment for a podium position (#1–#3). Text stays `.primary`
+    /// and the accent lives in translucent gradients and strokes, so both
+    /// light and dark mode keep full legibility.
+    private struct PodiumAccent {
+        let color: Color
+        let icon: String
+        let fillOpacity: Double
+        let strokeWidth: CGFloat
+        let avatarSize: CGFloat
+    }
+
+    private func podiumAccent(_ rank: Int?) -> PodiumAccent? {
+        switch rank {
+        case 1:
+            return PodiumAccent(
+                color: Color(hex: "E0A81C"), icon: "crown.fill",
+                fillOpacity: 0.38, strokeWidth: 2, avatarSize: 44
+            )
+        case 2:
+            return PodiumAccent(
+                color: Color(hex: "8E99A8"), icon: "medal.fill",
+                fillOpacity: 0.26, strokeWidth: 1.5, avatarSize: 40
+            )
+        case 3:
+            return PodiumAccent(
+                color: Color(hex: "B0713A"), icon: "medal.fill",
+                fillOpacity: 0.26, strokeWidth: 1.5, avatarSize: 40
+            )
+        default:
+            return nil
+        }
+    }
+
     private func entryRow(
         rank: Int?,
         name: String,
@@ -203,17 +330,33 @@ struct LeaderboardView: View {
         pickups: Int,
         isMe: Bool
     ) -> some View {
-        HStack(spacing: 12) {
-            Text(rank.map { "#\($0)" } ?? "–")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundColor(rankColor(rank))
-                .frame(width: 40, alignment: .leading)
+        let accent = podiumAccent(rank)
+        let isPulsing = isMe && pulsingMyRow
 
-            avatar(avatarUrl, name: name)
+        return HStack(spacing: 12) {
+            HStack(spacing: 3) {
+                if let accent {
+                    Image(systemName: accent.icon)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(accent.color)
+                }
+                Text(rank.map { "#\($0)" } ?? "–")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(accent?.color ?? mutedColor)
+            }
+            .frame(width: 44, alignment: .leading)
+
+            avatar(avatarUrl, name: name, size: accent?.avatarSize ?? 38)
+                .overlay(
+                    Circle().strokeBorder(
+                        accent?.color ?? .clear,
+                        lineWidth: accent?.strokeWidth ?? 0
+                    )
+                )
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(isMe && name != "You" ? "\(name) (you)" : name)
-                    .font(.system(size: 15, weight: isMe ? .semibold : .medium))
+                    .font(.system(size: 15, weight: isMe || accent != nil ? .semibold : .medium))
                     .foregroundColor(.primary)
                     .lineLimit(1)
 
@@ -235,10 +378,39 @@ struct LeaderboardView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(
+        .background(rowBackground(accent: accent, isMe: isMe))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(
+                    isPulsing ? accentColor : (accent?.color.opacity(0.55) ?? .clear),
+                    lineWidth: isPulsing ? 2.5 : (accent?.strokeWidth ?? 0)
+                )
+        )
+        .scaleEffect(isPulsing ? 1.03 : 1)
+    }
+
+    @ViewBuilder
+    private func rowBackground(accent: PodiumAccent?, isMe: Bool) -> some View {
+        if let accent {
+            RoundedRectangle(cornerRadius: 14)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            accent.color.opacity(accent.fillOpacity),
+                            accent.color.opacity(accent.fillOpacity * 0.35)
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .background(
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(Color(.secondarySystemBackground))
+                )
+        } else {
             RoundedRectangle(cornerRadius: 14)
                 .fill(isMe ? accentColor.opacity(0.35) : Color(.secondarySystemBackground))
-        )
+        }
     }
 
     private func pinnedMeRow(_ me: LeaderboardMe) -> some View {
@@ -259,7 +431,7 @@ struct LeaderboardView: View {
     }
 
     @ViewBuilder
-    private func avatar(_ url: URL?, name: String) -> some View {
+    private func avatar(_ url: URL?, name: String, size: CGFloat = 38) -> some View {
         if let url {
             ResilientAsyncImage(url: url) { phase in
                 switch phase {
@@ -267,33 +439,26 @@ struct LeaderboardView: View {
                     image
                         .resizable()
                         .scaledToFill()
-                        .frame(width: 38, height: 38)
+                        .frame(width: size, height: size)
                         .clipShape(Circle())
                 default:
-                    avatarFallback(name)
+                    avatarFallback(name, size: size)
                 }
             }
         } else {
-            avatarFallback(name)
+            avatarFallback(name, size: size)
         }
     }
 
-    private func avatarFallback(_ name: String) -> some View {
+    private func avatarFallback(_ name: String, size: CGFloat = 38) -> some View {
         Circle()
             .fill(primaryColor.opacity(0.15))
-            .frame(width: 38, height: 38)
+            .frame(width: size, height: size)
             .overlay(
                 Text(String(name.prefix(1)))
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(primaryColor)
             )
-    }
-
-    private func rankColor(_ rank: Int?) -> Color {
-        switch rank {
-        case 1, 2, 3: return LeaderboardTier.legend.color
-        default: return mutedColor
-        }
     }
 
     private func weekLabel(from weekStart: String?) -> String {

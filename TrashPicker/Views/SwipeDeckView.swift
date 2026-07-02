@@ -646,7 +646,7 @@ struct SwipeDeckView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarLeading) {
+        ToolbarItem(placement: .navigationBarTrailing) {
             LeaderboardPill(isOpen: $showLeaderboard)
         }
         ToolbarItem(placement: .principal) {
