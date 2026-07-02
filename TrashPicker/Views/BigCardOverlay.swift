@@ -31,6 +31,8 @@ struct BigCardOverlay: View {
     let variant: Variant
     let deadline: Date?
     let reservationActionConfig: ReservationActionBarConfiguration?
+    /// Overrides the success label shown by the `.completed` variant.
+    let completedMessage: String?
 
     // Actions
     let onDismiss: () -> Void
@@ -146,6 +148,7 @@ struct BigCardOverlay: View {
         variant: Variant,
         deadline: Date? = nil,
         reservationActionConfig: ReservationActionBarConfiguration? = nil,
+        completedMessage: String? = nil,
         onDismiss: @escaping () -> Void,
         onPrimaryAction: @escaping () -> Void,
         onSecondaryAction: @escaping () -> Void,
@@ -169,6 +172,7 @@ struct BigCardOverlay: View {
         self.variant = variant
         self.deadline = deadline
         self.reservationActionConfig = reservationActionConfig
+        self.completedMessage = completedMessage
         self.onDismiss = onDismiss
         self.onPrimaryAction = onPrimaryAction
         self.onSecondaryAction = onSecondaryAction
@@ -548,24 +552,30 @@ extension BigCardOverlay {
                     Text(ownerName)
                         .font(.system(size: 16, weight: .medium))
                         .foregroundColor(.primary)
-                    
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
                     if let memberSince = memberSince {
                         Text("Member since \(formatMemberSince(memberSince))")
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
                     }
                 }
-                
-                Spacer()
-                
-                if let pickupsCount = pickupsCount {
+
+                Spacer(minLength: 8)
+
+                if let pickupsCount = pickupsCount, pickupsCount >= 1 {
                     Text("\(pickupsCount) Pickups")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(primaryColor)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .background(accentColor)
                         .clipShape(Capsule())
+                        .layoutPriority(1)
                 }
             }
             
@@ -736,7 +746,7 @@ extension BigCardOverlay {
             }
         case .completed:
             VStack(spacing: 12) {
-                Label("Reservation complete", systemImage: "checkmark.seal.fill")
+                Label(completedMessage ?? "Reservation complete", systemImage: "checkmark.seal.fill")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(successColor)
 

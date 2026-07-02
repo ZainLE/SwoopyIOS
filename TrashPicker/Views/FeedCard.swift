@@ -180,13 +180,11 @@ struct FeedCard: View {
         return nil
     }
     
-    private var itemInterestedCount: Int? {
-        if let ckItem = item as? CKTrashItem {
-            return ckItem.interestedCount
-        } else if let post = item as? Post {
+    private var itemOwnerPickupsCount: Int? {
+        if let post = item as? Post {
             return post.owner?.pickedCount
         }
-        return nil
+        return nil // CKTrashItem doesn't carry owner pickup stats
     }
 
     // MARK: - Computed Strings
@@ -600,7 +598,7 @@ struct FeedCard: View {
                 ownerAvatarUrl: itemOwnerAvatarUrl,
                 ownerId: itemOwnerId,
                 memberSince: itemCreatedAt,
-                pickupsCount: itemInterestedCount,
+                pickupsCount: itemOwnerPickupsCount,
                 variant: .feed,
                 onDismiss: {
                     showDetailOverlay = false
