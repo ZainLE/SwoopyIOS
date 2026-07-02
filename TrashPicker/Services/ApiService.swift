@@ -306,9 +306,13 @@ struct Post: Codable, Identifiable, Equatable {
     let owner: Profile?
     // Remove direct reservation reference to avoid circular dependency
     let userReservation: ReservationSummary?
-    
+    /// Post lifecycle from the backend ("active" / "picked_up" / "expired").
+    /// Optional with a default so older payloads and construction paths that
+    /// don't know the status keep working.
+    var status: String? = nil
+
     enum CodingKeys: String, CodingKey {
-        case id, title, description, category, condition, mode, images, distance, owner
+        case id, title, description, category, condition, mode, images, distance, owner, status
         case ownerId = "owner_id"
         case createdAt = "created_at"
         case expiresAt = "expires_at"
@@ -336,6 +340,28 @@ struct ReservationSummary: Codable, Identifiable {
         case id, status
         case requestedAt = "requested_at"
         case contactPhone = "contact_phone"
+    }
+}
+
+/// User preferences for "new item nearby" push alerts
+/// (GET/PUT /alerts/preferences).
+struct AlertPreferences: Codable {
+    var enabled: Bool
+    var radiusM: Int
+    var savedLat: Double?
+    var savedLng: Double?
+    var quietStart: Int?
+    var quietEnd: Int?
+    var mutedUntil: String?
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case radiusM = "radius_m"
+        case savedLat = "saved_lat"
+        case savedLng = "saved_lng"
+        case quietStart = "quiet_start"
+        case quietEnd = "quiet_end"
+        case mutedUntil = "muted_until"
     }
 }
 
@@ -1486,6 +1512,70 @@ class ApiService: ObservableObject {
         throw ApiHTTPError(statusCode: http.statusCode, message: message)
     }
 
+    // MARK: - Duplicate Detection
+
+    /// Check for potential duplicates near a location before submitting a new
+    /// post (POST /posts/check-duplicate). The server compares the image
+    /// against nearby posts; callers must treat any failure as "no duplicates"
+    /// so a broken check never blocks posting.
+    func checkDuplicatePosts(lat: Double, lng: Double, imageBase64: String) async throws -> [Post] {
+        struct CheckBody: Encodable {
+            let lat: Double
+            let lng: Double
+            let image_base64: String
+        }
+        struct CheckResponse: Decodable {
+            let duplicates: [Post]?
+        }
+
+        let headers = try await authHeaders()
+        let body = try JSONEncoder().encode(CheckBody(lat: lat, lng: lng, image_base64: imageBase64))
+        var request = try buildRequest(path: "/posts/check-duplicate", method: .POST, body: body, headers: headers)
+        request.addXRequestId()
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw ApiHTTPError(statusCode: statusCode, message: extractErrorMessage(from: data))
+        }
+        let decoded = try JSONDecoder().decode(CheckResponse.self, from: data)
+        return decoded.duplicates ?? []
+    }
+
+    // MARK: - Nearby Alert Preferences
+
+    /// Fetch the user's nearby-alert preferences (GET /alerts/preferences).
+    func getAlertPreferences() async throws -> AlertPreferences {
+        let headers = try await authHeaders()
+        let request = try buildRequest(path: "/alerts/preferences", method: .GET, headers: headers)
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+        guard (200...299).contains(http.statusCode) else {
+            if http.statusCode == 401 { throw ApiServiceError.unauthorized }
+            let message = extractErrorMessage(from: data)
+            throw ApiHTTPError(statusCode: http.statusCode, message: message)
+        }
+        return try JSONDecoder().decode(AlertPreferences.self, from: data)
+    }
+
+    /// Persist the user's nearby-alert preferences (PUT /alerts/preferences).
+    func updateAlertPreferences(_ preferences: AlertPreferences) async throws {
+        let headers = try await authHeaders()
+        let body = try JSONEncoder().encode(preferences)
+        var request = try buildRequest(path: "/alerts/preferences", method: .PUT, body: body, headers: headers)
+        request.addXRequestId()
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+        guard (200...299).contains(http.statusCode) else {
+            if http.statusCode == 401 { throw ApiServiceError.unauthorized }
+            let message = extractErrorMessage(from: data)
+            throw ApiHTTPError(statusCode: http.statusCode, message: message)
+        }
+    }
+
     // MARK: - Push Registration
 
     func registerPush(playerId: String, subscriptionId: String, deviceToken: String?) async throws {
@@ -1632,6 +1722,7 @@ class ApiService: ObservableObject {
             let user_id: String?
             let user_name: String?
             let user_avatar: String?
+            let user_picked_count: Int?
         }
         
         struct FeedResponse: Decodable {
@@ -1715,7 +1806,7 @@ class ApiService: ObservableObject {
                         city: nil,
                         avatarUrl: avatarString.flatMap { URL(string: $0) },
                         givenCount: nil,
-                        pickedCount: nil,
+                        pickedCount: serverPost.user_picked_count,
                         phone: nil,
                         phoneVerified: nil
                     )
@@ -1820,13 +1911,14 @@ class ApiService: ObservableObject {
             // User identity fields provided by backend for owner
             let owner_name: String?
             let owner_avatar: String?
+            let owner_picked_count: Int?
 
             enum CodingKeys: String, CodingKey {
                 case id, item_id, reserver, status, requested_at, approved_at, start_at, end_at, canceled_at
                 case picked_up_at, picked_at
                 case contact_phone
                 case post, posts
-                case owner_name, owner_avatar
+                case owner_name, owner_avatar, owner_picked_count
             }
 
             init(from d: Decoder) throws {
@@ -1858,6 +1950,7 @@ class ApiService: ObservableObject {
                 // Initialize optional owner identity fields
                 owner_name = try c.decodeIfPresent(String.self, forKey: .owner_name)
                 owner_avatar = try c.decodeIfPresent(String.self, forKey: .owner_avatar)
+                owner_picked_count = try c.decodeIfPresent(Int.self, forKey: .owner_picked_count)
             }
         }
         struct ReservationsResponse: Decodable {
@@ -1961,8 +2054,8 @@ class ApiService: ObservableObject {
                     lastName: last,
                     city: nil,
                     avatarUrl: avatar.flatMap { URL(string: $0) },
-                    givenCount: nil,
-                    pickedCount: nil,
+                    givenCount: serverPost.owner?.givenCount,
+                    pickedCount: r.owner_picked_count ?? serverPost.owner?.pickedCount,
                     phone: nil,
                     phoneVerified: nil
                 )
@@ -2129,6 +2222,7 @@ class ApiService: ObservableObject {
             let images: [ServerImage]?
             let active_reservation: ServerReservationSummary?
             let address_line: String?
+            let status: String?
         }
         struct PostsResponse: Decodable {
             let posts: [ServerPost]?
@@ -2182,7 +2276,7 @@ class ApiService: ObservableObject {
             let safeTitle = (server.title?.isEmpty ?? true) ? "Untitled item" : (server.title ?? "Untitled item")
             let safeCategory = (server.category?.isEmpty ?? true) ? "misc" : (server.category ?? "misc")
 
-            let post = Post(
+            var post = Post(
                 id: server.id,
                 title: safeTitle,
                 description: server.description,
@@ -2200,6 +2294,7 @@ class ApiService: ObservableObject {
                 owner: nil,
                 userReservation: summary
             )
+            post.status = server.status
             LocationCache.shared.store(post: post)
             return post
         }
@@ -2217,8 +2312,36 @@ class ApiService: ObservableObject {
         struct CompleteResponse: Codable {
             let message: String
         }
-        
+
         let _: CompleteResponse = try await makeRequest("/reservations/\(reservationId)/complete", method: "POST")
+    }
+
+    /// Confirm a pickup for a post (POST /posts/{post_id}/pickup).
+    /// Sends the picker's current coordinates when available so the backend
+    /// can verify proximity; the body is omitted entirely when no fix exists.
+    func pickupPost(postId: String, lat: Double? = nil, lng: Double? = nil) async throws {
+        struct PickupBody: Encodable {
+            let lat: Double
+            let lng: Double
+        }
+
+        let headers = try await authHeaders()
+        var body: Data? = nil
+        if let lat, let lng {
+            body = try JSONEncoder().encode(PickupBody(lat: lat, lng: lng))
+        }
+        var request = try buildRequest(path: "/posts/\(postId)/pickup", method: .POST, body: body, headers: headers)
+        request.addXRequestId()
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+        if (200...299).contains(http.statusCode) { return }
+        if http.statusCode == 401 {
+            throw ApiServiceError.unauthorized
+        }
+        let message = extractErrorMessage(from: data)
+        throw ApiHTTPError(statusCode: http.statusCode, message: message)
     }
     
     // MARK: - Profile
