@@ -241,6 +241,9 @@ struct SwipeDeckView: View {
     @State private var showUploadForm = false
     @State private var showCamera = false
 
+    // Leaderboard page pushed from the top-left pill or a push notification
+    @State private var showLeaderboard = false
+
     // Convert Post objects to visible feed items
     private var visible: [Post] {
         return feedVM.items.filter { post in
@@ -367,6 +370,12 @@ struct SwipeDeckView: View {
     private var navigationStackView: some View {
         NavigationStack {
             contentView
+                .navigationDestination(isPresented: $showLeaderboard) {
+                    LeaderboardView()
+                }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openLeaderboard)) { _ in
+            showLeaderboard = true
         }
         .onChange(of: navState) { oldValue, newValue in
             handleNavigationChange(from: oldValue, to: newValue)
@@ -638,7 +647,7 @@ struct SwipeDeckView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .navigationBarLeading) {
-            LeaderboardPill()
+            LeaderboardPill(isOpen: $showLeaderboard)
         }
         ToolbarItem(placement: .principal) {
             Image("SwoopyLogo")

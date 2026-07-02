@@ -98,9 +98,30 @@ struct LeaderboardView: View {
         }
     }
 
+    /// The caller's in-list row: matched by user id, with the caller's rank
+    /// from `me` as a fallback so a missing/differently-formatted user_id
+    /// can't produce a duplicate pinned "You" row.
+    private func isCallerRow(_ entry: LeaderboardEntry, me: LeaderboardMe?) -> Bool {
+        if let myUserId, let entryId = entry.userId?.lowercased(), entryId == myUserId {
+            return true
+        }
+        if let meRank = me?.rank, let entryRank = entry.rank, meRank == entryRank {
+            return true
+        }
+        return false
+    }
+
+    private func displayName(for entry: LeaderboardEntry) -> String {
+        let trimmed = entry.firstName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmed, trimmed.isEmpty == false {
+            return trimmed
+        }
+        return "Someone"
+    }
+
     @ViewBuilder
     private func board(_ response: LeaderboardResponse) -> some View {
-        let isMeInList = response.entries.contains { $0.userId?.lowercased() == myUserId }
+        let isMeInList = response.entries.contains { isCallerRow($0, me: response.me) }
 
         VStack(spacing: 0) {
             header(response)
@@ -117,11 +138,11 @@ struct LeaderboardView: View {
                         ForEach(response.entries) { entry in
                             entryRow(
                                 rank: entry.rank,
-                                name: entry.firstName ?? "Someone",
+                                name: displayName(for: entry),
                                 avatarUrl: entry.avatarUrl.flatMap { URL(string: $0) },
                                 tier: entry.tier,
                                 pickups: entry.weeklyPickups,
-                                isMe: entry.userId?.lowercased() == myUserId
+                                isMe: isCallerRow(entry, me: response.me)
                             )
                         }
                     }
@@ -130,6 +151,7 @@ struct LeaderboardView: View {
                 }
             }
 
+            // Pin the caller's own rank only when their row isn't already visible.
             if let me = response.me, isMeInList == false {
                 pinnedMeRow(me)
             }
@@ -168,7 +190,7 @@ struct LeaderboardView: View {
             avatar(avatarUrl, name: name)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(isMe ? "\(name) (you)" : name)
+                Text(isMe && name != "You" ? "\(name) (you)" : name)
                     .font(.system(size: 15, weight: isMe ? .semibold : .medium))
                     .foregroundColor(.primary)
                     .lineLimit(1)
@@ -267,24 +289,28 @@ struct LeaderboardView: View {
 // MARK: - Home screen entry pill
 
 /// Small floating pill for the home screen's top-left: trophy plus the
-/// caller's current rank when available. Tapping opens the leaderboard.
+/// caller's current rank when available. Styled like the home screen's other
+/// floating controls (brand-dark SF Symbol on ultra-thin material). Tapping
+/// asks the host screen to push the leaderboard via the shared binding; the
+/// rank refetches when the page pops so the pill never shows a stale rank.
 struct LeaderboardPill: View {
+    @Binding var isOpen: Bool
+
     @EnvironmentObject private var api: ApiService
     @EnvironmentObject private var svc: SupabaseService
 
     @State private var myRank: Int?
-    @State private var showLeaderboard = false
     @State private var didFetch = false
 
     var body: some View {
         Button {
             Haptics.play(.tabSelect)
-            showLeaderboard = true
+            isOpen = true
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: "trophy.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(LeaderboardTier.legend.color)
+                Image(systemName: "trophy")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(AppTheme.ColorToken.brandDark)
 
                 if let myRank {
                     Text("#\(myRank)")
@@ -299,11 +325,9 @@ struct LeaderboardPill: View {
         .buttonStyle(.plain)
         .accessibilityLabel(myRank.map { "Leaderboard, your rank \($0)" } ?? "Leaderboard")
         .task { await fetchRank() }
-        .sheet(isPresented: $showLeaderboard, onDismiss: {
-            Task { await fetchRank(force: true) }
-        }) {
-            NavigationStack {
-                LeaderboardView()
+        .onChange(of: isOpen) { _, open in
+            if open == false {
+                Task { await fetchRank(force: true) }
             }
         }
     }
