@@ -179,6 +179,7 @@ struct ProfileView: View {
     @State private var showNotificationsFromPush = false
     @State private var avatarRefreshNonce = 0
     @State private var givenCount: Int?
+    @State private var gamificationProfile: Profile?
     
     init() {
         // Initialize both view models with shared services
@@ -190,6 +191,7 @@ struct ProfileView: View {
         NavigationStack {
             List {
                 profileHeaderSection
+                achievementsSection
                 uploadsSection
                 notificationsSection
                 safetySection
@@ -434,6 +436,50 @@ struct ProfileView: View {
         }
     }
 
+    private var earnedBadges: [String] {
+        guard let profile = gamificationProfile else { return [] }
+        var badges: [String] = []
+        if profile.badgeFirstPickup == true { badges.append("First pickup") }
+        if profile.badgeTenItems == true { badges.append("10 items diverted") }
+        if profile.badgeThreeWeekStreak == true { badges.append("3-week streak") }
+        if profile.badgeTop3 == true { badges.append("Top 3 finish") }
+        return badges
+    }
+
+    @ViewBuilder
+    private var achievementsSection: some View {
+        let tier = gamificationProfile?.tier.flatMap { LeaderboardTier(rawValue: $0.lowercased()) }
+        let badges = earnedBadges
+
+        if tier != nil || badges.isEmpty == false {
+            Section {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        if let tier {
+                            TierBadge(tier: tier)
+                        }
+
+                        ForEach(badges, id: \.self) { badge in
+                            Text(badge)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(AppColor.brandGreen)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(AppColor.brandGreen.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            } header: {
+                Text("Achievements")
+                    .font(AppFont.body.weight(.semibold))
+            }
+        }
+    }
+
     private var resolvedAvatarURL: URL? {
         let raw = (profileManager.avatarUrl ?? svc.serverProfile?.avatarUrl)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -612,6 +658,7 @@ struct ProfileView: View {
         do {
             let profile = try await api.getProfile()
             givenCount = profile.givenCount
+            gamificationProfile = profile
         } catch {
 #if DEBUG
             DLog("[PROFILE] given count refresh failed: \(error.localizedDescription)")

@@ -636,6 +636,9 @@ struct SwipeDeckView: View {
     // MARK: - Toolbar and Overlays
 
     private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarLeading) {
+            LeaderboardPill()
+        }
         ToolbarItem(placement: .principal) {
             Image("SwoopyLogo")
                 .resizable()
