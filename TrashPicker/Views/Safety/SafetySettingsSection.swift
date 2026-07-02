@@ -33,47 +33,38 @@ struct SafetySettingsSection: View {
     }
 }
 
-// Standalone view for testing/preview
+// Safety settings page, pushed from the Settings hub (no own NavigationStack
+// so it participates in the host navigation like the other settings pages).
 struct SafetySettingsView: View {
-    @Environment(\.dismiss) private var dismiss
-    
     var body: some View {
-        NavigationStack {
-            Form {
-                SafetySettingsSection()
-                
-                Section {
-                    Text("Report and block features help keep Swoopy safe for everyone.")
-                        .font(AppTheme.Typography.body)
-                        .foregroundColor(AppTheme.ColorToken.mutedGray)
-                    
-                    Text("• Reports are reviewed within 24 hours")
-                        .font(AppTheme.Typography.footnote)
-                        .foregroundColor(AppTheme.ColorToken.mutedGray)
-                    
-                    Text("• Blocked users can't see your posts or contact you")
-                        .font(AppTheme.Typography.footnote)
-                        .foregroundColor(AppTheme.ColorToken.mutedGray)
-                    
-                    Text("• All actions are reversible in Settings")
-                        .font(AppTheme.Typography.footnote)
-                        .foregroundColor(AppTheme.ColorToken.mutedGray)
-                }
-            }
-            .navigationTitle("Safety")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .foregroundColor(AppTheme.ColorToken.primary)
-                }
+        Form {
+            SafetySettingsSection()
+
+            Section {
+                Text("Report and block features help keep Swoopy safe for everyone.")
+                    .font(AppTheme.Typography.body)
+                    .foregroundColor(AppTheme.ColorToken.mutedGray)
+
+                Text("• Reports are reviewed within 24 hours")
+                    .font(AppTheme.Typography.footnote)
+                    .foregroundColor(AppTheme.ColorToken.mutedGray)
+
+                Text("• Blocked users can't see your posts or contact you")
+                    .font(AppTheme.Typography.footnote)
+                    .foregroundColor(AppTheme.ColorToken.mutedGray)
+
+                Text("• All actions are reversible in Settings")
+                    .font(AppTheme.Typography.footnote)
+                    .foregroundColor(AppTheme.ColorToken.mutedGray)
             }
         }
+        .navigationTitle("Safety")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
 #Preview {
-    SafetySettingsView()
+    NavigationStack {
+        SafetySettingsView()
+    }
 }

@@ -10,7 +10,7 @@ import SwiftUI
 
 // MARK: - Tiers
 
-enum LeaderboardTier: String {
+enum LeaderboardTier: String, CaseIterable {
     case starter, contributor, champion, legend
 
     var displayName: String { rawValue.capitalized }
@@ -22,6 +22,28 @@ enum LeaderboardTier: String {
         case .champion: return Color(hex: "2F6FD0")     // blue
         case .legend: return Color(hex: "C9A227")       // gold
         }
+    }
+
+    /// SF Symbol shown wherever the tier appears with an icon (e.g. Profile).
+    var icon: String {
+        switch self {
+        case .starter: return "leaf.fill"
+        case .contributor: return "star.fill"
+        case .champion: return "medal.fill"
+        case .legend: return "crown.fill"
+        }
+    }
+
+    /// Position on the tier ladder (0 = starter).
+    var ladderIndex: Int {
+        Self.allCases.firstIndex(of: self) ?? 0
+    }
+
+    /// The tier above this one; nil once at the top.
+    var next: LeaderboardTier? {
+        let all = Self.allCases
+        let nextIndex = ladderIndex + 1
+        return nextIndex < all.count ? all[nextIndex] : nil
     }
 }
 

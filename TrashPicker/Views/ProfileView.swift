@@ -180,6 +180,7 @@ struct ProfileView: View {
     @State private var avatarRefreshNonce = 0
     @State private var givenCount: Int?
     @State private var gamificationProfile: Profile?
+    @State private var weeklyStanding: LeaderboardMe?
     
     init() {
         // Initialize both view models with shared services
@@ -194,7 +195,7 @@ struct ProfileView: View {
                 achievementsSection
                 uploadsSection
                 notificationsSection
-                safetySection
+                settingsSection
                 primaryActionsSection
             }
             .listStyle(.insetGrouped)
@@ -214,6 +215,7 @@ struct ProfileView: View {
                 await profileManager.loadProfile()
                 await reloadNotificationBadges()
                 await loadGivenCount()
+                await loadWeeklyStanding()
             }
         }
         .navigationDestination(isPresented: $showNotificationsFromPush) {
@@ -271,6 +273,7 @@ struct ProfileView: View {
                 await profileManager.loadProfile()
                 await reloadNotificationBadges()
                 await loadGivenCount()
+                await loadWeeklyStanding()
             }
             viewModel.startProfileRefresh()
         }
@@ -436,46 +439,64 @@ struct ProfileView: View {
         }
     }
 
-    private var earnedBadges: [String] {
-        guard let profile = gamificationProfile else { return [] }
-        var badges: [String] = []
-        if profile.badgeFirstPickup == true { badges.append("First pickup") }
-        if profile.badgeTenItems == true { badges.append("10 items diverted") }
-        if profile.badgeThreeWeekStreak == true { badges.append("3-week streak") }
-        if profile.badgeTop3 == true { badges.append("Top 3 finish") }
-        return badges
+    /// All badges the app knows about, with earned state from the server
+    /// profile. Unearned badges are shown dimmed so the section always
+    /// explains what can be unlocked instead of collapsing to a bare label.
+    private var achievementBadges: [ProfileAchievementBadge] {
+        let profile = gamificationProfile
+        return [
+            ProfileAchievementBadge(
+                id: "first_pickup",
+                title: "First Pickup",
+                icon: "checkmark.seal.fill",
+                hint: "Have one of your finds picked up",
+                earned: profile?.badgeFirstPickup == true
+            ),
+            ProfileAchievementBadge(
+                id: "ten_items",
+                title: "10 Items Diverted",
+                icon: "arrow.3.trianglepath",
+                hint: "Ten of your finds picked up",
+                earned: profile?.badgeTenItems == true
+            ),
+            ProfileAchievementBadge(
+                id: "three_week_streak",
+                title: "3-Week Streak",
+                icon: "flame.fill",
+                hint: "Pickups three weeks in a row",
+                earned: profile?.badgeThreeWeekStreak == true
+            ),
+            ProfileAchievementBadge(
+                id: "top3",
+                title: "Top 3 Finish",
+                icon: "trophy.fill",
+                hint: "End a week in the top 3",
+                earned: profile?.badgeTop3 == true
+            )
+        ]
     }
 
     @ViewBuilder
     private var achievementsSection: some View {
-        let tier = gamificationProfile?.tier.flatMap { LeaderboardTier(rawValue: $0.lowercased()) }
-        let badges = earnedBadges
+        let tier = gamificationProfile?.tier.flatMap { LeaderboardTier(rawValue: $0.lowercased()) } ?? .starter
+        let badges = achievementBadges
 
-        if tier != nil || badges.isEmpty == false {
-            Section {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        if let tier {
-                            TierBadge(tier: tier)
-                        }
+        Section {
+            NavigationLink(destination: LeaderboardView()) {
+                TierProgressCard(
+                    tier: tier,
+                    weeklyRank: weeklyStanding?.rank,
+                    weeklyPickups: weeklyStanding?.weeklyPickups
+                )
+            }
 
-                        ForEach(badges, id: \.self) { badge in
-                            Text(badge)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(AppColor.brandGreen)
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(AppColor.brandGreen.opacity(0.12))
-                                .clipShape(Capsule())
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-            } header: {
-                Text("Achievements")
-                    .font(AppFont.body.weight(.semibold))
+            AchievementBadgeGrid(badges: badges)
+        } header: {
+            Text("Achievements")
+                .font(AppFont.body.weight(.semibold))
+        } footer: {
+            if badges.allSatisfy({ $0.earned == false }) {
+                Text("Badges unlock as your finds get picked up — the first confirmed pickup earns your first one.")
             }
         }
     }
@@ -520,25 +541,25 @@ struct ProfileView: View {
     }
 
     @ViewBuilder
-    private var safetySection: some View {
+    private var settingsSection: some View {
         Section {
-            NavigationLink(destination: SafetySettingsView()) {
+            NavigationLink(destination: SettingsHubView()) {
                 HStack(spacing: 12) {
-                    Image(systemName: "shield.lefthalf.filled")
+                    Image(systemName: "gearshape")
                         .font(.system(size: 20))
                         .foregroundColor(AppColor.brandGreen)
                         .frame(width: 24)
-                    
+
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Safety & Moderation")
+                        Text("Settings")
                             .font(AppFont.body)
                             .foregroundColor(AppColor.text)
-                        
-                        Text("Report, filter, or block users")
+
+                        Text("Alerts, collection nights, safety")
                             .font(AppFont.sub)
                             .foregroundColor(AppColor.muted)
                     }
-                    
+
                     Spacer()
                 }
                 .padding(.vertical, 4)
@@ -578,28 +599,6 @@ struct ProfileView: View {
                             .background(AppColor.brandGreen)
                             .clipShape(Capsule())
                     }
-                }
-                .padding(.vertical, 4)
-            }
-
-            NavigationLink(destination: NearbyAlertsSettingsView()) {
-                HStack(spacing: 12) {
-                    Image(systemName: "location.circle")
-                        .font(.system(size: 20))
-                        .foregroundColor(AppColor.brandGreen)
-                        .frame(width: 24)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Nearby Alerts")
-                            .font(AppFont.body)
-                            .foregroundColor(AppColor.text)
-
-                        Text("Get notified about new items near you")
-                            .font(AppFont.sub)
-                            .foregroundColor(AppColor.muted)
-                    }
-
-                    Spacer()
                 }
                 .padding(.vertical, 4)
             }
@@ -662,6 +661,19 @@ struct ProfileView: View {
         } catch {
 #if DEBUG
             DLog("[PROFILE] given count refresh failed: \(error.localizedDescription)")
+#endif
+        }
+    }
+
+    @MainActor
+    private func loadWeeklyStanding() async {
+        guard svc.hasAuthToken else { return }
+        do {
+            let response = try await api.getLeaderboard()
+            weeklyStanding = response.me
+        } catch {
+#if DEBUG
+            DLog("[PROFILE] weekly standing refresh failed: \(error.localizedDescription)")
 #endif
         }
     }
@@ -989,6 +1001,157 @@ struct ProfileView: View {
         } catch {
             showingSignOutError = true
         }
+    }
+}
+
+// MARK: - Achievements
+
+private struct ProfileAchievementBadge: Identifiable {
+    let id: String
+    let title: String
+    let icon: String
+    let hint: String
+    let earned: Bool
+}
+
+/// Tier summary card for the profile's Achievements section. Tiers move via
+/// the weekly leaderboard (top 3 promote, bottom 3 demote on Monday), so
+/// progress is shown as a tier ladder plus the caller's current weekly
+/// standing rather than a numeric threshold.
+private struct TierProgressCard: View {
+    let tier: LeaderboardTier
+    let weeklyRank: Int?
+    let weeklyPickups: Int?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(tier.color.opacity(0.15))
+                        .frame(width: 44, height: 44)
+
+                    Image(systemName: tier.icon)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(tier.color)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(tier.displayName) tier")
+                        .font(AppFont.body.weight(.semibold))
+                        .foregroundColor(AppColor.text)
+
+                    Text(subtitle)
+                        .font(AppFont.sub)
+                        .foregroundColor(AppColor.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                if let weeklyRank {
+                    VStack(spacing: 1) {
+                        Text("#\(weeklyRank)")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundColor(AppColor.brandGreen)
+
+                        Text("this week")
+                            .font(.system(size: 11))
+                            .foregroundColor(AppColor.muted)
+                    }
+                }
+            }
+
+            ladder
+        }
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilitySummary)
+    }
+
+    private var subtitle: String {
+        if let next = tier.next {
+            if let weeklyPickups, weeklyPickups > 0 {
+                return "\(weeklyPickups) pickup\(weeklyPickups == 1 ? "" : "s") this week — top 3 reach \(next.displayName)"
+            }
+            return "Finish top 3 this week to reach \(next.displayName)"
+        }
+        return "Top of the ladder — top 3 keeps you here"
+    }
+
+    /// Four-step ladder, filled up to the current tier in each tier's color.
+    private var ladder: some View {
+        HStack(spacing: 6) {
+            ForEach(LeaderboardTier.allCases, id: \.self) { step in
+                Capsule()
+                    .fill(step.ladderIndex <= tier.ladderIndex ? step.color : Color(.systemGray5))
+                    .frame(height: 6)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private var accessibilitySummary: String {
+        var parts = ["\(tier.displayName) tier, level \(tier.ladderIndex + 1) of \(LeaderboardTier.allCases.count)"]
+        if let weeklyRank {
+            parts.append("ranked #\(weeklyRank) this week")
+        }
+        parts.append("opens leaderboard")
+        return parts.joined(separator: ", ")
+    }
+}
+
+/// Two-column grid showing every badge; unearned ones stay visible but
+/// dimmed with a hint on how to unlock them.
+private struct AchievementBadgeGrid: View {
+    let badges: [ProfileAchievementBadge]
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 10),
+        GridItem(.flexible(), spacing: 10)
+    ]
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 10) {
+            ForEach(badges) { badge in
+                HStack(alignment: .top, spacing: 8) {
+                    ZStack {
+                        Circle()
+                            .fill(badge.earned ? AppColor.brandGreen.opacity(0.15) : Color(.systemGray5))
+                            .frame(width: 32, height: 32)
+
+                        Image(systemName: badge.icon)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(badge.earned ? AppColor.brandGreen : AppColor.muted)
+                    }
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(badge.title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(badge.earned ? AppColor.text : AppColor.muted)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+
+                        Text(badge.earned ? "Earned" : badge.hint)
+                            .font(.system(size: 11))
+                            .foregroundColor(badge.earned ? AppColor.brandGreen : AppColor.muted)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, minHeight: 52, alignment: .topLeading)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(badge.earned ? AppColor.brandGreen.opacity(0.08) : Color(.tertiarySystemFill))
+                )
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(badge.title), \(badge.earned ? "earned" : "locked — \(badge.hint)")")
+            }
+        }
+        .padding(.vertical, 6)
     }
 }
 
