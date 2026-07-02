@@ -178,6 +178,7 @@ struct ProfileView: View {
     @State private var reportSuccessDismissTask: Task<Void, Never>?
     @State private var showNotificationsFromPush = false
     @State private var avatarRefreshNonce = 0
+    @State private var givenCount: Int?
     
     init() {
         // Initialize both view models with shared services
@@ -210,6 +211,7 @@ struct ProfileView: View {
                 await viewModel.load()
                 await profileManager.loadProfile()
                 await reloadNotificationBadges()
+                await loadGivenCount()
             }
         }
         .navigationDestination(isPresented: $showNotificationsFromPush) {
@@ -266,6 +268,7 @@ struct ProfileView: View {
                 await viewModel.load()
                 await profileManager.loadProfile()
                 await reloadNotificationBadges()
+                await loadGivenCount()
             }
             viewModel.startProfileRefresh()
         }
@@ -396,6 +399,12 @@ struct ProfileView: View {
                             Text("Account age: \(viewModel.accountAgeText)")
                                 .font(AppFont.sub)
                                 .foregroundColor(AppColor.muted)
+
+                            if let givenCount, givenCount >= 1 {
+                                Text("You've helped divert \(givenCount) item\(givenCount == 1 ? "" : "s")")
+                                    .font(AppFont.sub.weight(.semibold))
+                                    .foregroundColor(AppColor.brandGreen)
+                            }
                         }
                     }
                     
@@ -526,6 +535,28 @@ struct ProfileView: View {
                 }
                 .padding(.vertical, 4)
             }
+
+            NavigationLink(destination: NearbyAlertsSettingsView()) {
+                HStack(spacing: 12) {
+                    Image(systemName: "location.circle")
+                        .font(.system(size: 20))
+                        .foregroundColor(AppColor.brandGreen)
+                        .frame(width: 24)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Nearby Alerts")
+                            .font(AppFont.body)
+                            .foregroundColor(AppColor.text)
+
+                        Text("Get notified about new items near you")
+                            .font(AppFont.sub)
+                            .foregroundColor(AppColor.muted)
+                    }
+
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+            }
         }
     }
     
@@ -572,6 +603,19 @@ struct ProfileView: View {
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
+        }
+    }
+
+    @MainActor
+    private func loadGivenCount() async {
+        guard svc.hasAuthToken else { return }
+        do {
+            let profile = try await api.getProfile()
+            givenCount = profile.givenCount
+        } catch {
+#if DEBUG
+            DLog("[PROFILE] given count refresh failed: \(error.localizedDescription)")
+#endif
         }
     }
 
@@ -1179,8 +1223,56 @@ private struct UploadPostRow: View {
                 expiresView
             }
 
-            Spacer()
+            Spacer(minLength: 8)
+
+            statusBadge
         }
+    }
+
+    private enum PostLifecycle {
+        case active, pickedUp, expired
+
+        var label: String {
+            switch self {
+            case .active: return "Active"
+            case .pickedUp: return "Picked up"
+            case .expired: return "Expired"
+            }
+        }
+
+        var color: Color {
+            switch self {
+            case .active: return AppColor.brandGreen
+            case .pickedUp: return Color(hex: "6AA54A")
+            case .expired: return AppColor.muted
+            }
+        }
+    }
+
+    private var lifecycle: PostLifecycle {
+        let normalized = post.status?.lowercased() ?? ""
+        if ["picked_up", "picked", "completed"].contains(normalized) {
+            return .pickedUp
+        }
+        if normalized == "expired" {
+            return .expired
+        }
+        if let expiresAt = post.expiresAt, expiresAt < Date() {
+            return .expired
+        }
+        return .active
+    }
+
+    private var statusBadge: some View {
+        Text(lifecycle.label)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(lifecycle.color)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(lifecycle.color.opacity(0.12))
+            .clipShape(Capsule())
     }
 
     private func uploadTitle(for post: Post) -> String {
