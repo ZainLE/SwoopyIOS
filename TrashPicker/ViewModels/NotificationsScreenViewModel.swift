@@ -29,6 +29,14 @@ final class NotificationsScreenViewModel: ObservableObject {
     @Published private(set) var actionable: [AppNotification] = []
     @Published private(set) var informational: [AppNotification] = []
     @Published private(set) var unreadCount: Int = 0
+
+    /// Unread count for the "Updates" tab only. The segmented-control badge must
+    /// mirror what the Updates list actually renders, so it is derived from
+    /// `informational` — never from the overall `unreadCount` (which also counts
+    /// Action Required items that render in the other tab).
+    var unreadUpdatesCount: Int {
+        informational.filter { $0.isUnread }.count
+    }
     @Published var isLoading = false
     @Published var isRefreshing = false
     @Published var error: String?
@@ -303,26 +311,23 @@ final class NotificationsScreenViewModel: ObservableObject {
         actionable = visibleNotifications.filter { notification in
             // NEVER show street pickups in Action Required
             guard notification.mode?.lowercased() != "street" else { return false }
-            
+
             // Only show if actionable category AND (pending OR accepted)
             return notification.category == .actionable &&
                    (notification.state == .pending_approval || notification.state == .accepted)
         }
-        
-        // Informational: Everything else (including ALL street pickups)
-        informational = visibleNotifications.filter { notification in
-            // All street pickups go to informational
-            if notification.mode?.lowercased() == "street" {
-                return true
-            }
-            
-            // Home pickups: informational if not pending/accepted
-            return notification.category == .informational ||
-                   (notification.state != .pending_approval && notification.state != .accepted)
-        }
-        
-        reservationService?.apply(notifications: notifications)
-        
+
+        // Informational (the "Updates" tab): the exact complement of Action Required.
+        // Everything visible that is not in the other tab renders here — unknown or
+        // unsupported types fall through to a generic row instead of being dropped,
+        // so any notification that is counted is also shown.
+        let actionableIds = Set(actionable.map { $0.id })
+        informational = visibleNotifications.filter { !actionableIds.contains($0.id) }
+
+        // Badge services must see the same filtered set the lists render, otherwise
+        // hidden items keep badges lit with nothing to show.
+        reservationService?.apply(notifications: visibleNotifications)
+
         // Recompute unread based ONLY on visible notifications
         unreadCount = visibleNotifications.filter { $0.isUnread }.count
         return visibleNotifications
@@ -337,7 +342,7 @@ final class NotificationsScreenViewModel: ObservableObject {
     }
 
     private func filterLowSignal(_ notifications: [AppNotification]) -> [AppNotification] {
-        notifications.filter { !$0.isNameOnlyPing }
+        notifications.filter { !$0.isLowSignalPing }
     }
 
     private func filterLocallyDismissed(from notifications: [AppNotification]) -> [AppNotification] {
@@ -353,18 +358,5 @@ final class NotificationsScreenViewModel: ObservableObject {
     }
 }
 
-private extension AppNotification {
-    /// Filters out "name-only" pings (no title/body/item) that don't convey useful context.
-    var isNameOnlyPing: Bool {
-        guard category != .actionable else { return false }
-        guard type == .unknown else { return false }
-
-        let title = payload?.title ?? itemTitle ?? ""
-        let body = payload?.body ?? ""
-        let hasText = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                      !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-
-        let hasThumb = itemThumbURL != nil
-        return !hasText && !hasThumb
-    }
-}
+// Low-signal filtering lives on AppNotification.isLowSignalPing (NotificationsModels.swift)
+// so the list, this view model, and badge services all share the identical rule.

@@ -125,7 +125,7 @@ final class NotificationService: NotificationProviding {
             itemThumbURL: thumbURL,
             persistenceType: persistenceType,
             persistenceSeconds: persistenceSeconds,
-            mode: payloadModel?.mode,  // Extract from payload
+            mode: payloadModel?.mode ?? item.postMode,  // Payload first, then nested post object
             itemCondition: condition
         )
     }

@@ -120,10 +120,15 @@ struct NotificationPayload: Hashable {
         ownerPhone = raw?.string("owner_phone") ?? raw?.string("ownerPhone")
         contactInfoShared = raw?.bool("contact_info_shared") ?? raw?.bool("contactInfoShared")
         ownerName = sanitizePersonDisplayName(raw?.string("owner_name") ?? raw?.string("ownerName"))
-        ownerAvatarUrl = raw?.string("owner_avatar_url") ?? raw?.string("ownerAvatarUrl")
+        // Backend sends both `*_avatar_url` and shorter `*_avatar` keys depending on the code path.
+        ownerAvatarUrl = raw?.string("owner_avatar_url") ?? raw?.string("ownerAvatarUrl") ?? raw?.string("owner_avatar")
         requesterName = sanitizePersonDisplayName(raw?.string("requester_name") ?? raw?.string("requesterName"))
-        requesterAvatarUrl = raw?.string("requester_avatar_url") ?? raw?.string("requesterAvatarUrl")
-        takerAvatarUrl = raw?.string("taker_avatar_url") ?? raw?.string("takerAvatarUrl") ?? requesterAvatarUrl
+        requesterAvatarUrl = raw?.string("requester_avatar_url") ?? raw?.string("requesterAvatarUrl") ?? raw?.string("requester_avatar")
+        var taker = raw?.string("taker_avatar_url") ?? raw?.string("takerAvatarUrl")
+        taker = taker ?? raw?.string("taker_avatar")
+        taker = taker ?? raw?.string("counterparty_avatar_url")
+        taker = taker ?? raw?.string("counterparty_avatar")
+        takerAvatarUrl = taker ?? requesterAvatarUrl
         itemTitle = raw?.string("item_title") ?? raw?.string("itemTitle")
         itemThumbnailUrl = raw?.string("item_thumbnail_url") ?? raw?.string("itemThumbnailUrl")
         itemImageUrl = raw?.string("item_image_url") ?? raw?.string("itemImageUrl")
@@ -156,6 +161,45 @@ struct NotificationItem: Decodable, Identifiable {
     let itemTitle: String?
     let itemThumbURL: String?
     let itemCondition: String?
+    /// "home" | "street" resolved from the nested `post` object, if present.
+    let postMode: String?
+
+    /// Nested `post` object returned by GET /my/notifications.
+    struct PostRef: Decodable {
+        struct ImageRef: Decodable {
+            let url: String?
+            let orderIndex: Int?
+
+            enum CodingKeys: String, CodingKey {
+                case url
+                case orderIndex = "order_index"
+            }
+        }
+
+        let id: String?
+        let title: String?
+        let mode: String?
+        let condition: String?
+        let images: [ImageRef]?
+
+        var firstImageURLString: String? {
+            let sorted = (images ?? []).sorted { ($0.orderIndex ?? 0) < ($1.orderIndex ?? 0) }
+            return sorted.first(where: { ($0.url?.isEmpty == false) })?.url
+        }
+    }
+
+    /// Nested `counterparty` object returned by GET /my/notifications.
+    struct CounterpartyRef: Decodable {
+        let userId: String?
+        let displayName: String?
+        let avatarUrl: String?
+
+        enum CodingKeys: String, CodingKey {
+            case userId = "user_id"
+            case displayName = "display_name"
+            case avatarUrl = "avatar_url"
+        }
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, type, category, state, payload
@@ -173,6 +217,8 @@ struct NotificationItem: Decodable, Identifiable {
         case itemTitle = "item_title"
         case itemThumbURL = "item_thumbnail_url"
         case itemCondition = "item_condition"
+        case post
+        case counterparty
     }
 
     // Memberwise initializer for direct construction
@@ -194,7 +240,8 @@ struct NotificationItem: Decodable, Identifiable {
         counterpartyPhone: String?,
         itemTitle: String?,
         itemThumbURL: String?,
-        itemCondition: String?
+        itemCondition: String?,
+        postMode: String? = nil
     ) {
         self.id = id
         self.type = type
@@ -214,8 +261,9 @@ struct NotificationItem: Decodable, Identifiable {
         self.itemTitle = itemTitle
         self.itemThumbURL = itemThumbURL
         self.itemCondition = itemCondition
+        self.postMode = postMode
     }
-    
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
@@ -227,14 +275,23 @@ struct NotificationItem: Decodable, Identifiable {
         persistenceSeconds = try container.decodeIfPresent(Int.self, forKey: .persistenceSeconds)
         payload = try container.decodeIfPresent([String: AnyCodable].self, forKey: .payload)
         reservationId = try container.decodeIfPresent(String.self, forKey: .reservationId)
-        postId = try container.decodeIfPresent(String.self, forKey: .postId)
-        counterpartyUserId = try container.decodeIfPresent(String.self, forKey: .counterpartyUserId)
-        counterpartyName = sanitizePersonDisplayName(try container.decodeIfPresent(String.self, forKey: .counterpartyName))
-        counterpartyAvatarURL = try container.decodeIfPresent(String.self, forKey: .counterpartyAvatarURL)
+
+        // The production contract nests post/counterparty objects; older payloads
+        // used flat fields. Decode both so either shape works.
+        let post = try? container.decodeIfPresent(PostRef.self, forKey: .post)
+        let counterparty = try? container.decodeIfPresent(CounterpartyRef.self, forKey: .counterparty)
+
+        postId = (try container.decodeIfPresent(String.self, forKey: .postId)) ?? post?.id
+        counterpartyUserId = (try container.decodeIfPresent(String.self, forKey: .counterpartyUserId)) ?? counterparty?.userId
+        counterpartyName = sanitizePersonDisplayName(
+            (try container.decodeIfPresent(String.self, forKey: .counterpartyName)) ?? counterparty?.displayName
+        )
+        counterpartyAvatarURL = (try container.decodeIfPresent(String.self, forKey: .counterpartyAvatarURL)) ?? counterparty?.avatarUrl
         counterpartyPhone = try container.decodeIfPresent(String.self, forKey: .counterpartyPhone)
-        itemTitle = try container.decodeIfPresent(String.self, forKey: .itemTitle)
-        itemThumbURL = try container.decodeIfPresent(String.self, forKey: .itemThumbURL)
-        itemCondition = try container.decodeIfPresent(String.self, forKey: .itemCondition)
+        itemTitle = (try container.decodeIfPresent(String.self, forKey: .itemTitle)) ?? post?.title
+        itemThumbURL = (try container.decodeIfPresent(String.self, forKey: .itemThumbURL)) ?? post?.firstImageURLString
+        itemCondition = (try container.decodeIfPresent(String.self, forKey: .itemCondition)) ?? post?.condition
+        postMode = post?.mode
 
         if let explicit = try container.decodeIfPresent(Bool.self, forKey: .isReadValue) {
             isRead = explicit
@@ -417,6 +474,20 @@ struct AppNotification: Identifiable, Hashable {
         var copy = self
         copy.state = newState
         return copy
+    }
+
+    /// "Name-only" pings (unknown type with no title, body, or thumbnail) carry no
+    /// useful content and are hidden from the notifications list. Every badge/unread
+    /// computation must use this same rule so nothing is counted but not shown.
+    var isLowSignalPing: Bool {
+        guard category != .actionable else { return false }
+        guard type == .unknown else { return false }
+
+        let title = payload?.title ?? itemTitle ?? ""
+        let body = payload?.body ?? ""
+        let hasText = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                      !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return !hasText && itemThumbURL == nil
     }
 
     var conditionDisplayName: String? {

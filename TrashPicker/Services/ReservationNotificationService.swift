@@ -21,8 +21,11 @@ final class ReservationNotificationService: ObservableObject {
 
     func apply(notifications: [AppNotification]) {
         assertMainThread("ReservationNotificationService.apply")
-        let actionable = notifications.filter { $0.category == .actionable }
-        let informational = notifications.filter { $0.category == .informational }
+        // Exclude low-signal pings that the notifications screen never renders —
+        // badges must only count what the user can actually see.
+        let visible = notifications.filter { !$0.isLowSignalPing }
+        let actionable = visible.filter { $0.category == .actionable }
+        let informational = visible.filter { $0.category != .actionable }
 
         // Badge count: unread actionable pending HOME requests only
         requestsCount = actionable

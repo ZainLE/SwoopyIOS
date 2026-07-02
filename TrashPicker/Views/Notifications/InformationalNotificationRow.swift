@@ -6,10 +6,21 @@ struct InformationalNotificationRow: View {
     
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            thumbnail
-                .frame(width: 56, height: 56)
-                .clipShape(RoundedRectangle(cornerRadius: AppRadius.thumb, style: .continuous))
-            
+            ZStack(alignment: .bottomTrailing) {
+                thumbnail
+                    .frame(width: 56, height: 56)
+                    .clipShape(RoundedRectangle(cornerRadius: AppRadius.thumb, style: .continuous))
+
+                if notification.counterpartyAvatarURL != nil || notification.counterpartyName != nil {
+                    avatarBadge
+                        .frame(width: 24, height: 24)
+                        .background(Color(.systemBackground))
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(Color(.systemGray4), lineWidth: 1))
+                        .offset(x: 6, y: 6)
+                }
+            }
+
             VStack(alignment: .leading, spacing: 6) {
                 Text(primaryText)
                     .font(.subheadline.weight(.semibold))
@@ -97,5 +108,42 @@ struct InformationalNotificationRow: View {
         RoundedRectangle(cornerRadius: AppRadius.thumb, style: .continuous)
             .fill(Color.gray.opacity(0.2))
             .overlay(Image(systemName: "photo").foregroundColor(.gray))
+    }
+
+    @ViewBuilder
+    private var avatarBadge: some View {
+        if let url = notification.counterpartyAvatarURL {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                default:
+                    avatarInitialsFallback
+                }
+            }
+            .clipShape(Circle())
+        } else {
+            avatarInitialsFallback
+        }
+    }
+
+    private var avatarInitialsFallback: some View {
+        Circle()
+            .fill(Color.gray.opacity(0.2))
+            .overlay(
+                Group {
+                    if let initial = notification.counterpartyName?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .first {
+                        Text(String(initial).uppercased())
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.secondary)
+                    } else {
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.gray)
+                    }
+                }
+            )
     }
 }

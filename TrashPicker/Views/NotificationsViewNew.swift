@@ -59,7 +59,9 @@ struct NotificationsViewNew: View {
                 NotificationsSegmentedControl(
                     selectedTab: $selectedTab,
                     actionCount: viewModel.actionable.count,
-                    updatesCount: viewModel.unreadCount
+                    // Must mirror the Updates list, not the overall unread count —
+                    // otherwise the badge shows items that render in the other tab.
+                    updatesCount: viewModel.unreadUpdatesCount
                 )
                 .padding(.top, 8)
                 
@@ -817,23 +819,27 @@ private struct NotificationRow: View {
                         .foregroundColor(.secondary)
                 }
 
-                Spacer()
+                Spacer(minLength: 8)
 
-                if let onDelete {
-                    Button(role: .destructive, action: onDelete) {
-                        Image(systemName: "trash")
-                            .font(.callout)
+                VStack(alignment: .trailing, spacing: 8) {
+                    HStack(spacing: 8) {
+                        if let onDelete {
+                            Button(role: .destructive, action: onDelete) {
+                                Image(systemName: "trash")
+                                    .font(.callout)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if notification.isUnread {
+                            Circle()
+                                .fill(AppTheme.ColorToken.primary)
+                                .frame(width: 8, height: 8)
+                        }
                     }
-                    .buttonStyle(.plain)
-                    if notification.isUnread {
-                        Circle()
-                            .fill(AppTheme.ColorToken.primary)
-                            .frame(width: 8, height: 8)
+
+                    if let url = itemImageURL {
+                        postThumbnail(url: url)
                     }
-                } else if notification.isUnread {
-                    Circle()
-                        .fill(AppTheme.ColorToken.primary)
-                        .frame(width: 8, height: 8)
                 }
             }
 
@@ -856,13 +862,83 @@ private struct NotificationRow: View {
         .onTapGesture(perform: onTap)
     }
 
+    /// Leading visual: the other person's avatar whenever we know who they are
+    /// (photo, else initials); falls back to the type icon for system updates.
     @ViewBuilder
     private var leadingView: some View {
-        if isApprovalUpdate {
-            approvalVisual
+        if notification.counterpartyAvatarURL != nil || counterpartyInitials != nil {
+            avatarView
+                .frame(width: 44, height: 44)
+                .clipShape(Circle())
+                .overlay(
+                    Circle()
+                        .stroke(Color(.systemGray5), lineWidth: 1)
+                )
         } else {
             iconView
         }
+    }
+
+    @ViewBuilder
+    private var avatarView: some View {
+        if let url = notification.counterpartyAvatarURL {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                default:
+                    avatarPlaceholder
+                }
+            }
+        } else {
+            avatarPlaceholder
+        }
+    }
+
+    @ViewBuilder
+    private var avatarPlaceholder: some View {
+        if let initials = counterpartyInitials {
+            Circle()
+                .fill(AppTheme.ColorToken.primary.opacity(0.15))
+                .overlay(
+                    Text(initials)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(AppTheme.ColorToken.primary)
+                )
+        } else {
+            Circle()
+                .fill(Color.gray.opacity(0.2))
+                .overlay(Image(systemName: "person.fill").foregroundColor(.gray))
+        }
+    }
+
+    private var counterpartyInitials: String? {
+        guard let name = notification.counterpartyName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty else { return nil }
+        let letters = name.split(whereSeparator: \.isWhitespace)
+            .prefix(2)
+            .compactMap { $0.first }
+            .map(String.init)
+            .joined()
+        return letters.isEmpty ? nil : letters.uppercased()
+    }
+
+    private func postThumbnail(url: URL) -> some View {
+        AsyncImage(url: url) { phase in
+            switch phase {
+            case .success(let image):
+                image.resizable().scaledToFill()
+            case .failure:
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.gray.opacity(0.15))
+                    .overlay(Image(systemName: "photo").foregroundColor(.gray))
+            default:
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.gray.opacity(0.1))
+            }
+        }
+        .frame(width: 56, height: 56)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     @ViewBuilder
@@ -940,73 +1016,8 @@ private struct NotificationRow: View {
         }
     }
 
-    private var isApprovalUpdate: Bool {
-        notification.type == .request_approved || notification.type == .legacy_request_approved
-    }
-
-    @ViewBuilder
-    private var approvalVisual: some View {
-        ZStack(alignment: .bottomTrailing) {
-            approvalItemImage
-                .frame(width: 64, height: 64)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-
-            approvalAvatar
-                .frame(width: 28, height: 28)
-                .background(Color(.systemBackground))
-                .clipShape(Circle())
-                .overlay(
-                    Circle()
-                        .stroke(Color(.systemGray4), lineWidth: 1)
-                )
-                .offset(x: 8, y: 8)
-        }
-        .frame(width: 64, height: 64)
-        .padding(.top, 4)
-    }
-
-    @ViewBuilder
-    private var approvalItemImage: some View {
-        if let url = approvalItemURL {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFill()
-                case .failure, .empty:
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color.gray.opacity(0.15))
-                        .overlay(Image(systemName: "photo").foregroundColor(.gray))
-                @unknown default:
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color.gray.opacity(0.15))
-                }
-            }
-        } else {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.gray.opacity(0.15))
-                .overlay(Image(systemName: "photo").foregroundColor(.gray))
-        }
-    }
-
-    @ViewBuilder
-    private var approvalAvatar: some View {
-        if let url = notification.counterpartyAvatarURL {
-            AsyncImage(url: url) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                Circle()
-                    .fill(Color.gray.opacity(0.2))
-                    .overlay(Image(systemName: "person.fill").foregroundColor(.gray))
-            }
-            .clipShape(Circle())
-        } else {
-            Circle()
-                .fill(Color.gray.opacity(0.2))
-                .overlay(Image(systemName: "person.fill").foregroundColor(.gray))
-        }
-    }
-
-    private var approvalItemURL: URL? {
+    /// Related post image, resolved from the mapped thumbnail or raw payload keys.
+    private var itemImageURL: URL? {
         if let url = notification.itemThumbURL {
             return url
         }
@@ -1014,6 +1025,9 @@ private struct NotificationRow: View {
             return url
         }
         if let raw = notification.payload?.postImageUrl, let url = URL(string: raw) {
+            return url
+        }
+        if let raw = notification.payload?.itemThumbnailUrl, let url = URL(string: raw) {
             return url
         }
         return nil
