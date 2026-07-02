@@ -24,6 +24,11 @@ final class PushIntentRouter {
         isRouting = true
         defer { isRouting = false }
 
+        if let type = intent.intentType?.lowercased(), type.hasPrefix("collection_night") {
+            routeToCollectionNight(isPickerAlert: type.contains("picker"))
+            return
+        }
+
         if let notificationId = intent.notificationId {
             await routeToNotifications(notificationId: notificationId, reservationId: intent.reservationId, postId: intent.postId, intentType: intent.intentType)
             return
@@ -120,6 +125,19 @@ final class PushIntentRouter {
             object: PushedPostDetail(postId: postId.uuidString.lowercased(), context: context)
         )
         DLog("[PUSH_ROUTE] destination=post tab=feed overlay=post_detail fetch=feed type=\(normalizedType) postId=\(postId.uuidString)")
+    }
+
+    /// Collection-night pushes: the poster reminder opens the post-creation
+    /// flow (they're about to put items out); the picker alert lands on the
+    /// home map/deck where new items will appear.
+    private func routeToCollectionNight(isPickerAlert: Bool) {
+        NotificationCenter.default.post(name: .pushRouteToTab, object: AppTab.feed)
+        if isPickerAlert {
+            FeedViewModel.requestFeedRefresh()
+        } else {
+            NotificationCenter.default.post(name: .openPostCreation, object: nil)
+        }
+        DLog("[PUSH_ROUTE] destination=collection_night picker=\(isPickerAlert) tab=feed")
     }
 
     private func refreshNotifications() async {

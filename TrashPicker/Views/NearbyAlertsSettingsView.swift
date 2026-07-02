@@ -10,6 +10,35 @@
 import SwiftUI
 import CoreLocation
 
+/// Barcelona districts with municipal bulky-item collection nights.
+enum BarcelonaDistrict: String, CaseIterable, Identifiable {
+    case nouBarris = "nou_barris"
+    case hortaGuinardo = "horta_guinardo"
+    case sarriaSantGervasi = "sarria_sant_gervasi"
+    case lesCorts = "les_corts"
+    case gracia = "gracia"
+    case santsMontjuic = "sants_montjuic"
+    case eixample = "eixample"
+    case santMarti = "sant_marti"
+    case santAndreu = "sant_andreu"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .nouBarris: return "Nou Barris"
+        case .hortaGuinardo: return "Horta-Guinardó"
+        case .sarriaSantGervasi: return "Sarrià-Sant Gervasi"
+        case .lesCorts: return "Les Corts"
+        case .gracia: return "Gràcia"
+        case .santsMontjuic: return "Sants-Montjuïc"
+        case .eixample: return "Eixample"
+        case .santMarti: return "Sant Martí"
+        case .santAndreu: return "Sant Andreu"
+        }
+    }
+}
+
 struct NearbyAlertsSettingsView: View {
     @EnvironmentObject private var api: ApiService
 
@@ -22,6 +51,9 @@ struct NearbyAlertsSettingsView: View {
     @State private var quietStart = 23
     @State private var quietEnd = 7
     @State private var mutedUntil: Date?
+    @State private var homeDistrict: BarcelonaDistrict?
+    @State private var collectionReminderEnabled = false
+    @State private var collectionPickerAlertsEnabled = false
 
     @State private var isLoading = true
     @State private var showSaveError = false
@@ -148,6 +180,48 @@ struct NearbyAlertsSettingsView: View {
                 }
             }
 
+            Section {
+                Picker("Home district", selection: $homeDistrict) {
+                    Text("Not set").tag(BarcelonaDistrict?.none)
+                    ForEach(BarcelonaDistrict.allCases) { district in
+                        Text(district.displayName).tag(BarcelonaDistrict?.some(district))
+                    }
+                }
+
+                Toggle(isOn: $collectionReminderEnabled) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Collection night reminder")
+                            .font(AppTheme.Typography.body)
+                            .foregroundColor(AppTheme.ColorToken.text)
+
+                        Text("A nudge to share your items before the truck comes")
+                            .font(AppTheme.Typography.footnote)
+                            .foregroundColor(AppTheme.ColorToken.mutedGray)
+                    }
+                }
+                .tint(AppTheme.ColorToken.primary)
+                .disabled(homeDistrict == nil)
+
+                Toggle(isOn: $collectionPickerAlertsEnabled) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Alert me on collection nights")
+                            .font(AppTheme.Typography.body)
+                            .foregroundColor(AppTheme.ColorToken.text)
+
+                        Text("More items usually appear on the map after 20:00")
+                            .font(AppTheme.Typography.footnote)
+                            .foregroundColor(AppTheme.ColorToken.mutedGray)
+                    }
+                }
+                .tint(AppTheme.ColorToken.primary)
+                .disabled(homeDistrict == nil)
+            } header: {
+                Text("Collection Nights")
+                    .font(AppTheme.Typography.headline)
+            } footer: {
+                Text("Barcelona collects bulky items district by district on set weekday evenings. Pick your district to get reminders on your collection day.")
+            }
+
             if showSaveError {
                 Section {
                     Text("Couldn't sync your alert settings. They'll be saved next time you change them.")
@@ -184,6 +258,15 @@ struct NearbyAlertsSettingsView: View {
         .onChange(of: quietHoursEnabled) { _ in scheduleSave() }
         .onChange(of: quietStart) { _ in scheduleSave() }
         .onChange(of: quietEnd) { _ in scheduleSave() }
+        .onChange(of: homeDistrict) { newValue in
+            if newValue == nil {
+                collectionReminderEnabled = false
+                collectionPickerAlertsEnabled = false
+            }
+            scheduleSave()
+        }
+        .onChange(of: collectionReminderEnabled) { _ in scheduleSave() }
+        .onChange(of: collectionPickerAlertsEnabled) { _ in scheduleSave() }
     }
 
     // MARK: - Sync
@@ -208,6 +291,9 @@ struct NearbyAlertsSettingsView: View {
                 quietHoursEnabled = false
             }
             mutedUntil = prefs.mutedUntil.flatMap { ISO8601DateFormatter().date(from: $0) }
+            homeDistrict = prefs.homeDistrict.flatMap { BarcelonaDistrict(rawValue: $0) }
+            collectionReminderEnabled = prefs.collectionReminderEnabled ?? false
+            collectionPickerAlertsEnabled = prefs.collectionPickerAlertsEnabled ?? false
         } catch {
             // Endpoint unavailable or nothing saved yet — keep local defaults.
             DLog("[ALERTS] preferences load failed: \(error.localizedDescription)")
@@ -242,7 +328,10 @@ struct NearbyAlertsSettingsView: View {
             quietEnd: quietHoursEnabled ? quietEnd : nil,
             mutedUntil: (mutedUntil != nil && mutedUntil! > Date())
                 ? ISO8601DateFormatter().string(from: mutedUntil!)
-                : nil
+                : nil,
+            homeDistrict: homeDistrict?.rawValue,
+            collectionReminderEnabled: collectionReminderEnabled,
+            collectionPickerAlertsEnabled: collectionPickerAlertsEnabled
         )
     }
 

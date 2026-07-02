@@ -22,7 +22,10 @@ struct PendingPushIntent: Codable, Equatable {
         let postId = parseUUID(additionalData["post_id"])
         let intentType = parseString(additionalData["push_intent"]) ?? parseString(additionalData["type"])
 
-        guard notificationId != nil || reservationId != nil || postId != nil else {
+        // Collection-night pushes carry no ids — the type alone is routable.
+        let isTypeOnlyIntent = intentType?.lowercased().hasPrefix("collection_night") == true
+
+        guard notificationId != nil || reservationId != nil || postId != nil || isTypeOnlyIntent else {
             return nil
         }
 

@@ -118,6 +118,11 @@ struct AppTabView: View {
             guard let detail = note.object as? PushedPostDetail else { return }
             pushedPostDetail = detail
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openPostCreation)) { _ in
+            // Collection-night reminder: drop the user straight into the
+            // camera-first post-creation flow.
+            showCamera = true
+        }
         .fullScreenCover(item: $pushedPostDetail) { detail in
             PushedPostDetailView(detail: detail) {
                 pushedPostDetail = nil
