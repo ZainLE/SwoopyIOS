@@ -10,6 +10,7 @@ struct AppTabView: View {
     @State private var showCamera = false
     @State private var lastSelectedTab: AppTab = .feed
     @State private var pushedPostDetail: PushedPostDetail?
+    @State private var showLeaderboardFromPush = false
 
     // App green
     private let appGreen = Color(red: 0/255.0, green: 81/255.0, blue: 63/255.0)
@@ -122,6 +123,14 @@ struct AppTabView: View {
             // Collection-night reminder: drop the user straight into the
             // camera-first post-creation flow.
             showCamera = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openLeaderboard)) { _ in
+            showLeaderboardFromPush = true
+        }
+        .sheet(isPresented: $showLeaderboardFromPush) {
+            NavigationStack {
+                LeaderboardView()
+            }
         }
         .fullScreenCover(item: $pushedPostDetail) { detail in
             PushedPostDetailView(detail: detail) {

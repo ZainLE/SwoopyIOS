@@ -33,6 +33,8 @@ struct BigCardOverlay: View {
     let reservationActionConfig: ReservationActionBarConfiguration?
     /// Overrides the success label shown by the `.completed` variant.
     let completedMessage: String?
+    /// Overrides the SF Symbol shown next to the `.completed` message.
+    let completedIcon: String?
 
     // Actions
     let onDismiss: () -> Void
@@ -149,6 +151,7 @@ struct BigCardOverlay: View {
         deadline: Date? = nil,
         reservationActionConfig: ReservationActionBarConfiguration? = nil,
         completedMessage: String? = nil,
+        completedIcon: String? = nil,
         onDismiss: @escaping () -> Void,
         onPrimaryAction: @escaping () -> Void,
         onSecondaryAction: @escaping () -> Void,
@@ -173,6 +176,7 @@ struct BigCardOverlay: View {
         self.deadline = deadline
         self.reservationActionConfig = reservationActionConfig
         self.completedMessage = completedMessage
+        self.completedIcon = completedIcon
         self.onDismiss = onDismiss
         self.onPrimaryAction = onPrimaryAction
         self.onSecondaryAction = onSecondaryAction
@@ -746,7 +750,7 @@ extension BigCardOverlay {
             }
         case .completed:
             VStack(spacing: 12) {
-                Label(completedMessage ?? "Reservation complete", systemImage: "checkmark.seal.fill")
+                Label(completedMessage ?? "Reservation complete", systemImage: completedIcon ?? "checkmark.seal.fill")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(successColor)
 

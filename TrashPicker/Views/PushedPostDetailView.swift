@@ -14,6 +14,9 @@ struct PushedPostDetail: Identifiable, Equatable {
     enum Context: Equatable {
         case pickedUp
         case nearby
+        /// The caller's own post (e.g. "your post expires soon") — detail
+        /// without reserve/pass actions.
+        case ownPost
     }
 
     let id = UUID()
@@ -76,7 +79,7 @@ struct PushedPostDetailView: View {
             images: images,
             primaryInfo: primaryInfo(for: post),
             statusInfo: statusInfo(for: post),
-            statusColor: detail.context == .pickedUp ? Color(hex: "6AA54A") : primaryColor,
+            statusColor: statusColor,
             description: post.description,
             mode: post.mode == .street ? .street : .home,
             exactCoordinate: post.exactCoordinate,
@@ -86,13 +89,30 @@ struct PushedPostDetailView: View {
             ownerId: post.ownerId,
             memberSince: post.createdAt,
             pickupsCount: post.owner?.pickedCount,
-            variant: detail.context == .pickedUp ? .reservations(.completed) : .feed,
-            completedMessage: detail.context == .pickedUp ? "Item picked up 🎉" : nil,
+            variant: detail.context == .nearby ? .feed : .reservations(.completed),
+            completedMessage: completedMessage,
+            completedIcon: detail.context == .ownPost ? "clock.badge.exclamationmark" : nil,
             onDismiss: onDismiss,
             onPrimaryAction: { handlePrimaryAction(for: post) },
             onSecondaryAction: onDismiss,
             onTertiaryAction: nil
         )
+    }
+
+    private var statusColor: Color {
+        switch detail.context {
+        case .pickedUp: return Color(hex: "6AA54A")
+        case .ownPost: return .orange
+        case .nearby: return primaryColor
+        }
+    }
+
+    private var completedMessage: String? {
+        switch detail.context {
+        case .pickedUp: return "Item picked up 🎉"
+        case .ownPost: return "Your post expires soon"
+        case .nearby: return nil
+        }
     }
 
     private func primaryInfo(for post: Post) -> String {
@@ -109,6 +129,8 @@ struct PushedPostDetailView: View {
         switch detail.context {
         case .pickedUp:
             return "Picked up"
+        case .ownPost:
+            return "Expires soon"
         case .nearby:
             if let createdAt = post.createdAt {
                 let formatter = RelativeDateTimeFormatter()
@@ -121,7 +143,7 @@ struct PushedPostDetailView: View {
 
     private func handlePrimaryAction(for post: Post) {
         switch detail.context {
-        case .pickedUp:
+        case .pickedUp, .ownPost:
             onDismiss()
         case .nearby:
             guard isReserving == false else { return }
@@ -147,21 +169,34 @@ struct PushedPostDetailView: View {
         }
     }
 
+    private var unavailableInfo: (icon: String, title: String, subtitle: String) {
+        switch detail.context {
+        case .pickedUp:
+            return ("checkmark.seal.fill",
+                    "Item picked up 🎉",
+                    "Your item found a new home. Thanks for sharing it!")
+        case .ownPost:
+            return ("clock.badge.exclamationmark",
+                    "This post is no longer active",
+                    "It may have expired or been picked up already.")
+        case .nearby:
+            return ("sparkles",
+                    "This item is no longer available",
+                    "Someone may have beaten you to it — keep an eye out for the next one.")
+        }
+    }
+
     private var unavailableCard: some View {
         VStack(spacing: 16) {
-            Image(systemName: detail.context == .pickedUp ? "checkmark.seal.fill" : "sparkles")
+            Image(systemName: unavailableInfo.icon)
                 .font(.system(size: 44))
                 .foregroundColor(primaryColor)
 
-            Text(detail.context == .pickedUp
-                 ? "Item picked up 🎉"
-                 : "This item is no longer available")
+            Text(unavailableInfo.title)
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundColor(.primary)
 
-            Text(detail.context == .pickedUp
-                 ? "Your item found a new home. Thanks for sharing it!"
-                 : "Someone may have beaten you to it — keep an eye out for the next one.")
+            Text(unavailableInfo.subtitle)
                 .font(.system(size: 14))
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)

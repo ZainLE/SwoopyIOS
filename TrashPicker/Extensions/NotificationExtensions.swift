@@ -13,4 +13,5 @@ extension Notification.Name {
     static let openNotifications = Notification.Name("openNotifications")
     static let openPostDetail = Notification.Name("openPostDetail")
     static let openPostCreation = Notification.Name("openPostCreation")
+    static let openLeaderboard = Notification.Name("openLeaderboard")
 }

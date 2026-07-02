@@ -635,6 +635,7 @@ struct SwipeDeckView: View {
 
     // MARK: - Toolbar and Overlays
 
+    @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .navigationBarLeading) {
             LeaderboardPill()

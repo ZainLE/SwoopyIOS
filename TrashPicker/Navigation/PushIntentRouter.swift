@@ -24,9 +24,40 @@ final class PushIntentRouter {
         isRouting = true
         defer { isRouting = false }
 
-        if let type = intent.intentType?.lowercased(), type.hasPrefix("collection_night") {
-            routeToCollectionNight(isPickerAlert: type.contains("picker"))
-            return
+        if let type = intent.intentType?.lowercased() {
+            if type.hasPrefix("collection_night") {
+                routeToCollectionNight(isPickerAlert: type.contains("picker"))
+                return
+            }
+
+            switch type {
+            case "reservation_created":
+                // Someone wants the poster's item — requests live in notifications.
+                NotificationCenter.default.post(name: .pushRouteToTab, object: AppTab.profile)
+                NotificationCenter.default.post(name: .openNotifications, object: nil)
+                DLog("[PUSH_ROUTE] destination=reservation_requests tab=profile overlay=notifications postId=\(intent.postId?.uuidString ?? "nil")")
+                return
+            case "post_expiring":
+                if let postId = intent.postId {
+                    await routeToPost(postId, intentType: type)
+                } else {
+                    NotificationCenter.default.post(name: .pushRouteToTab, object: AppTab.profile)
+                    DLog("[PUSH_ROUTE] destination=post_expiring_fallback tab=profile")
+                }
+                return
+            case "leaderboard_week_result":
+                NotificationCenter.default.post(name: .pushRouteToTab, object: AppTab.feed)
+                NotificationCenter.default.post(name: .openLeaderboard, object: nil)
+                DLog("[PUSH_ROUTE] destination=leaderboard tab=feed overlay=leaderboard")
+                return
+            case "badge_earned":
+                // Achievements sit at the top of the profile screen.
+                NotificationCenter.default.post(name: .pushRouteToTab, object: AppTab.profile)
+                DLog("[PUSH_ROUTE] destination=badge_earned tab=profile overlay=none")
+                return
+            default:
+                break
+            }
         }
 
         if let notificationId = intent.notificationId {
@@ -116,7 +147,11 @@ final class PushIntentRouter {
 
     private func routeToPost(_ postId: UUID, intentType: String? = nil) async {
         let normalizedType = intentType?.lowercased() ?? ""
-        let context: PushedPostDetail.Context = normalizedType.contains("picked_up") ? .pickedUp : .nearby
+        let context: PushedPostDetail.Context = {
+            if normalizedType.contains("picked_up") { return .pickedUp }
+            if normalizedType == "post_expiring" { return .ownPost }
+            return .nearby
+        }()
 
         NotificationCenter.default.post(name: .pushRouteToTab, object: AppTab.feed)
         FeedViewModel.requestFeedRefresh()
