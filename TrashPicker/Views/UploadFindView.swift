@@ -45,6 +45,7 @@ struct UploadFindView: View {
     private enum SubmitState { case idle, uploading, success, error }
     @State private var submitState: SubmitState = .idle
     @State private var isSubmitting = false
+    @State private var duplicateCandidate: Post?
     @State private var showToast = false
     @State private var toastText = ""
     @FocusState private var descriptionFocused: Bool
@@ -118,7 +119,31 @@ struct UploadFindView: View {
             .onChange(of: isPhotoPickerPresented) { isPresented in
                 if !isPresented { activePhotoIndex = nil }
             }
-        
+            .sheet(item: $duplicateCandidate) { candidate in
+                DuplicatePostSheet(
+                    post: candidate,
+                    onSameItem: {
+                        duplicateCandidate = nil
+                        draftStore.clearDraft()
+                        router.selectedTab = .feed
+                        dismiss()
+                        // Let the upload cover finish dismissing before the
+                        // existing post's detail cover is presented.
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 600_000_000)
+                            NotificationCenter.default.post(
+                                name: .openPostDetail,
+                                object: PushedPostDetail(postId: candidate.id, context: .nearby)
+                            )
+                        }
+                    },
+                    onDifferentItem: {
+                        duplicateCandidate = nil
+                        startSubmit(skippingDuplicateCheck: true)
+                    }
+                )
+            }
+
     }
 
     private var content: some View {
@@ -270,21 +295,56 @@ struct UploadFindView: View {
                 validationText = "Please complete required fields."
                 return
             }
-            guard !isSubmitting else { return }
-            isSubmitting = true
-            Task { @MainActor in
-                defer { isSubmitting = false }
-                guard svc.hasAuthToken else {
-                    showValidation = true
-                    validationText = "You’re not signed in. Please sign in and try again."
-                    submitState = .error
-                    Haptics.play(.error)
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    submitState = .idle
-                    return
-                }
-                submitState = .uploading
-                do {
+            startSubmit()
+        } label: {
+            HStack(spacing: 8) {
+                if submitState == .uploading { ProgressView().tint(AppTheme.ColorToken.primary) }
+                Text(labelTextForSubmitState())
+            }
+            .font(AppFont.label)
+            .foregroundColor(submitState == .success ? .white : AppColor.text)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(backgroundColorForSubmitState())
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!svc.hasAuthToken || isSubmitting)
+        .opacity(svc.hasAuthToken ? 1.0 : 0.5)
+        .padding(.top, 8)
+    }
+
+    private func startSubmit(skippingDuplicateCheck: Bool = false) {
+        guard !isSubmitting else { return }
+        isSubmitting = true
+        Task { @MainActor in
+            defer { isSubmitting = false }
+            guard svc.hasAuthToken else {
+                showValidation = true
+                validationText = "You’re not signed in. Please sign in and try again."
+                submitState = .error
+                Haptics.play(.error)
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                submitState = .idle
+                return
+            }
+            submitState = .uploading
+
+            // Duplicate gate: ask the server whether the same item was already
+            // posted here. Any failure means "no duplicates" — never block
+            // posting on a failed check.
+            if skippingDuplicateCheck == false,
+               let coordinate = vm.currentCoordinate,
+               let candidate = await findDuplicateCandidate(coordinate: coordinate) {
+                submitState = .idle
+                duplicateCandidate = candidate
+                return
+            }
+
+            do {
                     let postId = try await uploadWithRetry()
                     draftStore.clearDraft()
                     submitState = .success
@@ -348,25 +408,35 @@ struct UploadFindView: View {
                     submitState = .idle
                 }
             }
-        } label: {
-            HStack(spacing: 8) {
-                if submitState == .uploading { ProgressView().tint(AppTheme.ColorToken.primary) }
-                Text(labelTextForSubmitState())
-            }
-            .font(AppFont.label)
-            .foregroundColor(submitState == .success ? .white : AppColor.text)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(backgroundColorForSubmitState())
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
-        .buttonStyle(.plain)
-        .disabled(!svc.hasAuthToken || isSubmitting)
-        .opacity(svc.hasAuthToken ? 1.0 : 0.5)
-        .padding(.top, 8)
+
+    /// Downscale + JPEG-encode the primary photo and ask the server for
+    /// nearby duplicates. Returns the top candidate, or nil on empty result
+    /// or any failure (fail-open).
+    @MainActor
+    private func findDuplicateCandidate(coordinate: CLLocationCoordinate2D) async -> Post? {
+        guard let image = draftStore.photos.first,
+              let base64 = duplicateCheckBase64(from: image) else { return nil }
+
+        let api = ApiService(supabaseService: svc)
+        let duplicates = (try? await api.checkDuplicatePosts(
+            lat: coordinate.latitude,
+            lng: coordinate.longitude,
+            imageBase64: base64
+        )) ?? []
+        return duplicates.first
+    }
+
+    private func duplicateCheckBase64(from image: UIImage) -> String? {
+        // The server only hashes the image — downscale to keep the payload small.
+        let maxDimension: CGFloat = 1_024
+        let scale = min(1, maxDimension / max(image.size.width, image.size.height))
+        let targetSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        let resized = renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+        return resized.jpegData(compressionQuality: 0.6)?.base64EncodedString()
     }
 
     // Button state helpers
@@ -467,7 +537,7 @@ struct UploadFindView: View {
         }
 
         let payload = PostCreatePayload(
-            title: "Trash item",
+            title: "Shared item",
             description: vm.descriptionText.nilIfBlank(),
             category: "other",
             condition: conditionValue,
