@@ -353,6 +353,10 @@ struct AlertPreferences: Codable {
     var quietStart: Int?
     var quietEnd: Int?
     var mutedUntil: String?
+    // Collection nights (Barcelona district-level)
+    var homeDistrict: String?
+    var collectionReminderEnabled: Bool?
+    var collectionPickerAlertsEnabled: Bool?
 
     enum CodingKeys: String, CodingKey {
         case enabled
@@ -362,6 +366,51 @@ struct AlertPreferences: Codable {
         case quietStart = "quiet_start"
         case quietEnd = "quiet_end"
         case mutedUntil = "muted_until"
+        case homeDistrict = "home_district"
+        case collectionReminderEnabled = "collection_reminder_enabled"
+        case collectionPickerAlertsEnabled = "collection_picker_alerts_enabled"
+    }
+}
+
+/// One row of the weekly city leaderboard (GET /leaderboard).
+struct LeaderboardEntry: Codable, Identifiable {
+    let rank: Int?
+    let userId: String?
+    let firstName: String?
+    let avatarUrl: String?
+    let tier: String?
+    let weeklyPickups: Int
+
+    var id: String { userId ?? "rank-\(rank ?? -1)" }
+
+    enum CodingKeys: String, CodingKey {
+        case rank, tier
+        case userId = "user_id"
+        case firstName = "first_name"
+        case avatarUrl = "avatar_url"
+        case weeklyPickups = "weekly_pickups"
+    }
+}
+
+struct LeaderboardMe: Codable {
+    let rank: Int?
+    let weeklyPickups: Int?
+    let tier: String?
+
+    enum CodingKeys: String, CodingKey {
+        case rank, tier
+        case weeklyPickups = "weekly_pickups"
+    }
+}
+
+struct LeaderboardResponse: Codable {
+    let weekStart: String?
+    let entries: [LeaderboardEntry]
+    let me: LeaderboardMe?
+
+    enum CodingKeys: String, CodingKey {
+        case entries, me
+        case weekStart = "week_start"
     }
 }
 
@@ -375,7 +424,13 @@ struct Profile: Codable {
     let pickedCount: Int?
     let phone: String?
     let phoneVerified: Bool?
-    
+    // Gamification: leaderboard tier + hardcoded badge flags
+    let tier: String?
+    let badgeFirstPickup: Bool?
+    let badgeTenItems: Bool?
+    let badgeThreeWeekStreak: Bool?
+    let badgeTop3: Bool?
+
     enum CodingKeys: String, CodingKey {
         case id
         case firstName = "first_name"
@@ -387,8 +442,13 @@ struct Profile: Codable {
         case pickedCount = "picked_count"
         case phone
         case phoneVerified = "phone_verified"
+        case tier
+        case badgeFirstPickup = "badge_first_pickup"
+        case badgeTenItems = "badge_ten_items"
+        case badgeThreeWeekStreak = "badge_three_week_streak"
+        case badgeTop3 = "badge_top3"
     }
-    
+
     init(
         id: String,
         firstName: String?,
@@ -398,7 +458,12 @@ struct Profile: Codable {
         givenCount: Int?,
         pickedCount: Int?,
         phone: String?,
-        phoneVerified: Bool?
+        phoneVerified: Bool?,
+        tier: String? = nil,
+        badgeFirstPickup: Bool? = nil,
+        badgeTenItems: Bool? = nil,
+        badgeThreeWeekStreak: Bool? = nil,
+        badgeTop3: Bool? = nil
     ) {
         self.id = id
         self.firstName = firstName
@@ -409,8 +474,13 @@ struct Profile: Codable {
         self.pickedCount = pickedCount
         self.phone = phone
         self.phoneVerified = phoneVerified
+        self.tier = tier
+        self.badgeFirstPickup = badgeFirstPickup
+        self.badgeTenItems = badgeTenItems
+        self.badgeThreeWeekStreak = badgeThreeWeekStreak
+        self.badgeTop3 = badgeTop3
     }
-    
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
@@ -424,8 +494,13 @@ struct Profile: Codable {
         pickedCount = try container.decodeIfPresent(Int.self, forKey: .pickedCount)
         phone = try container.decodeIfPresent(String.self, forKey: .phone)
         phoneVerified = try container.decodeIfPresent(Bool.self, forKey: .phoneVerified)
+        tier = try container.decodeIfPresent(String.self, forKey: .tier)
+        badgeFirstPickup = try container.decodeIfPresent(Bool.self, forKey: .badgeFirstPickup)
+        badgeTenItems = try container.decodeIfPresent(Bool.self, forKey: .badgeTenItems)
+        badgeThreeWeekStreak = try container.decodeIfPresent(Bool.self, forKey: .badgeThreeWeekStreak)
+        badgeTop3 = try container.decodeIfPresent(Bool.self, forKey: .badgeTop3)
     }
-    
+
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
@@ -437,6 +512,11 @@ struct Profile: Codable {
         try container.encodeIfPresent(pickedCount, forKey: .pickedCount)
         try container.encodeIfPresent(phone, forKey: .phone)
         try container.encodeIfPresent(phoneVerified, forKey: .phoneVerified)
+        try container.encodeIfPresent(tier, forKey: .tier)
+        try container.encodeIfPresent(badgeFirstPickup, forKey: .badgeFirstPickup)
+        try container.encodeIfPresent(badgeTenItems, forKey: .badgeTenItems)
+        try container.encodeIfPresent(badgeThreeWeekStreak, forKey: .badgeThreeWeekStreak)
+        try container.encodeIfPresent(badgeTop3, forKey: .badgeTop3)
     }
     
     /// Computed full name from first and last name
@@ -2381,10 +2461,31 @@ class ApiService: ObservableObject {
             givenCount: envelope.given_count,
             pickedCount: envelope.picked_count,
             phone: envelope.phone,
-            phoneVerified: envelope.phone_verified
+            phoneVerified: envelope.phone_verified,
+            tier: envelope.tier,
+            badgeFirstPickup: envelope.badge_first_pickup,
+            badgeTenItems: envelope.badge_ten_items,
+            badgeThreeWeekStreak: envelope.badge_three_week_streak,
+            badgeTop3: envelope.badge_top3
         )
     }
-    
+
+    /// Fetch the current week's city leaderboard (GET /leaderboard).
+    func getLeaderboard() async throws -> LeaderboardResponse {
+        let headers = try await authHeaders()
+        let request = try buildRequest(path: "/leaderboard", method: .GET, headers: headers)
+        let (data, response) = try await send(request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ApiServiceError.unknownError
+        }
+        guard (200...299).contains(http.statusCode) else {
+            if http.statusCode == 401 { throw ApiServiceError.unauthorized }
+            let message = extractErrorMessage(from: data)
+            throw ApiHTTPError(statusCode: http.statusCode, message: message)
+        }
+        return try JSONDecoder().decode(LeaderboardResponse.self, from: data)
+    }
+
     /// Upload profile photo via backend API
     /// Returns the photo URL from the server
     func uploadProfilePhoto(_ imageData: Data) async throws -> URL {
@@ -2584,6 +2685,11 @@ private extension ApiService {
         let given_count: Int?
         let picked_count: Int?
         let phone_verified: Bool?
+        let tier: String?
+        let badge_first_pickup: Bool?
+        let badge_ten_items: Bool?
+        let badge_three_week_streak: Bool?
+        let badge_top3: Bool?
     }
 
     func performProfileUpdate(path: String, headers: [String: String], body: Data) async throws -> Profile {
