@@ -50,6 +50,16 @@ struct UploadFindView: View {
     @State private var toastText = ""
     @FocusState private var descriptionFocused: Bool
 
+    // Duplicate check runs eagerly in the background once a photo and a
+    // location are both known, so its round-trip is off the submit path.
+    private struct DuplicatePrefetch {
+        let tick: Int
+        let coordinate: CLLocationCoordinate2D
+        let task: Task<Post?, Never>
+    }
+    @State private var duplicatePrefetch: DuplicatePrefetch?
+    @State private var duplicatePrefetchDebounce: Task<Void, Never>?
+
     // Layout constants
     private let sidePadding: CGFloat = 20
     private let maxWidth: CGFloat = 600
@@ -68,6 +78,15 @@ struct UploadFindView: View {
 
     var body: some View {
         content
+            // Pull focus onto the duplicate popup: soften and dim the form
+            // behind it while the sheet is up.
+            .blur(radius: duplicateCandidate == nil ? 0 : 6)
+            .overlay {
+                if duplicateCandidate != nil {
+                    Color.black.opacity(0.25).ignoresSafeArea()
+                }
+            }
+            .animation(.easeInOut(duration: 0.25), value: duplicateCandidate == nil)
             .background(Color(.systemBackground))
             .scrollDismissesKeyboard(.immediately)
             .navigationBarTitleDisplayMode(.inline)
@@ -84,6 +103,9 @@ struct UploadFindView: View {
         .onAppear { handleOnAppear() }
         .onChange(of: loc.userLocation) { newValue in
             vm.bootstrapLocation(newValue?.coordinate)
+        }
+        .onChange(of: draftStore.lastCaptureTick) { _ in
+            scheduleDuplicatePrefetch()
         }
         .onChange(of: vm.wantsDescription) { wants in
             if !wants {
@@ -124,6 +146,8 @@ struct UploadFindView: View {
                     post: candidate,
                     onSameItem: {
                         duplicateCandidate = nil
+                        // Abandoning the draft: also delete any eagerly
+                        // uploaded objects (default behavior).
                         draftStore.clearDraft()
                         router.selectedTab = .feed
                         dismiss()
@@ -352,7 +376,8 @@ struct UploadFindView: View {
 
             do {
                     let postId = try await uploadWithRetry()
-                    draftStore.clearDraft()
+                    // Keep the eagerly uploaded objects — they back the post.
+                    draftStore.clearDraft(deleteRemoteUploads: false)
                     submitState = .success
                     Haptics.play(.success)
                     #if DEBUG
@@ -416,20 +441,39 @@ struct UploadFindView: View {
             }
         }
 
-    /// Ask the server for nearby duplicates using the pre-encoded payload
-    /// from the draft store. Returns the top candidate, or nil on empty
-    /// result or any failure (fail-open).
+    /// Duplicate candidate for the current draft. Uses the eagerly prefetched
+    /// result when it still matches the photos and location being submitted;
+    /// otherwise falls back to a live check. Nil on empty result or any
+    /// failure (fail-open).
     @MainActor
     private func findDuplicateCandidate(coordinate: CLLocationCoordinate2D) async -> Post? {
-        guard let base64 = await draftStore.duplicateCheckBase64() else { return nil }
+        if let prefetch = duplicatePrefetch,
+           prefetch.tick == draftStore.lastCaptureTick,
+           coordinatesClose(prefetch.coordinate, coordinate) {
+            #if DEBUG
+            DLog("[DUP CHECK] using prefetched result")
+            #endif
+            return await prefetch.task.value
+        }
+        #if DEBUG
+        DLog("[DUP CHECK] prefetch stale/missing — live check")
+        #endif
+        return await runDuplicateCheck(coordinate: coordinate)
+    }
 
-        let api = ApiService(supabaseService: svc)
+    @MainActor
+    private func runDuplicateCheck(coordinate: CLLocationCoordinate2D) async -> Post? {
+        guard let base64 = await draftStore.duplicateCheckBase64() else { return nil }
+        let start = Date()
         do {
-            let duplicates = try await api.checkDuplicatePosts(
+            let duplicates = try await vm.api.checkDuplicatePosts(
                 lat: coordinate.latitude,
                 lng: coordinate.longitude,
                 imageBase64: base64
             )
+            #if DEBUG
+            DLog("[TIMING] dup-check \(Int(Date().timeIntervalSince(start) * 1000))ms candidates=\(duplicates.count)")
+            #endif
             return duplicates.first
         } catch {
             #if DEBUG
@@ -437,6 +481,46 @@ struct UploadFindView: View {
             #endif
             return nil
         }
+    }
+
+    /// Debounced kickoff for the eager duplicate check — fires ~0.8s after
+    /// the photo set or map pin settles so we don't spam the endpoint while
+    /// the user drags the map.
+    private func scheduleDuplicatePrefetch() {
+        duplicatePrefetchDebounce?.cancel()
+        duplicatePrefetchDebounce = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard !Task.isCancelled else { return }
+            startDuplicatePrefetch()
+        }
+    }
+
+    @MainActor
+    private func startDuplicatePrefetch() {
+        guard !draftStore.photos.isEmpty, let coordinate = vm.currentCoordinate else {
+            duplicatePrefetch?.task.cancel()
+            duplicatePrefetch = nil
+            return
+        }
+        let tick = draftStore.lastCaptureTick
+        if let existing = duplicatePrefetch,
+           existing.tick == tick,
+           coordinatesClose(existing.coordinate, coordinate) {
+            return
+        }
+        duplicatePrefetch?.task.cancel()
+        duplicatePrefetch = DuplicatePrefetch(
+            tick: tick,
+            coordinate: coordinate,
+            task: Task { await runDuplicateCheck(coordinate: coordinate) }
+        )
+    }
+
+    /// Prefetched duplicate results stay valid while the pin has moved less
+    /// than ~30m — well inside the server's duplicate-search radius.
+    private func coordinatesClose(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> Bool {
+        CLLocation(latitude: a.latitude, longitude: a.longitude)
+            .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude)) < 30
     }
 
     // Button state helpers
@@ -466,9 +550,14 @@ struct UploadFindView: View {
         if loc.authorization == CLAuthorizationStatus.notDetermined {
             loc.request()
         }
+        // Open the TLS connection to the API host while the form is still
+        // being filled; the duplicate check and post-create reuse it.
+        vm.api.warmUpConnection()
         Task {
             vm.bootstrapLocation(loc.userLocation?.coordinate)
         }
+        // A draft may already hold photos from a previous visit.
+        scheduleDuplicatePrefetch()
     }
 
     @ToolbarContentBuilder
@@ -498,7 +587,9 @@ struct UploadFindView: View {
             throw UploadError.invalidData
         }
 
-        let postId = UUID()
+        let submitStart = Date()
+        // Same id the eager uploads used for their storage folder.
+        let postId = draftStore.draftPostId
         let session = try await svc.client.auth.session
         let userId = session.user.id
         let token = session.accessToken
@@ -513,7 +604,11 @@ struct UploadFindView: View {
         DLog("[SUBMIT START] userId: \(userId)")
         #endif
 
+        let uploadsStart = Date()
         let imageURLs = try await uploadImagesToStorage(userId: userId, postId: postId)
+        #if DEBUG
+        DLog("[TIMING] submit await-uploads \(Int(Date().timeIntervalSince(uploadsStart) * 1000))ms (\(imageURLs.count) images)")
+        #endif
         let uniqueURLs = Array(NSOrderedSet(array: imageURLs)).compactMap { $0 as? URL }
         guard !uniqueURLs.isEmpty else { throw UploadError.imageProcessingFailed }
 
@@ -547,7 +642,6 @@ struct UploadFindView: View {
             approx_location: approxWKT
         )
 
-        let api = ApiService(supabaseService: svc)
         #if DEBUG
         DLog("[UPLOAD COMPLETE] urls: \(uniqueURLs.map { $0.absoluteString })")
         DLog("[POST payload] mode: \(modeValue)")
@@ -557,9 +651,14 @@ struct UploadFindView: View {
         DLog("[POST payload] approx_location: \(approxWKT ?? "nil")")
         #endif
 
+        let postCreateStart = Date()
         let createdPostId = try await fetchWithRetry(svc: svc) {
-            try await api.createPost(token: token, payload: payload)
+            try await vm.api.createPost(token: token, payload: payload)
         }
+        #if DEBUG
+        DLog("[TIMING] post-create \(Int(Date().timeIntervalSince(postCreateStart) * 1000))ms")
+        DLog("[TIMING] submit total \(Int(Date().timeIntervalSince(submitStart) * 1000))ms")
+        #endif
 
         // Trigger feed refresh after successful upload
         FeedViewModel.requestFeedRefresh()
@@ -572,58 +671,81 @@ struct UploadFindView: View {
         let options = ImageStorage.buildJPEGFileOptions()
         let photos = draftStore.photos
 
-        // JPEGs were pre-encoded in the background when the photos were
-        // added; fall back to encoding here (off the main actor) if needed.
-        var payloads: [(index: Int, data: Data)] = []
-        payloads.reserveCapacity(photos.count)
-        for (index, image) in photos.enumerated() {
-            let data = await draftStore.uploadJPEGData(at: index)
-                ?? UploadDraftStore.encodeForUpload(image)
-            guard let data, !data.isEmpty else {
-                #if DEBUG
-                DLog("[UPLOAD ERR] JPEG encoding failed for index: \(index)")
-                #endif
-                throw UploadError.imageProcessingFailed
+        // Fast path: uploads started in the background the moment each photo
+        // was added; by submit time most (often all) have already finished.
+        // Any photo whose eager upload is missing or failed falls back to an
+        // inline upload below.
+        var urls: [URL?] = Array(repeating: nil, count: photos.count)
+        var fallbackIndices: [Int] = []
+        for index in photos.indices {
+            if let url = await draftStore.eagerUploadResult(at: index) {
+                urls[index] = url
+            } else {
+                fallbackIndices.append(index)
             }
-            payloads.append((index, data))
         }
+        #if DEBUG
+        DLog("[UPLOAD] eager=\(photos.count - fallbackIndices.count)/\(photos.count) fallback=\(fallbackIndices)")
+        #endif
 
-        // Upload concurrently; order is restored from the index.
-        let client = svc.client
-        return try await withThrowingTaskGroup(of: (Int, URL).self) { group in
-            for payload in payloads {
-                group.addTask {
-                    let path = ImageStorage.buildPostImagePath(userId: userId, postId: postId, index: payload.index)
-                    do {
-                        try await client.storage
-                            .from(bucket)
-                            .upload(path: path,
-                                    file: payload.data,
-                                    options: options)
-                        #if DEBUG
-                        DLog("[UPLOAD OK] \(path)")
-                        #endif
-                    } catch {
-                        #if DEBUG
-                        DLog("[UPLOAD ERR] \(path) \(error.localizedDescription)")
-                        #endif
-                        throw error
-                    }
-
-                    let publicURL = try client.storage
-                        .from(bucket)
-                        .getPublicURL(path: path)
-                    return (payload.index, publicURL)
+        if !fallbackIndices.isEmpty {
+            // Pre-encoded JPEGs; re-encode here (off the main actor) if needed.
+            var payloads: [(index: Int, data: Data)] = []
+            payloads.reserveCapacity(fallbackIndices.count)
+            for index in fallbackIndices {
+                let data = await draftStore.uploadJPEGData(at: index)
+                    ?? UploadDraftStore.encodeForUpload(photos[index])
+                guard let data, !data.isEmpty else {
+                    #if DEBUG
+                    DLog("[UPLOAD ERR] JPEG encoding failed for index: \(index)")
+                    #endif
+                    throw UploadError.imageProcessingFailed
                 }
+                payloads.append((index, data))
             }
 
-            var results: [(Int, URL)] = []
-            results.reserveCapacity(payloads.count)
-            for try await result in group {
-                results.append(result)
+            // Upload concurrently; order is restored from the index.
+            let client = svc.client
+            let uploaded = try await withThrowingTaskGroup(of: (Int, URL).self) { group in
+                for payload in payloads {
+                    group.addTask {
+                        let path = ImageStorage.buildPostImagePath(userId: userId, postId: postId, index: payload.index)
+                        do {
+                            try await client.storage
+                                .from(bucket)
+                                .upload(path: path,
+                                        file: payload.data,
+                                        options: options)
+                            #if DEBUG
+                            DLog("[UPLOAD OK] \(path)")
+                            #endif
+                        } catch {
+                            #if DEBUG
+                            DLog("[UPLOAD ERR] \(path) \(error.localizedDescription)")
+                            #endif
+                            throw error
+                        }
+
+                        let publicURL = try client.storage
+                            .from(bucket)
+                            .getPublicURL(path: path)
+                        return (payload.index, publicURL)
+                    }
+                }
+
+                var results: [(Int, URL)] = []
+                results.reserveCapacity(payloads.count)
+                for try await result in group {
+                    results.append(result)
+                }
+                return results
             }
-            return results.sorted { $0.0 < $1.0 }.map { $0.1 }
+            for (index, url) in uploaded {
+                urls[index] = url
+            }
         }
+
+        return urls.compactMap { $0 }
     }
     
     private func uploadWithRetry() async throws -> String {
@@ -751,6 +873,7 @@ struct UploadFindView: View {
                     camera: $vm.camera,
                     onCoordinateChange: { coord in
                         vm.debouncedReverseGeocode(coord)
+                        scheduleDuplicatePrefetch()
                     }
                 )
                 .environmentObject(loc)
@@ -811,6 +934,11 @@ struct PostDraft {
 
 @MainActor
 final class UploadFindViewModel: ObservableObject {
+    // One ApiService for the whole screen so the duplicate check, warm-up
+    // ping, and post-create share a URLSession (and its live connection)
+    // instead of paying a TLS handshake per call.
+    let api = ApiService()
+
     @Published var condition: Condition? = .needsFixing  // default to 'Needs Fixing'
     @Published var mode: PickupMode? = .street           // default selected (street)
     @Published var wantsDescription = false

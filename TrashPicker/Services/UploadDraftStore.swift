@@ -7,6 +7,11 @@
 
 import SwiftUI
 import UIKit
+import Supabase
+
+// Kept outside the @MainActor class so detached upload tasks can read it
+// without actor hops.
+private let uploadBucket = "item-photos"
 
 @MainActor
 final class UploadDraftStore: ObservableObject {
@@ -15,10 +20,23 @@ final class UploadDraftStore: ObservableObject {
 
     private let maxPhotos = 3
 
-    // Upload payloads are pre-encoded on a background thread as soon as a
-    // photo lands in the draft, so they are ready by the time the user has
-    // filled in the form and submit is pure network I/O.
-    private var uploadEncodeTasks: [Task<Data?, Never>] = []
+    /// Post id shared by eager storage uploads and the final post-create
+    /// payload, so uploads that start while the user fills the form land in
+    /// the right folder. Regenerated whenever the draft is cleared.
+    private(set) var draftPostId = UUID()
+
+    /// Per-photo background work. JPEGs are pre-encoded the moment a photo
+    /// lands in the draft, and the storage upload starts right behind the
+    /// encode — concurrent with the user filling the form — so submit only
+    /// awaits whatever hasn't finished yet.
+    private struct Slot {
+        let encodeTask: Task<Data?, Never>
+        var uploadTask: Task<URL, Error>?
+        var remotePath: String?
+        let addedAt: Date
+    }
+
+    private var slots: [Slot] = []
     private var duplicateCheckTask: Task<String?, Never>?
 
     /// Insert photo preserving capture order, trim to max, bump tick
@@ -28,16 +46,21 @@ final class UploadDraftStore: ObservableObject {
 
         // Append so earlier captures stay at lower indices
         photos.append(processedImage)
-        uploadEncodeTasks.append(Self.makeUploadEncodeTask(for: processedImage))
+        let addedAt = Date()
+        slots.append(Slot(encodeTask: Self.makeUploadEncodeTask(for: processedImage, addedAt: addedAt),
+                          uploadTask: nil,
+                          remotePath: nil,
+                          addedAt: addedAt))
 
         // Trim to max photos
         if photos.count > maxPhotos {
             photos = Array(photos.prefix(maxPhotos))
-            while uploadEncodeTasks.count > maxPhotos {
-                uploadEncodeTasks.removeLast().cancel()
+            while slots.count > maxPhotos {
+                tearDownSlot(slots.removeLast())
             }
         }
 
+        startUploadIfPossible(at: slots.count - 1)
         rebuildDuplicateCheckTask()
 
         // Bump tick for observers
@@ -49,9 +72,14 @@ final class UploadDraftStore: ObservableObject {
         guard photos.indices.contains(index) else { return }
         let processedImage = Self.prepareForDraft(image)
         photos[index] = processedImage
-        if uploadEncodeTasks.indices.contains(index) {
-            uploadEncodeTasks[index].cancel()
-            uploadEncodeTasks[index] = Self.makeUploadEncodeTask(for: processedImage)
+        if slots.indices.contains(index) {
+            tearDownSlot(slots[index])
+            let addedAt = Date()
+            slots[index] = Slot(encodeTask: Self.makeUploadEncodeTask(for: processedImage, addedAt: addedAt),
+                                uploadTask: nil,
+                                remotePath: nil,
+                                addedAt: addedAt)
+            startUploadIfPossible(at: index)
         }
         rebuildDuplicateCheckTask()
         lastCaptureTick += 1
@@ -61,21 +89,25 @@ final class UploadDraftStore: ObservableObject {
     func removePhoto(at index: Int) {
         guard photos.indices.contains(index) else { return }
         photos.remove(at: index)
-        if uploadEncodeTasks.indices.contains(index) {
-            uploadEncodeTasks[index].cancel()
-            uploadEncodeTasks.remove(at: index)
+        if slots.indices.contains(index) {
+            tearDownSlot(slots.remove(at: index))
         }
         rebuildDuplicateCheckTask()
         lastCaptureTick += 1
     }
 
-    /// Clear all photos (on successful post or discard)
-    func clearDraft() {
+    /// Clear all photos (on successful post or discard).
+    /// - Parameter deleteRemoteUploads: pass `false` after a successful
+    ///   submit, where the eagerly uploaded objects now back a real post.
+    ///   The default (`true`) is for abandoned drafts and best-effort
+    ///   deletes anything already in storage.
+    func clearDraft(deleteRemoteUploads: Bool = true) {
         photos.removeAll()
-        uploadEncodeTasks.forEach { $0.cancel() }
-        uploadEncodeTasks.removeAll()
+        slots.forEach { tearDownSlot($0, deleteRemote: deleteRemoteUploads) }
+        slots.removeAll()
         duplicateCheckTask?.cancel()
         duplicateCheckTask = nil
+        draftPostId = UUID()
         lastCaptureTick += 1
     }
 
@@ -89,13 +121,97 @@ final class UploadDraftStore: ObservableObject {
         photos.indices.contains(index) ? photos[index] : nil
     }
 
+    // MARK: - Eager storage uploads
+
+    /// Kick off the storage upload for the slot at `index`, chained behind
+    /// its encode task. Skipped when there is no auth session yet — submit
+    /// falls back to uploading inline in that case.
+    private func startUploadIfPossible(at index: Int) {
+        guard slots.indices.contains(index), slots[index].uploadTask == nil else { return }
+        guard let userId = SupabaseService.shared.session?.user.id else {
+            #if DEBUG
+            DLog("[UPLOAD EAGER] skipped (no session) index=\(index)")
+            #endif
+            return
+        }
+        // Unique object name per photo instance: replacing or reordering a
+        // photo never collides with an earlier upload of the same slot.
+        let path = "posts/\(userId.uuidString.lowercased())/\(draftPostId.uuidString)/\(UUID().uuidString).jpg"
+        slots[index].remotePath = path
+        slots[index].uploadTask = Self.makeUploadTask(
+            encodeTask: slots[index].encodeTask,
+            client: SupabaseService.shared.client,
+            path: path,
+            addedAt: slots[index].addedAt
+        )
+    }
+
+    /// Result of the eager upload for the photo at `index`, or nil when no
+    /// eager upload was started or it failed — callers fall back to an
+    /// inline upload so a background failure never breaks submit.
+    func eagerUploadResult(at index: Int) async -> URL? {
+        guard slots.indices.contains(index), let task = slots[index].uploadTask else { return nil }
+        return try? await task.value
+    }
+
+    /// Cancel a slot's background work and best-effort delete anything it
+    /// already put in storage (abandoned drafts must not leave orphans).
+    private func tearDownSlot(_ slot: Slot, deleteRemote: Bool = true) {
+        slot.encodeTask.cancel()
+        guard let uploadTask = slot.uploadTask else { return }
+        uploadTask.cancel()
+        guard deleteRemote, let path = slot.remotePath else { return }
+        let client = SupabaseService.shared.client
+        Task.detached(priority: .utility) {
+            // Let the upload settle first so the delete can't race a write.
+            _ = try? await uploadTask.value
+            do {
+                _ = try await client.storage.from(uploadBucket).remove(paths: [path])
+                #if DEBUG
+                DLog("[UPLOAD EAGER] removed abandoned object \(path)")
+                #endif
+            } catch {
+                #if DEBUG
+                DLog("[UPLOAD EAGER] orphan cleanup failed (harmless) \(path): \(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
+
+    nonisolated private static func makeUploadTask(
+        encodeTask: Task<Data?, Never>,
+        client: SupabaseClient,
+        path: String,
+        addedAt: Date
+    ) -> Task<URL, Error> {
+        Task.detached(priority: .userInitiated) {
+            guard let data = await encodeTask.value, !data.isEmpty else {
+                throw UploadError.imageProcessingFailed
+            }
+            try Task.checkCancellation()
+            let start = Date()
+            // upsert so a submit-time retry of the same path can't 409.
+            try await client.storage
+                .from(uploadBucket)
+                .upload(path: path,
+                        file: data,
+                        options: FileOptions(cacheControl: "3600", contentType: "image/jpeg", upsert: true))
+            #if DEBUG
+            let uploadMs = Int(Date().timeIntervalSince(start) * 1000)
+            let sinceAddMs = Int(Date().timeIntervalSince(addedAt) * 1000)
+            DLog("[TIMING] eager upload ok bytes=\(data.count) upload=\(uploadMs)ms capture→uploaded=\(sinceAddMs)ms \(path)")
+            #endif
+            return try client.storage.from(uploadBucket).getPublicURL(path: path)
+        }
+    }
+
     // MARK: - Pre-encoded upload payloads
 
     /// Upload-ready JPEG for the photo at `index`, pre-encoded off the main
     /// thread when the photo was added. Nil if encoding failed.
     func uploadJPEGData(at index: Int) async -> Data? {
-        guard uploadEncodeTasks.indices.contains(index) else { return nil }
-        return await uploadEncodeTasks[index].value
+        guard slots.indices.contains(index) else { return nil }
+        return await slots[index].encodeTask.value
     }
 
     /// Small base64 JPEG of the primary photo for the server-side duplicate
@@ -119,9 +235,14 @@ final class UploadDraftStore: ObservableObject {
         }
     }
 
-    nonisolated private static func makeUploadEncodeTask(for image: UIImage) -> Task<Data?, Never> {
+    nonisolated private static func makeUploadEncodeTask(for image: UIImage, addedAt: Date) -> Task<Data?, Never> {
         Task.detached(priority: .userInitiated) {
-            encodeForUpload(image)
+            let data = encodeForUpload(image)
+            #if DEBUG
+            let ms = Int(Date().timeIntervalSince(addedAt) * 1000)
+            DLog("[TIMING] capture→encode-ready \(ms)ms bytes=\(data?.count ?? 0)")
+            #endif
+            return data
         }
     }
 

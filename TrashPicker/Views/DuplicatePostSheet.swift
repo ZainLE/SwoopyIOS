@@ -22,9 +22,9 @@ struct DuplicatePostSheet: View {
             Capsule()
                 .fill(Color.secondary.opacity(0.3))
                 .frame(width: 36, height: 5)
-                .padding(.top, 10)
+                .padding(.top, 12)
 
-            VStack(spacing: 6) {
+            VStack(spacing: 8) {
                 Text("Is this the same item?")
                     .font(.system(size: 20, weight: .bold))
                     .foregroundColor(.primary)
@@ -34,6 +34,7 @@ struct DuplicatePostSheet: View {
                     .foregroundColor(mutedColor)
                     .multilineTextAlignment(.center)
             }
+            .padding(.top, 12)
 
             candidateCard
 

@@ -836,11 +836,13 @@ class ApiService: ObservableObject {
             // Use provided session (for testing)
             self.session = session
         } else {
-            // Create default session with Apple-compliant timeouts
+            // Match the foreground-recreation config below: the two used to
+            // diverge (5s/10s here vs 30s/60s after backgrounding), and the
+            // 10s resource cap was tight enough to kill slow-network uploads.
             let configuration = URLSessionConfiguration.default
             configuration.waitsForConnectivity = true // Allow brief connectivity wait
-            configuration.timeoutIntervalForRequest = 5.0 // Apple guideline compliance
-            configuration.timeoutIntervalForResource = 10.0 // Total resource timeout
+            configuration.timeoutIntervalForRequest = 30.0
+            configuration.timeoutIntervalForResource = 60.0
             self.session = URLSession(configuration: configuration)
         }
         
@@ -1732,7 +1734,34 @@ class ApiService: ObservableObject {
     }
     
     // MARK: - Posts
-    
+
+    /// One-time fire-and-forget ping to the API host so the TCP+TLS
+    /// handshake happens while the user is still filling the form instead of
+    /// on the submit path. Uses the instance session, which is the same
+    /// connection pool `checkDuplicatePosts` and `createPost` run on.
+    private var didWarmUp = false
+    func warmUpConnection() {
+        guard !didWarmUp else { return }
+        didWarmUp = true
+        guard let url = try? resolvedURL(for: "/health") else { return }
+        let session = self.session
+        Task.detached(priority: .utility) {
+            let start = Date()
+            var req = URLRequest(url: url)
+            req.httpMethod = "GET"
+            do {
+                _ = try await session.data(for: req)
+                #if DEBUG
+                DLog("[TIMING] api warm-up ok \(Int(Date().timeIntervalSince(start) * 1000))ms")
+                #endif
+            } catch {
+                #if DEBUG
+                DLog("[TIMING] api warm-up failed (harmless): \(error.localizedDescription)")
+                #endif
+            }
+        }
+    }
+
     func createPost(token: String, payload: PostCreatePayload) async throws -> String {
         var req = URLRequest(url: URL(string: "https://api.swoopy.eu/custom-api/post")!)
         req.httpMethod = "POST"
@@ -1743,7 +1772,9 @@ class ApiService: ObservableObject {
         let encoder = JSONEncoder()
         req.httpBody = try encoder.encode(payload)
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        // Instance session (not URLSession.shared) so this rides the
+        // connection the duplicate check / warm-up already opened.
+        let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else {
             let nsError = NSError(
                 domain: "ApiService",
