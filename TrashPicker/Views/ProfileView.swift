@@ -404,12 +404,6 @@ struct ProfileView: View {
                             Text("Account age: \(viewModel.accountAgeText)")
                                 .font(AppFont.sub)
                                 .foregroundColor(AppColor.muted)
-
-                            if let givenCount, givenCount >= 1 {
-                                Text("You've helped divert \(givenCount) item\(givenCount == 1 ? "" : "s")")
-                                    .font(AppFont.sub.weight(.semibold))
-                                    .foregroundColor(AppColor.brandGreen)
-                            }
                         }
                     }
                     
@@ -450,6 +444,7 @@ struct ProfileView: View {
                 title: "First Pickup",
                 icon: "checkmark.seal.fill",
                 hint: "Have one of your finds picked up",
+                accent: AchievementAccent.green,
                 earned: profile?.badgeFirstPickup == true
             ),
             ProfileAchievementBadge(
@@ -457,6 +452,7 @@ struct ProfileView: View {
                 title: "10 Items Diverted",
                 icon: "arrow.3.trianglepath",
                 hint: "Ten of your finds picked up",
+                accent: AchievementAccent.teal,
                 earned: profile?.badgeTenItems == true
             ),
             ProfileAchievementBadge(
@@ -464,6 +460,7 @@ struct ProfileView: View {
                 title: "3-Week Streak",
                 icon: "flame.fill",
                 hint: "Pickups three weeks in a row",
+                accent: AchievementAccent.orange,
                 earned: profile?.badgeThreeWeekStreak == true
             ),
             ProfileAchievementBadge(
@@ -471,6 +468,7 @@ struct ProfileView: View {
                 title: "Top 3 Finish",
                 icon: "trophy.fill",
                 hint: "End a week in the top 3",
+                accent: AchievementAccent.gold,
                 earned: profile?.badgeTop3 == true
             )
         ]
@@ -488,6 +486,10 @@ struct ProfileView: View {
                     weeklyRank: weeklyStanding?.rank,
                     weeklyPickups: weeklyStanding?.weeklyPickups
                 )
+            }
+
+            if let givenCount, givenCount >= 1 {
+                ImpactStatRow(count: givenCount)
             }
 
             AchievementBadgeGrid(badges: badges)
@@ -1006,12 +1008,75 @@ struct ProfileView: View {
 
 // MARK: - Achievements
 
+/// Adaptive accent palette for the Achievements section. Each badge keeps its
+/// own hue in both appearances: the dark variants are brighter so small text
+/// and icons stay legible on dark backgrounds.
+private enum AchievementAccent {
+    static let green = Color(light: "00513F", dark: "4FB899")
+    static let teal = Color(light: "0B7285", dark: "3BC9DB")
+    static let orange = Color(light: "D9480F", dark: "FF922B")
+    static let gold = Color(light: "A87C00", dark: "E3B341")
+}
+
+private extension Color {
+    init(light: String, dark: String) {
+        self.init(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(Color(hex: dark))
+                : UIColor(Color(hex: light))
+        })
+    }
+}
+
 private struct ProfileAchievementBadge: Identifiable {
     let id: String
     let title: String
     let icon: String
     let hint: String
+    let accent: Color
     let earned: Bool
+}
+
+/// Lifetime impact stat shown between the tier card and the badge grid:
+/// how many of the user's finds have been picked up and given a second life.
+private struct ImpactStatRow: View {
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [AchievementAccent.teal, AchievementAccent.green],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 36, height: 36)
+
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("You've helped divert \(count) item\(count == 1 ? "" : "s")")
+                    .font(AppFont.body.weight(.semibold))
+                    .foregroundColor(AppColor.text)
+
+                Text("Finds of yours picked up and given a second life")
+                    .font(AppFont.sub)
+                    .foregroundColor(AppColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("You've helped divert \(count) item\(count == 1 ? "" : "s")")
+    }
 }
 
 /// Tier summary card for the profile's Achievements section. Tiers move via
@@ -1029,6 +1094,7 @@ private struct TierProgressCard: View {
                 ZStack {
                     Circle()
                         .fill(tier.color.opacity(0.15))
+                        .overlay(Circle().strokeBorder(tier.color.opacity(0.3), lineWidth: 1))
                         .frame(width: 44, height: 44)
 
                     Image(systemName: tier.icon)
@@ -1050,15 +1116,22 @@ private struct TierProgressCard: View {
                 Spacer(minLength: 8)
 
                 if let weeklyRank {
+                    let rankColor = weeklyRank <= 3 ? AchievementAccent.gold : AchievementAccent.green
                     VStack(spacing: 1) {
                         Text("#\(weeklyRank)")
                             .font(.system(size: 17, weight: .bold))
-                            .foregroundColor(AppColor.brandGreen)
+                            .foregroundColor(rankColor)
 
                         Text("this week")
-                            .font(.system(size: 11))
-                            .foregroundColor(AppColor.muted)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(rankColor.opacity(0.85))
                     }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(rankColor.opacity(0.14))
+                    )
                 }
             }
 
@@ -1080,11 +1153,13 @@ private struct TierProgressCard: View {
     }
 
     /// Four-step ladder, filled up to the current tier in each tier's color.
+    /// Steps not yet reached keep a faint wash of their own tier color so the
+    /// ladder previews what's ahead instead of collapsing to gray.
     private var ladder: some View {
         HStack(spacing: 6) {
             ForEach(LeaderboardTier.allCases, id: \.self) { step in
                 Capsule()
-                    .fill(step.ladderIndex <= tier.ladderIndex ? step.color : Color(.systemGray5))
+                    .fill(step.ladderIndex <= tier.ladderIndex ? step.color : step.color.opacity(0.2))
                     .frame(height: 6)
                     .frame(maxWidth: .infinity)
             }
@@ -1117,12 +1192,22 @@ private struct AchievementBadgeGrid: View {
                 HStack(alignment: .top, spacing: 8) {
                     ZStack {
                         Circle()
-                            .fill(badge.earned ? AppColor.brandGreen.opacity(0.15) : Color(.systemGray5))
+                            .fill(
+                                badge.earned
+                                    ? AnyShapeStyle(
+                                        LinearGradient(
+                                            colors: [badge.accent, badge.accent.opacity(0.72)],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                                    : AnyShapeStyle(badge.accent.opacity(0.14))
+                            )
                             .frame(width: 32, height: 32)
 
                         Image(systemName: badge.icon)
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(badge.earned ? AppColor.brandGreen : AppColor.muted)
+                            .foregroundColor(badge.earned ? .white : badge.accent.opacity(0.65))
                     }
 
                     VStack(alignment: .leading, spacing: 1) {
@@ -1133,8 +1218,8 @@ private struct AchievementBadgeGrid: View {
                             .minimumScaleFactor(0.8)
 
                         Text(badge.earned ? "Earned" : badge.hint)
-                            .font(.system(size: 11))
-                            .foregroundColor(badge.earned ? AppColor.brandGreen : AppColor.muted)
+                            .font(.system(size: 11, weight: badge.earned ? .medium : .regular))
+                            .foregroundColor(badge.earned ? badge.accent : AppColor.muted)
                             .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -1145,7 +1230,11 @@ private struct AchievementBadgeGrid: View {
                 .frame(maxWidth: .infinity, minHeight: 52, alignment: .topLeading)
                 .background(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(badge.earned ? AppColor.brandGreen.opacity(0.08) : Color(.tertiarySystemFill))
+                        .fill(badge.accent.opacity(badge.earned ? 0.1 : 0.05))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(badge.accent.opacity(badge.earned ? 0.28 : 0.12), lineWidth: 1)
                 )
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(badge.title), \(badge.earned ? "earned" : "locked — \(badge.hint)")")
