@@ -39,20 +39,18 @@ final class CameraSessionManager: NSObject, ObservableObject {
     
     // MARK: - Private Properties
     
-    private let session = AVCaptureSession()
+    private let session: AVCaptureSession
     private let photoOutput = AVCapturePhotoOutput()
     private let sessionQueue = DispatchQueue(label: "com.trashpicker.camera.session")
-    
+
     private var deviceInput: AVCaptureDeviceInput?
     private var photoCompletion: ((UIImage?) -> Void)?
-    
-    // Cached preview layer to avoid recreating on each render
-    private lazy var previewLayer: AVCaptureVideoPreviewLayer = {
-        let layer = AVCaptureVideoPreviewLayer(session: session)
-        layer.videoGravity = .resizeAspectFill
-        return layer
-    }()
-    
+
+    // Created eagerly while the session is still idle: attaching a preview
+    // layer to a running session blocks the main thread for seconds while
+    // the capture graph reconfigures.
+    private let previewLayer: AVCaptureVideoPreviewLayer
+
     #if DEBUG
     private var configStartTime: CFAbsoluteTime = 0
     private var captureStartTime: CFAbsoluteTime = 0
@@ -63,6 +61,11 @@ final class CameraSessionManager: NSObject, ObservableObject {
     static let shared = CameraSessionManager()
     
     private override init() {
+        let session = AVCaptureSession()
+        self.session = session
+        let layer = AVCaptureVideoPreviewLayer(session: session)
+        layer.videoGravity = .resizeAspectFill
+        self.previewLayer = layer
         super.init()
     }
     
@@ -255,24 +258,27 @@ final class CameraSessionManager: NSObject, ObservableObject {
             
             // Configure optional features only if supported
             if #available(iOS 16.0, *) {
-                // Prefer maxPhotoDimensions on iOS 16+
-                let dims = device.activeFormat.highResolutionStillImageDimensions
-                if dims.width > 0 && dims.height > 0 {
-                    photoOutput.maxPhotoDimensions = dims
+                // Cap capture resolution near the app's 2048px processing
+                // target — full-sensor captures are slower to configure,
+                // capture, and encode, and get downscaled to 2048 anyway.
+                let targetLongEdge: Int32 = 2048
+                let supported = device.activeFormat.supportedMaxPhotoDimensions
+                let capped = supported
+                    .filter { max($0.width, $0.height) >= targetLongEdge }
+                    .min { max($0.width, $0.height) < max($1.width, $1.height) }
+                    ?? supported.max { max($0.width, $0.height) < max($1.width, $1.height) }
+                if let capped {
+                    photoOutput.maxPhotoDimensions = capped
                 }
             } else {
                 // Fallback for iOS < 16
                 photoOutput.isHighResolutionCaptureEnabled = true
             }
-            
-            if photoOutput.isDepthDataDeliverySupported {
-                photoOutput.isDepthDataDeliveryEnabled = true
-            }
-            
-            if photoOutput.isPortraitEffectsMatteDeliverySupported {
-                photoOutput.isPortraitEffectsMatteDeliveryEnabled = true
-            }
-            
+
+            // Depth / portrait matte delivery are intentionally left disabled:
+            // they slow down session configuration and every capture, and the
+            // upload flow never uses them.
+
             // Disable live photo by default
             if photoOutput.isLivePhotoCaptureSupported {
                 photoOutput.isLivePhotoCaptureEnabled = false

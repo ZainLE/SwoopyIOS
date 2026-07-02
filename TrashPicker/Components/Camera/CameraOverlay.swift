@@ -17,13 +17,15 @@ struct CameraOverlay: View {
     
     var body: some View {
         ZStack {
-            // Camera preview
-            if camera.isReady {
-                CameraPreviewView(layer: camera.makePreviewLayer())
-                    .ignoresSafeArea()
-            } else {
+            // Camera preview: mounted immediately (before the session starts)
+            // so the preview layer never attaches to an already-running
+            // session, which would stall the main thread for seconds.
+            CameraPreviewView(layer: camera.makePreviewLayer())
+                .ignoresSafeArea()
+
+            if !camera.isReady {
                 Color.black.ignoresSafeArea()
-                
+
                 if camera.error == .permissionDenied {
                     permissionDeniedView
                 } else {
@@ -213,11 +215,17 @@ struct CameraOverlay: View {
         }
         
         do {
-            guard let data = try await item.loadTransferable(type: Data.self),
-                  let image = UIImage(data: data) else {
+            guard let data = try await item.loadTransferable(type: Data.self) else {
                 return
             }
-            
+
+            // Decode + downscale off the main thread; full-res library
+            // photos are heavy to redraw.
+            let image = await Task.detached(priority: .userInitiated) {
+                UIImage(data: data).map(UploadDraftStore.prepareForDraft)
+            }.value
+            guard let image else { return }
+
             await MainActor.run {
                 onCaptured(image)
             }

@@ -1604,8 +1604,24 @@ class ApiService: ObservableObject {
             let lng: Double
             let image_base64: String
         }
+        // The server returns a trimmed candidate payload (single photo_url,
+        // backend condition values, ISO-8601 date strings) — not a full Post.
+        // Decode a tolerant DTO and map it onto Post, like the feed does.
+        struct DuplicateCandidate: Decodable {
+            let id: String
+            let title: String?
+            let description: String?
+            let category: String?
+            let condition: String?
+            let mode: String?
+            let owner_id: String?
+            let photo_url: String?
+            let created_at: String?
+            let expires_at: String?
+            let distance_m: StringOrDouble?
+        }
         struct CheckResponse: Decodable {
-            let duplicates: [Post]?
+            let duplicates: [DuplicateCandidate]?
         }
 
         let headers = try await authHeaders()
@@ -1618,7 +1634,39 @@ class ApiService: ObservableObject {
             throw ApiHTTPError(statusCode: statusCode, message: extractErrorMessage(from: data))
         }
         let decoded = try JSONDecoder().decode(CheckResponse.self, from: data)
-        return decoded.duplicates ?? []
+
+        let isoFrac = ISO8601DateFormatter()
+        isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let isoPlain = ISO8601DateFormatter()
+        isoPlain.formatOptions = [.withInternetDateTime]
+        func parseDate(_ raw: String?) -> Date? {
+            guard let raw else { return nil }
+            return isoFrac.date(from: raw) ?? isoPlain.date(from: raw)
+        }
+
+        return (decoded.duplicates ?? []).map { dto in
+            let images = dto.photo_url
+                .flatMap(URL.init(string:))
+                .map { [PostImage(url: $0, orderIndex: 0)] } ?? []
+            return Post(
+                id: dto.id,
+                title: dto.title ?? "Shared item",
+                description: dto.description,
+                category: dto.category ?? "other",
+                condition: dto.condition.flatMap(ConditionBackend.init(rawValue:))?.ui ?? .good,
+                mode: dto.mode.flatMap(ItemMode.init(rawValue:)) ?? .street,
+                ownerId: dto.owner_id ?? "",
+                createdAt: parseDate(dto.created_at),
+                expiresAt: parseDate(dto.expires_at),
+                exactLocation: nil,
+                approxLocation: nil,
+                addressLine: nil,
+                images: images,
+                distance: (dto.distance_m?.value).map { $0 / 1000.0 },
+                owner: nil,
+                userReservation: nil
+            )
+        }
     }
 
     // MARK: - Nearby Alert Preferences

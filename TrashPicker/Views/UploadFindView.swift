@@ -166,9 +166,15 @@ struct UploadFindView: View {
     private func handlePhotoPickerChange(_ item: PhotosPickerItem?) {
         guard let item else { return }
         Task {
-            if let data = try? await item.loadTransferable(type: Data.self),
-               let image = UIImage(data: data) {
-                await applyPickedImage(image)
+            if let data = try? await item.loadTransferable(type: Data.self) {
+                // Decode + downscale off the main thread; full-res library
+                // photos are heavy to redraw.
+                let image = await Task.detached(priority: .userInitiated) {
+                    UIImage(data: data).map(UploadDraftStore.prepareForDraft)
+                }.value
+                if let image {
+                    await applyPickedImage(image)
+                }
             }
             await MainActor.run {
                 selectedPhotoItem = nil
@@ -410,33 +416,27 @@ struct UploadFindView: View {
             }
         }
 
-    /// Downscale + JPEG-encode the primary photo and ask the server for
-    /// nearby duplicates. Returns the top candidate, or nil on empty result
-    /// or any failure (fail-open).
+    /// Ask the server for nearby duplicates using the pre-encoded payload
+    /// from the draft store. Returns the top candidate, or nil on empty
+    /// result or any failure (fail-open).
     @MainActor
     private func findDuplicateCandidate(coordinate: CLLocationCoordinate2D) async -> Post? {
-        guard let image = draftStore.photos.first,
-              let base64 = duplicateCheckBase64(from: image) else { return nil }
+        guard let base64 = await draftStore.duplicateCheckBase64() else { return nil }
 
         let api = ApiService(supabaseService: svc)
-        let duplicates = (try? await api.checkDuplicatePosts(
-            lat: coordinate.latitude,
-            lng: coordinate.longitude,
-            imageBase64: base64
-        )) ?? []
-        return duplicates.first
-    }
-
-    private func duplicateCheckBase64(from image: UIImage) -> String? {
-        // The server only hashes the image — downscale to keep the payload small.
-        let maxDimension: CGFloat = 1_024
-        let scale = min(1, maxDimension / max(image.size.width, image.size.height))
-        let targetSize = CGSize(width: image.size.width * scale, height: image.size.height * scale)
-        let renderer = UIGraphicsImageRenderer(size: targetSize)
-        let resized = renderer.image { _ in
-            image.draw(in: CGRect(origin: .zero, size: targetSize))
+        do {
+            let duplicates = try await api.checkDuplicatePosts(
+                lat: coordinate.latitude,
+                lng: coordinate.longitude,
+                imageBase64: base64
+            )
+            return duplicates.first
+        } catch {
+            #if DEBUG
+            DLog("[DUP CHECK] failed (fail-open): \(error)")
+            #endif
+            return nil
         }
-        return resized.jpegData(compressionQuality: 0.6)?.base64EncodedString()
     }
 
     // Button state helpers
@@ -568,50 +568,62 @@ struct UploadFindView: View {
     }
     
     private func uploadImagesToStorage(userId: UUID, postId: UUID) async throws -> [URL] {
-        var urls: [URL] = []
-        urls.reserveCapacity(draftStore.photos.count)
-
         let bucket = "item-photos"
         let options = ImageStorage.buildJPEGFileOptions()
+        let photos = draftStore.photos
 
-        for (index, image) in draftStore.photos.enumerated() {
-            // Convert UIImage -> JPEG data
-            guard let data = image.jpegData(compressionQuality: 0.8), data.count > 0 else {
+        // JPEGs were pre-encoded in the background when the photos were
+        // added; fall back to encoding here (off the main actor) if needed.
+        var payloads: [(index: Int, data: Data)] = []
+        payloads.reserveCapacity(photos.count)
+        for (index, image) in photos.enumerated() {
+            let data = await draftStore.uploadJPEGData(at: index)
+                ?? UploadDraftStore.encodeForUpload(image)
+            guard let data, !data.isEmpty else {
                 #if DEBUG
                 DLog("[UPLOAD ERR] JPEG encoding failed for index: \(index)")
                 #endif
                 throw UploadError.imageProcessingFailed
             }
-
-            let path = ImageStorage.buildPostImagePath(userId: userId, postId: postId, index: index)
-
-            do {
-                try await svc.client.storage
-                    .from(bucket)
-                    .upload(path: path,
-                            file: data,
-                            options: options)
-                #if DEBUG
-                DLog("[UPLOAD KEY] \(path)")
-                DLog("[UPLOAD OK] \(path)")
-                #endif
-            } catch {
-                #if DEBUG
-                DLog("[UPLOAD ERR] \(path) \(error.localizedDescription)")
-                #endif
-                throw error
-            }
-
-            let publicURL = try svc.client.storage
-                .from(bucket)
-                .getPublicURL(path: path)
-            #if DEBUG
-            DLog("[UPLOAD URL] \(publicURL.absoluteString)")
-            #endif
-            urls.append(publicURL)
+            payloads.append((index, data))
         }
 
-        return urls
+        // Upload concurrently; order is restored from the index.
+        let client = svc.client
+        return try await withThrowingTaskGroup(of: (Int, URL).self) { group in
+            for payload in payloads {
+                group.addTask {
+                    let path = ImageStorage.buildPostImagePath(userId: userId, postId: postId, index: payload.index)
+                    do {
+                        try await client.storage
+                            .from(bucket)
+                            .upload(path: path,
+                                    file: payload.data,
+                                    options: options)
+                        #if DEBUG
+                        DLog("[UPLOAD OK] \(path)")
+                        #endif
+                    } catch {
+                        #if DEBUG
+                        DLog("[UPLOAD ERR] \(path) \(error.localizedDescription)")
+                        #endif
+                        throw error
+                    }
+
+                    let publicURL = try client.storage
+                        .from(bucket)
+                        .getPublicURL(path: path)
+                    return (payload.index, publicURL)
+                }
+            }
+
+            var results: [(Int, URL)] = []
+            results.reserveCapacity(payloads.count)
+            for try await result in group {
+                results.append(result)
+            }
+            return results.sorted { $0.0 < $1.0 }.map { $0.1 }
+        }
     }
     
     private func uploadWithRetry() async throws -> String {
