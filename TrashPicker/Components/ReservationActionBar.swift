@@ -74,7 +74,7 @@ struct ReservationActionBar: View {
             HStack(spacing: 12) {
                 if canPickUp {
                     Button(action: { onAction(.pickup) }) {
-                        buttonLabel(title: "Pick up", loading: pickupLoading)
+                        buttonLabel(title: "Mark as picked up", loading: pickupLoading)
                     }
                     .buttonStyle(SwoopyPillButtonStyle(kind: .filledBrand))
                     .disabled(!isPickupEnabled)
@@ -118,8 +118,7 @@ struct ReservationActionBar: View {
             Text(title)
                 .font(.headline.weight(.semibold))
                 .lineLimit(1)
-                .minimumScaleFactor(0.9)
-                .fixedSize(horizontal: true, vertical: false)
+                .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity)
     }

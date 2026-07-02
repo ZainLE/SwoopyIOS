@@ -43,6 +43,7 @@ struct ReservationRow: Identifiable {
     let ownerName: String
     let ownerPhone: String?
     let ownerAvatarUrl: URL?
+    let ownerPickupsCount: Int?
     var contactPhone: String?
 
     // reservation state
@@ -182,6 +183,7 @@ extension ReservationRow {
         ownerName = p.owner?.fullName ?? "Unknown"
         ownerPhone = p.owner?.phone?.trimmingCharacters(in: .whitespacesAndNewlines)
         ownerAvatarUrl = p.owner?.avatarUrl
+        ownerPickupsCount = p.owner?.pickedCount
         let phoneFromReservation = r.contactPhone?.trimmingCharacters(in: .whitespacesAndNewlines)
         contactPhone = (phoneFromReservation?.isEmpty == false ? phoneFromReservation : nil)
             ?? ownerPhone
@@ -221,6 +223,7 @@ extension ReservationRow {
         ownerName = post.owner?.fullName ?? "Unknown"
         ownerPhone = post.owner?.phone
         ownerAvatarUrl = post.owner?.avatarUrl
+        ownerPickupsCount = post.owner?.pickedCount
         contactPhone = nil
         
         // Optimistic reservation starts as pending for home, active for street
@@ -426,7 +429,7 @@ struct ReservationsView: View {
                 ownerAvatarUrl: reservation.ownerAvatarUrl,
                 ownerId: reservation.ownerId,
                 memberSince: nil,
-                pickupsCount: nil,
+                pickupsCount: reservation.ownerPickupsCount,
                 variant: reservationVariant(for: reservation),
                 deadline: reservation.pickupDeadline,
                 reservationActionConfig: overlayActionConfig,
@@ -1134,13 +1137,24 @@ struct ReservationsView: View {
         defer { setLoading(action: nil, for: reservationId) }
 
         do {
+            let coordinate = LocationService.shared.lastKnownCoordinate
             try await fetchWithRetry(svc: svc) {
-                try await api.completeReservation(reservationId)
+                do {
+                    try await api.pickupPost(
+                        postId: reservation.postId,
+                        lat: coordinate?.latitude,
+                        lng: coordinate?.longitude
+                    )
+                } catch let httpError as ApiHTTPError where httpError.statusCode == 404 || httpError.statusCode == 405 {
+                    // Pickup endpoint not rolled out yet — fall back to legacy completion.
+                    try await api.completeReservation(reservationId)
+                }
             }
 
             Haptics.play(.success)
             markReservationCompletedAndFadeOut(reservationId: reservationId, postId: reservation.postId)
-            showToastMessage("Reservation completed")
+            hidePostLocally(reservation.postId)
+            showToastMessage("Item picked up 🎉")
             Task { await loadReservations() }
 
             if ConsentManager.shared.analytics == .provided {
@@ -1156,7 +1170,8 @@ struct ReservationsView: View {
         } catch {
             if shouldTreatAsResolved(error) {
                 markReservationCompletedAndFadeOut(reservationId: reservationId, postId: reservation.postId)
-                showToastMessage("Reservation completed")
+                hidePostLocally(reservation.postId)
+                showToastMessage("Item picked up 🎉")
                 Task { await loadReservations() }
                 FeedViewModel.requestFeedRefresh()
             } else {
@@ -1299,6 +1314,15 @@ struct ReservationsView: View {
     }
 
     @MainActor
+    /// Hide a picked-up post from the map and deck immediately; the feed
+    /// refresh triggered alongside removes it from the feed once the server
+    /// confirms.
+    private func hidePostLocally(_ postId: String) {
+        var dismissed = HiddenPostsStore.shared.loadDismissed()
+        dismissed.insert(postId)
+        HiddenPostsStore.shared.saveDismissed(dismissed)
+    }
+
     private func markReservationCompletedAndFadeOut(reservationId: String, postId: String) {
         // Update local model to show completed state briefly
         if let idx = reservations.firstIndex(where: { $0.id == reservationId }) {
