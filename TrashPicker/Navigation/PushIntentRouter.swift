@@ -25,7 +25,7 @@ final class PushIntentRouter {
         defer { isRouting = false }
 
         if let notificationId = intent.notificationId {
-            await routeToNotifications(notificationId: notificationId, reservationId: intent.reservationId, postId: intent.postId)
+            await routeToNotifications(notificationId: notificationId, reservationId: intent.reservationId, postId: intent.postId, intentType: intent.intentType)
             return
         }
 
@@ -35,7 +35,7 @@ final class PushIntentRouter {
         }
 
         if let postId = intent.postId {
-            await routeToPost(postId)
+            await routeToPost(postId, intentType: intent.intentType)
             return
         }
 
@@ -84,7 +84,7 @@ final class PushIntentRouter {
         }
     }
 
-    private func routeToNotifications(notificationId: UUID, reservationId: UUID?, postId: UUID?) async {
+    private func routeToNotifications(notificationId: UUID, reservationId: UUID?, postId: UUID?, intentType: String? = nil) async {
         NotificationCenter.default.post(name: .pushRouteToTab, object: AppTab.profile)
         NotificationCenter.default.post(name: .openNotifications, object: nil)
         DLog("[PUSH_ROUTE] destination=notifications tab=profile overlay=notifications fetch=notifications notificationId=\(notificationId.uuidString)")
@@ -95,7 +95,7 @@ final class PushIntentRouter {
         }
 
         if let postId {
-            await routeToPost(postId)
+            await routeToPost(postId, intentType: intentType)
         }
     }
 
@@ -109,10 +109,17 @@ final class PushIntentRouter {
         DLog("[PUSH_ROUTE] destination=reservation tab=reservations overlay=reservation fetch=reservations reservationId=\(reservationId.uuidString)")
     }
 
-    private func routeToPost(_ postId: UUID) async {
+    private func routeToPost(_ postId: UUID, intentType: String? = nil) async {
+        let normalizedType = intentType?.lowercased() ?? ""
+        let context: PushedPostDetail.Context = normalizedType.contains("picked_up") ? .pickedUp : .nearby
+
         NotificationCenter.default.post(name: .pushRouteToTab, object: AppTab.feed)
         FeedViewModel.requestFeedRefresh()
-        DLog("[PUSH_ROUTE] destination=post tab=feed overlay=post fetch=feed postId=\(postId.uuidString) note=post_route_not_implemented")
+        NotificationCenter.default.post(
+            name: .openPostDetail,
+            object: PushedPostDetail(postId: postId.uuidString.lowercased(), context: context)
+        )
+        DLog("[PUSH_ROUTE] destination=post tab=feed overlay=post_detail fetch=feed type=\(normalizedType) postId=\(postId.uuidString)")
     }
 
     private func refreshNotifications() async {

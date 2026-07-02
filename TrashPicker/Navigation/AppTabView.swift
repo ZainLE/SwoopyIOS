@@ -9,6 +9,7 @@ struct AppTabView: View {
     @State private var showUpload = false
     @State private var showCamera = false
     @State private var lastSelectedTab: AppTab = .feed
+    @State private var pushedPostDetail: PushedPostDetail?
 
     // App green
     private let appGreen = Color(red: 0/255.0, green: 81/255.0, blue: 63/255.0)
@@ -112,6 +113,15 @@ struct AppTabView: View {
         .onReceive(NotificationCenter.default.publisher(for: .pushRouteToTab)) { note in
             guard let tab = note.object as? AppTab else { return }
             router.selectedTab = tab
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openPostDetail)) { note in
+            guard let detail = note.object as? PushedPostDetail else { return }
+            pushedPostDetail = detail
+        }
+        .fullScreenCover(item: $pushedPostDetail) { detail in
+            PushedPostDetailView(detail: detail) {
+                pushedPostDetail = nil
+            }
         }
     }
     

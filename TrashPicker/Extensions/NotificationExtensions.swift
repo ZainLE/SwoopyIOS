@@ -11,4 +11,5 @@ extension Notification.Name {
     static let pushIntentStored = Notification.Name("pushIntentStored")
     static let pushRouteToTab = Notification.Name("pushRouteToTab")
     static let openNotifications = Notification.Name("openNotifications")
+    static let openPostDetail = Notification.Name("openPostDetail")
 }
