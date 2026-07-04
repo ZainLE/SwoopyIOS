@@ -181,6 +181,8 @@ struct ProfileView: View {
     @State private var givenCount: Int?
     @State private var gamificationProfile: Profile?
     @State private var weeklyStanding: LeaderboardMe?
+    @State private var celebrationQueue: [AchievementUnlock] = []
+    @State private var currentCelebration: AchievementUnlock?
     
     init() {
         // Initialize both view models with shared services
@@ -349,6 +351,14 @@ struct ProfileView: View {
                         .transition(.opacity.combined(with: .scale))
                         .zIndex(3)
                 }
+
+                if let currentCelebration {
+                    AchievementCelebrationOverlay(unlock: currentCelebration) {
+                        dismissCelebration()
+                    }
+                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                    .zIndex(4)
+                }
             }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: isReportCategoryModalVisible)
@@ -444,7 +454,8 @@ struct ProfileView: View {
                 title: "First Pickup",
                 icon: "checkmark.seal.fill",
                 hint: "Have one of your finds picked up",
-                accent: AchievementAccent.green,
+                meaning: "One of your finds was picked up and given a second life.",
+                theme: AchievementPalette.green,
                 earned: profile?.badgeFirstPickup == true
             ),
             ProfileAchievementBadge(
@@ -452,7 +463,8 @@ struct ProfileView: View {
                 title: "10 Items Diverted",
                 icon: "arrow.3.trianglepath",
                 hint: "Ten of your finds picked up",
-                accent: AchievementAccent.teal,
+                meaning: "Ten of your finds have found new homes.",
+                theme: AchievementPalette.teal,
                 earned: profile?.badgeTenItems == true
             ),
             ProfileAchievementBadge(
@@ -460,7 +472,8 @@ struct ProfileView: View {
                 title: "3-Week Streak",
                 icon: "flame.fill",
                 hint: "Pickups three weeks in a row",
-                accent: AchievementAccent.orange,
+                meaning: "Pickups three weeks in a row — you're on a roll.",
+                theme: AchievementPalette.amber,
                 earned: profile?.badgeThreeWeekStreak == true
             ),
             ProfileAchievementBadge(
@@ -468,7 +481,8 @@ struct ProfileView: View {
                 title: "Top 3 Finish",
                 icon: "trophy.fill",
                 hint: "End a week in the top 3",
-                accent: AchievementAccent.gold,
+                meaning: "You finished a week in your city's top 3.",
+                theme: AchievementPalette.gold,
                 earned: profile?.badgeTop3 == true
             )
         ]
@@ -487,6 +501,16 @@ struct ProfileView: View {
                     weeklyPickups: weeklyStanding?.weeklyPickups
                 )
             }
+            .listRowBackground(
+                ZStack {
+                    Color(.secondarySystemGroupedBackground)
+                    LinearGradient(
+                        colors: [tier.color.opacity(0.16), tier.color.opacity(0.02)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                }
+            )
 
             if let givenCount, givenCount >= 1 {
                 ImpactStatRow(count: givenCount)
@@ -660,6 +684,7 @@ struct ProfileView: View {
             let profile = try await api.getProfile()
             givenCount = profile.givenCount
             gamificationProfile = profile
+            detectNewlyEarnedBadges()
         } catch {
 #if DEBUG
             DLog("[PROFILE] given count refresh failed: \(error.localizedDescription)")
@@ -677,6 +702,70 @@ struct ProfileView: View {
 #if DEBUG
             DLog("[PROFILE] weekly standing refresh failed: \(error.localizedDescription)")
 #endif
+        }
+    }
+
+    // MARK: - Achievement unlock celebrations
+
+    /// UserDefaults key holding the badge ids this account has already been
+    /// congratulated for; keyed by user id so switching accounts on one
+    /// device doesn't leak celebrations across users.
+    private func seenEarnedBadgesKey(for userId: String) -> String {
+        "achievements.seenEarned.\(userId)"
+    }
+
+    /// Compares the server's earned set against the persisted seen set and
+    /// queues a celebration for anything new. On the very first run for an
+    /// account the seen set is seeded silently, so long-time users aren't
+    /// spammed with celebrations for badges they've had for weeks.
+    @MainActor
+    private func detectNewlyEarnedBadges() {
+        guard let userId = svc.userId?.uuidString.lowercased() else { return }
+        let key = seenEarnedBadgesKey(for: userId)
+        let defaults = UserDefaults.standard
+        let earned = achievementBadges.filter(\.earned)
+        let earnedIds = earned.map(\.id)
+
+        guard let stored = defaults.stringArray(forKey: key) else {
+            defaults.set(earnedIds, forKey: key)
+            return
+        }
+
+        let storedSet = Set(stored)
+        // Union rather than overwrite: if the server briefly drops a badge we
+        // must not re-celebrate it when it comes back.
+        defaults.set(Array(storedSet.union(earnedIds)), forKey: key)
+
+        let fresh = earned.filter { !storedSet.contains($0.id) }
+        guard !fresh.isEmpty else { return }
+
+        let alreadyQueued = Set(celebrationQueue.map(\.id) + [currentCelebration?.id].compactMap { $0 })
+        celebrationQueue.append(contentsOf: fresh
+            .filter { !alreadyQueued.contains($0.id) }
+            .map {
+                AchievementUnlock(id: $0.id, title: $0.title, icon: $0.icon, meaning: $0.meaning, theme: $0.theme)
+            })
+        presentNextCelebrationIfIdle()
+    }
+
+    @MainActor
+    private func presentNextCelebrationIfIdle() {
+        guard currentCelebration == nil, !celebrationQueue.isEmpty else { return }
+        let next = celebrationQueue.removeFirst()
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+            currentCelebration = next
+        }
+        Haptics.play(.success)
+    }
+
+    @MainActor
+    private func dismissCelebration() {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            currentCelebration = nil
+        }
+        // Let the dismiss transition settle before the next unlock pops.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            presentNextCelebrationIfIdle()
         }
     }
 
@@ -1008,32 +1097,13 @@ struct ProfileView: View {
 
 // MARK: - Achievements
 
-/// Adaptive accent palette for the Achievements section. Each badge keeps its
-/// own hue in both appearances: the dark variants are brighter so small text
-/// and icons stay legible on dark backgrounds.
-private enum AchievementAccent {
-    static let green = Color(light: "00513F", dark: "4FB899")
-    static let teal = Color(light: "0B7285", dark: "3BC9DB")
-    static let orange = Color(light: "D9480F", dark: "FF922B")
-    static let gold = Color(light: "A87C00", dark: "E3B341")
-}
-
-private extension Color {
-    init(light: String, dark: String) {
-        self.init(uiColor: UIColor { traits in
-            traits.userInterfaceStyle == .dark
-                ? UIColor(Color(hex: dark))
-                : UIColor(Color(hex: light))
-        })
-    }
-}
-
 private struct ProfileAchievementBadge: Identifiable {
     let id: String
     let title: String
     let icon: String
     let hint: String
-    let accent: Color
+    let meaning: String
+    let theme: AchievementTheme
     let earned: Bool
 }
 
@@ -1048,7 +1118,7 @@ private struct ImpactStatRow: View {
                 Circle()
                     .fill(
                         LinearGradient(
-                            colors: [AchievementAccent.teal, AchievementAccent.green],
+                            colors: AchievementPalette.impactGradient,
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -1088,6 +1158,9 @@ private struct TierProgressCard: View {
     let weeklyRank: Int?
     let weeklyPickups: Int?
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shimmerPhase: CGFloat = -1
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
@@ -1116,7 +1189,7 @@ private struct TierProgressCard: View {
                 Spacer(minLength: 8)
 
                 if let weeklyRank {
-                    let rankColor = weeklyRank <= 3 ? AchievementAccent.gold : AchievementAccent.green
+                    let rankColor = weeklyRank <= 3 ? AchievementPalette.gold.accent : AchievementPalette.green.accent
                     VStack(spacing: 1) {
                         Text("#\(weeklyRank)")
                             .font(.system(size: 17, weight: .bold))
@@ -1138,8 +1211,36 @@ private struct TierProgressCard: View {
             ladder
         }
         .padding(.vertical, 6)
+        .overlay(shimmerOverlay)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilitySummary)
+    }
+
+    /// A soft light band that periodically sweeps across the card. The
+    /// animated travel is much wider than the card, so the visible sweep is
+    /// brief with a long rest between passes. Skipped under Reduce Motion.
+    @ViewBuilder
+    private var shimmerOverlay: some View {
+        if !reduceMotion {
+            GeometryReader { geo in
+                LinearGradient(
+                    colors: [.white.opacity(0), .white.opacity(0.2), .white.opacity(0)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: geo.size.width * 0.4)
+                .rotationEffect(.degrees(16))
+                .offset(x: shimmerPhase * geo.size.width * 2.0)
+                .onAppear {
+                    shimmerPhase = -1
+                    withAnimation(.linear(duration: 4.0).repeatForever(autoreverses: false)) {
+                        shimmerPhase = 1
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+            .clipped()
+        }
     }
 
     private var subtitle: String {
@@ -1176,10 +1277,15 @@ private struct TierProgressCard: View {
     }
 }
 
-/// Two-column grid showing every badge; unearned ones stay visible but
-/// dimmed with a hint on how to unlock them.
+/// Two-column grid of badge medallions; unearned ones keep their hue but are
+/// washed out and padlocked, so they read as goals worth chasing rather than
+/// gray placeholders. Cards spring in with a slight stagger when the section
+/// first appears (skipped under Reduce Motion).
 private struct AchievementBadgeGrid: View {
     let badges: [ProfileAchievementBadge]
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
 
     private let columns = [
         GridItem(.flexible(), spacing: 10),
@@ -1188,59 +1294,83 @@ private struct AchievementBadgeGrid: View {
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 10) {
-            ForEach(badges) { badge in
-                HStack(alignment: .top, spacing: 8) {
-                    ZStack {
-                        Circle()
-                            .fill(
-                                badge.earned
-                                    ? AnyShapeStyle(
-                                        LinearGradient(
-                                            colors: [badge.accent, badge.accent.opacity(0.72)],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        )
-                                    )
-                                    : AnyShapeStyle(badge.accent.opacity(0.14))
-                            )
-                            .frame(width: 32, height: 32)
-
-                        Image(systemName: badge.icon)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(badge.earned ? .white : badge.accent.opacity(0.65))
-                    }
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(badge.title)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(badge.earned ? AppColor.text : AppColor.muted)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-
-                        Text(badge.earned ? "Earned" : badge.hint)
-                            .font(.system(size: 11, weight: badge.earned ? .medium : .regular))
-                            .foregroundColor(badge.earned ? badge.accent : AppColor.muted)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    Spacer(minLength: 0)
-                }
-                .padding(8)
-                .frame(maxWidth: .infinity, minHeight: 52, alignment: .topLeading)
-                .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(badge.accent.opacity(badge.earned ? 0.1 : 0.05))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(badge.accent.opacity(badge.earned ? 0.28 : 0.12), lineWidth: 1)
-                )
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(badge.title), \(badge.earned ? "earned" : "locked — \(badge.hint)")")
+            ForEach(Array(badges.enumerated()), id: \.element.id) { index, badge in
+                AchievementBadgeCard(badge: badge)
+                    .scaleEffect(appeared ? 1 : 0.88)
+                    .opacity(appeared ? 1 : 0)
+                    .animation(
+                        reduceMotion
+                            ? nil
+                            : .spring(response: 0.45, dampingFraction: 0.75).delay(Double(index) * 0.07),
+                        value: appeared
+                    )
             }
         }
         .padding(.vertical, 6)
+        .onAppear { appeared = true }
+    }
+}
+
+private struct AchievementBadgeCard: View {
+    let badge: ProfileAchievementBadge
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ZStack(alignment: .bottomTrailing) {
+                AchievementMedallion(icon: badge.icon, theme: badge.theme, size: 56, earned: badge.earned)
+
+                if !badge.earned {
+                    ZStack {
+                        Circle()
+                            .fill(Color(.secondarySystemGroupedBackground))
+
+                        Image(systemName: "lock.fill")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(badge.theme.accent)
+                    }
+                    .frame(width: 20, height: 20)
+                    .overlay(Circle().strokeBorder(badge.theme.accent.opacity(0.35), lineWidth: 1))
+                    .offset(x: 3, y: 3)
+                }
+            }
+
+            VStack(spacing: 2) {
+                Text(badge.title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(badge.earned ? AppColor.text : AppColor.muted)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+
+                Text(badge.earned ? "Unlocked" : badge.hint)
+                    .font(.system(size: 11, weight: badge.earned ? .semibold : .regular))
+                    .foregroundColor(badge.earned ? badge.theme.accent : AppColor.muted)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .frame(minHeight: 26, alignment: .top)
+            }
+        }
+        .padding(.vertical, 12)
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            badge.theme.accent.opacity(badge.earned ? 0.16 : 0.07),
+                            badge.theme.accent.opacity(badge.earned ? 0.05 : 0.02)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(badge.theme.accent.opacity(badge.earned ? 0.35 : 0.15), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(badge.title), \(badge.earned ? "unlocked" : "locked — \(badge.hint)")")
     }
 }
 
