@@ -55,6 +55,28 @@ final class PushIntentRouter {
                 NotificationCenter.default.post(name: .pushRouteToTab, object: AppTab.profile)
                 DLog("[PUSH_ROUTE] destination=badge_earned tab=profile overlay=none")
                 return
+            case "request_expired", "request_withdrawn", "post_removed":
+                // The push's target no longer exists (reservation over / post
+                // deleted) — drilling into it via the id fallbacks would land on
+                // an error. Show the notifications list instead.
+                NotificationCenter.default.post(name: .pushRouteToTab, object: AppTab.profile)
+                NotificationCenter.default.post(name: .openNotifications, object: nil)
+                DLog("[PUSH_ROUTE] destination=notifications_terminal tab=profile overlay=notifications type=\(type)")
+                return
+            case "post_hold_expired":
+                // Hold lapsed, so the poster's item is live again — open it.
+                if let postId = intent.postId {
+                    await routeToPost(postId, intentType: type)
+                } else {
+                    NotificationCenter.default.post(name: .pushRouteToTab, object: AppTab.profile)
+                    NotificationCenter.default.post(name: .openNotifications, object: nil)
+                    DLog("[PUSH_ROUTE] destination=post_hold_expired_fallback tab=profile overlay=notifications")
+                }
+                return
+            // "hold_expiring" and "pickup_idle_nudge" intentionally have no case:
+            // their payloads always carry reservation_id (and no notification_id),
+            // so the reservation-id fallback below routes them to the reservation
+            // detail, which is the correct destination.
             default:
                 break
             }
@@ -149,7 +171,8 @@ final class PushIntentRouter {
         let normalizedType = intentType?.lowercased() ?? ""
         let context: PushedPostDetail.Context = {
             if normalizedType.contains("picked_up") { return .pickedUp }
-            if normalizedType == "post_expiring" { return .ownPost }
+            // Both go to the post's owner about their own post.
+            if normalizedType == "post_expiring" || normalizedType == "post_hold_expired" { return .ownPost }
             return .nearby
         }()
 
