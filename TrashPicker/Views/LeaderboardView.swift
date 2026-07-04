@@ -68,6 +68,7 @@ struct TierBadge: View {
 struct LeaderboardView: View {
     @EnvironmentObject private var api: ApiService
     @EnvironmentObject private var svc: SupabaseService
+    @Environment(\.colorScheme) private var colorScheme
 
     private enum LoadState {
         case loading
@@ -289,33 +290,48 @@ struct LeaderboardView: View {
         .background(accentColor.opacity(0.25))
     }
 
-    /// Visual treatment for a podium position (#1–#3). Text stays `.primary`
-    /// and the accent lives in translucent gradients and strokes, so both
-    /// light and dark mode keep full legibility.
+    /// Visual treatment for a podium position (#1–#3). SOLID colors only — no
+    /// gradients. Light mode gets rich metal fills (real gold for #1); dark
+    /// mode gets deliberate deep variants with bright metal accents so the
+    /// podium still reads as gold/silver/bronze, not as muddy gray.
     private struct PodiumAccent {
-        let color: Color
+        let fill: Color        // solid row background
+        let stroke: Color      // row border + avatar ring
+        let accent: Color      // rank number + crown/medal icon
         let icon: String
-        let fillOpacity: Double
         let strokeWidth: CGFloat
         let avatarSize: CGFloat
     }
 
     private func podiumAccent(_ rank: Int?) -> PodiumAccent? {
+        let dark = colorScheme == .dark
         switch rank {
         case 1:
             return PodiumAccent(
-                color: Color(hex: "E0A81C"), icon: "crown.fill",
-                fillOpacity: 0.38, strokeWidth: 2, avatarSize: 44
+                fill: dark ? Color(hex: "4A3B0A") : Color(hex: "E6B422"),
+                stroke: dark ? Color(hex: "FFD34D") : Color(hex: "B8860B"),
+                accent: dark ? Color(hex: "FFD34D") : Color(hex: "6E5106"),
+                icon: "crown.fill",
+                strokeWidth: 2,
+                avatarSize: 44
             )
         case 2:
             return PodiumAccent(
-                color: Color(hex: "8E99A8"), icon: "medal.fill",
-                fillOpacity: 0.26, strokeWidth: 1.5, avatarSize: 40
+                fill: dark ? Color(hex: "2F343C") : Color(hex: "D7DCE2"),
+                stroke: dark ? Color(hex: "A8B0BC") : Color(hex: "9AA3AE"),
+                accent: dark ? Color(hex: "C3CAD4") : Color(hex: "5C6570"),
+                icon: "medal.fill",
+                strokeWidth: 1.5,
+                avatarSize: 40
             )
         case 3:
             return PodiumAccent(
-                color: Color(hex: "B0713A"), icon: "medal.fill",
-                fillOpacity: 0.26, strokeWidth: 1.5, avatarSize: 40
+                fill: dark ? Color(hex: "3E2E1E") : Color(hex: "D99A5B"),
+                stroke: dark ? Color(hex: "D08E4E") : Color(hex: "A9713A"),
+                accent: dark ? Color(hex: "E0A56A") : Color(hex: "6F4517"),
+                icon: "medal.fill",
+                strokeWidth: 1.5,
+                avatarSize: 40
             )
         default:
             return nil
@@ -338,18 +354,18 @@ struct LeaderboardView: View {
                 if let accent {
                     Image(systemName: accent.icon)
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(accent.color)
+                        .foregroundColor(accent.accent)
                 }
                 Text(rank.map { "#\($0)" } ?? "–")
                     .font(.system(size: 15, weight: .bold))
-                    .foregroundColor(accent?.color ?? mutedColor)
+                    .foregroundColor(accent?.accent ?? mutedColor)
             }
             .frame(width: 44, alignment: .leading)
 
             avatar(avatarUrl, name: name, size: accent?.avatarSize ?? 38)
                 .overlay(
                     Circle().strokeBorder(
-                        accent?.color ?? .clear,
+                        accent?.stroke ?? .clear,
                         lineWidth: accent?.strokeWidth ?? 0
                     )
                 )
@@ -382,35 +398,20 @@ struct LeaderboardView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(
-                    isPulsing ? accentColor : (accent?.color.opacity(0.55) ?? .clear),
+                    isPulsing ? accentColor : (accent?.stroke ?? .clear),
                     lineWidth: isPulsing ? 2.5 : (accent?.strokeWidth ?? 0)
                 )
         )
         .scaleEffect(isPulsing ? 1.03 : 1)
     }
 
-    @ViewBuilder
+    /// Solid fills only — no gradients on podium rows.
     private func rowBackground(accent: PodiumAccent?, isMe: Bool) -> some View {
-        if let accent {
-            RoundedRectangle(cornerRadius: 14)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            accent.color.opacity(accent.fillOpacity),
-                            accent.color.opacity(accent.fillOpacity * 0.35)
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .background(
-                    RoundedRectangle(cornerRadius: 14)
-                        .fill(Color(.secondarySystemBackground))
-                )
-        } else {
-            RoundedRectangle(cornerRadius: 14)
-                .fill(isMe ? accentColor.opacity(0.35) : Color(.secondarySystemBackground))
-        }
+        RoundedRectangle(cornerRadius: 14)
+            .fill(
+                accent?.fill
+                    ?? (isMe ? accentColor.opacity(0.35) : Color(.secondarySystemBackground))
+            )
     }
 
     private func pinnedMeRow(_ me: LeaderboardMe) -> some View {
