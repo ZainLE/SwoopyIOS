@@ -243,6 +243,7 @@ struct SwipeDeckView: View {
 
     // Leaderboard page pushed from the top-left pill or a push notification
     @State private var showLeaderboard = false
+    @State private var showStreakEgg = false
 
     // Convert Post objects to visible feed items
     private var visible: [Post] {
@@ -261,10 +262,28 @@ struct SwipeDeckView: View {
 #endif
 
     // MARK: - Helpers
-    private func markReserved(postId: String) {
-        // Persist into 2h TTL set and remove card from deck
+
+    /// Single entry point for "the caller reserved this post", whatever the
+    /// entry point (deck swipe, reserve sheet, map callout detail): persist
+    /// the 2h hide and re-filter the deck so the feed reflects it immediately.
+    @MainActor
+    private func notePostReserved(_ postId: String) {
         reservedIds.insert(postId)
         HiddenPostsStore.shared.saveReserved(reservedIds)
+        deckState.filterItems(visible)
+    }
+
+    /// Same for pass/dismiss from any entry point: 24h hide + deck re-filter.
+    @MainActor
+    private func notePostPassed(_ postId: String) {
+        dismissedIds.insert(postId)
+        HiddenPostsStore.shared.saveDismissed(dismissedIds)
+        deckState.filterItems(visible)
+    }
+
+    private func markReserved(postId: String) {
+        // Persist into 2h TTL set and remove card from deck
+        notePostReserved(postId)
         deckState.completeCardTransition()
     }
 
@@ -351,6 +370,20 @@ struct SwipeDeckView: View {
         navigationStackView
             .toolbar { toolbarContent }
             .navigationBarTitleDisplayMode(.inline)
+            // Streak easter egg: the pill broadcasts, the whole home screen
+            // burns. Presented at screen level so it covers everything;
+            // StreakPill never posts this when Reduce Motion is on.
+            .onReceive(NotificationCenter.default.publisher(for: .streakEggBurst)) { _ in
+                withAnimation(.easeIn(duration: 0.15)) { showStreakEgg = true }
+            }
+            .overlay {
+                if showStreakEgg {
+                    StreakEggOverlay {
+                        withAnimation(.easeOut(duration: 0.25)) { showStreakEgg = false }
+                    }
+                    .transition(.opacity)
+                }
+            }
             .onAppear { handleViewAppear() }
             .task {
                 if api == nil { api = ApiService(supabaseService: svc) }
@@ -706,9 +739,14 @@ struct SwipeDeckView: View {
     }
 
     private var feedMapView: some View {
-        FeedMapScreen(onBack: animateNavStateToFeed)
-            .environmentObject(svc)
-            .ignoresSafeArea()
+        FeedMapScreen(
+            onBack: animateNavStateToFeed,
+            isPostReserved: { reservedIds.contains($0) },
+            onPostReserved: { notePostReserved($0) },
+            onPostPassed: { notePostPassed($0) }
+        )
+        .environmentObject(svc)
+        .ignoresSafeArea()
     }
 
     // MARK: - Action Handlers
@@ -725,6 +763,16 @@ struct SwipeDeckView: View {
     @MainActor private func handleReservationConfirm() async {
         guard let post = deckState.activeCard as? Post else { return }
         guard let api else { return }
+
+        // Already holding this post (e.g. reserved from the map moments ago):
+        // don't fire another reserve call — just show the reserved info state.
+        guard reservedIds.contains(post.id) == false else {
+            notePostReserved(post.id) // refresh TTL bookkeeping + deck filter
+            withAnimation(.easeOut(duration: 0.18)) {
+                sheetMode = .info
+            }
+            return
+        }
 
         let requestId = UUID().uuidString
         let tempId = "optimistic-\(requestId)"
@@ -746,8 +794,7 @@ struct SwipeDeckView: View {
             postOptimisticReservationInsert(optimisticRow)
             NotificationCenter.default.post(name: .refreshReservations, object: reservationId)
 
-            reservedIds.insert(post.id)
-            HiddenPostsStore.shared.saveReserved(reservedIds)
+            notePostReserved(post.id)
             trackReservationMade(post: post)
 
             withAnimation(.easeOut(duration: 0.18)) {
@@ -787,10 +834,9 @@ struct SwipeDeckView: View {
         Haptics.play(.tabReselect) // light haptic for pass/swipe-left
         
         await deckState.triggerPass()
-        
+
         // Pass: add to dismissed set with 24h TTL
-        dismissedIds.insert(post.id)
-        HiddenPostsStore.shared.saveDismissed(dismissedIds)
+        notePostPassed(post.id)
     }
 
     @MainActor
@@ -798,7 +844,20 @@ struct SwipeDeckView: View {
         guard let post = deckState.activeCard as? Post else { return }
         guard let api else { return }
         guard !isReserving else { return } // Prevent double-tap
-        
+
+        // Already holding this post: never fire a second reserve call — show
+        // the state and clear the stale card from the deck instead.
+        guard reservedIds.contains(post.id) == false else {
+            notePostReserved(post.id)
+            successMessage = "Reserved — see it in Reservations"
+            showSuccess = true
+            Task {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                showSuccess = false
+            }
+            return
+        }
+
         #if DEBUG || RESERVATIONS_DIAGNOSTICS
         let corr = Diag.generateCorrelationId()
         Diag.log(.action, "reserve.tap", fields: [
@@ -1556,6 +1615,11 @@ extension SwipeDeckView {
     // MARK: - FeedMapScreen
     private struct FeedMapScreen: View {
         let onBack: @MainActor () -> Void
+        /// Bridges into the feed's reserved/dismissed state so actions taken
+        /// from the map update the deck exactly like actions taken on cards.
+        let isPostReserved: (String) -> Bool
+        let onPostReserved: @MainActor (String) -> Void
+        let onPostPassed: @MainActor (String) -> Void
         @EnvironmentObject private var svc: SupabaseService
         @StateObject private var loc = LocationService.shared
 
@@ -1823,7 +1887,12 @@ extension SwipeDeckView {
                             onReserve: {
                                 Task { await handleReserve(post: post) }
                             },
-                            onPass: { collapseAll(reason: .dismiss) },
+                            onPass: {
+                                // Pass from the map callout hides the post
+                                // from the feed like a card swipe-left.
+                                onPostPassed(post.id)
+                                collapseAll(reason: .dismiss)
+                            },
                             arrowOffset: placement.arrowX,
                             arrowYOffset: placement.arrowY
                         )
@@ -2021,9 +2090,12 @@ extension SwipeDeckView {
         }
         
         @MainActor
-        private func dismissDetailAndPass() {
+        private func dismissDetailAndPass(post: Post) {
             presentedContext = nil
             shouldRestoreTeaserOnDismiss = false
+            // Feed and map must agree: a pass from the map detail hides the
+            // post from the deck exactly like a swipe-left on the card.
+            onPostPassed(post.id)
             collapseAll(reason: .dismiss)
         }
         
@@ -2061,7 +2133,7 @@ extension SwipeDeckView {
                         Task { @MainActor in startReserveFlow(for: post) }
                     },
                     onSecondaryAction: {
-                        Task { @MainActor in dismissDetailAndPass() }
+                        Task { @MainActor in dismissDetailAndPass(post: post) }
                     },
                     onTertiaryAction: nil
                 )
@@ -2349,6 +2421,16 @@ extension SwipeDeckView {
             guard let api else { return }
             guard !reserveInFlight else { return }
 
+            // Already holding this post: show the state instead of firing a
+            // second reserve call.
+            guard isPostReserved(post.id) == false else {
+                let message = "Reserved — see it in Reservations"
+                mapError = message
+                collapseAll(reason: .dismiss)
+                scheduleBannerDismiss(for: message)
+                return
+            }
+
             reserveInFlight = true
             defer { reserveInFlight = false }
 
@@ -2370,6 +2452,9 @@ extension SwipeDeckView {
                 let optimisticRow = ReservationRow(optimisticFrom: post, reservationId: reservationId)
                 postOptimisticReservationInsert(optimisticRow)
                 NotificationCenter.default.post(name: .refreshReservations, object: reservationId)
+                // Feed and map must agree: hide the post from the deck the
+                // same way a card-swipe reserve does.
+                onPostReserved(post.id)
                 let successMessage = "Reserved for 2 hours"
                 mapError = successMessage
                 collapseAll(reason: .dismiss)
