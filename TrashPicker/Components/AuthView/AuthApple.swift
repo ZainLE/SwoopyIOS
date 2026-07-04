@@ -90,6 +90,12 @@ final class AppleSignInCoordinator: NSObject, ASAuthorizationControllerDelegate,
     }
 
     func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        // Apple provides fullName exactly once, on first authorization — stash
+        // it before anything that can fail, or it's gone for good.
+        if let appleCredential = authorization.credential as? ASAuthorizationAppleIDCredential {
+            AppleNameCapture.stash(appleCredential.fullName)
+        }
+
         guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
               let tokenData = credential.identityToken,
               let idToken = String(data: tokenData, encoding: .utf8),

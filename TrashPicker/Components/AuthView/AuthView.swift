@@ -537,6 +537,11 @@ struct AuthView: View {
             supabase: svc.client,
             onSuccess: { session in
                 svc.setSession(session)
+                // Push the one-shot Apple-provided name (stashed by the
+                // coordinator) to the profile now that we have a session.
+                Task {
+                    await AppleNameCapture.flushIfPending(api: ApiService(supabaseService: svc))
+                }
                 loading = nil
                 appleCoordinator = nil
             },
