@@ -354,6 +354,11 @@ struct SwipeDeckView: View {
             .onAppear { handleViewAppear() }
             .task {
                 if api == nil { api = ApiService(supabaseService: svc) }
+                // Retry a stashed Apple-provided name whose PATCH failed at
+                // sign-in time (e.g. network drop before the profile existed).
+                if let api, AppleNameCapture.hasPending {
+                    Task { await AppleNameCapture.flushIfPending(api: api) }
+                }
                 await maybeLoadFeed()
             }
             .onChange(of: svc.isAuthenticated) { _, _ in
@@ -646,6 +651,9 @@ struct SwipeDeckView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarLeading) {
+            StreakPill()
+        }
         ToolbarItem(placement: .navigationBarTrailing) {
             LeaderboardPill(isOpen: $showLeaderboard)
         }
@@ -700,7 +708,6 @@ struct SwipeDeckView: View {
     private var feedMapView: some View {
         FeedMapScreen(onBack: animateNavStateToFeed)
             .environmentObject(svc)
-            .environmentObject(feedVM)
             .ignoresSafeArea()
     }
 
@@ -1550,7 +1557,6 @@ extension SwipeDeckView {
     private struct FeedMapScreen: View {
         let onBack: @MainActor () -> Void
         @EnvironmentObject private var svc: SupabaseService
-        @EnvironmentObject private var feedVM: FeedViewModel
         @StateObject private var loc = LocationService.shared
 
         @State private var api: ApiService?
@@ -2252,8 +2258,11 @@ extension SwipeDeckView {
                         let result = try await withTimeout(seconds: 18.0) {
                             try await api.getFeed(query: query)
                         }
+                        // Deliberately NOT pushed into feedVM: this query is
+                        // street-only and centered on the panned map region, so
+                        // writing it into the feed's base items silently drops
+                        // home-mode posts from the deck until the next refresh.
                         posts = result
-                        feedVM.setBaseItems(result)
                         mapError = nil
                         // Only record the fetched coordinate on success so a
                         // cancelled fetch doesn't suppress the debounced retry.
