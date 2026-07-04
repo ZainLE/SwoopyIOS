@@ -269,18 +269,26 @@ struct NotificationsViewNew: View {
             ForEach(notifications) { notification in
                 // Informational updates should never expose contact actions.
                 let contactAction: (() -> Void)? = nil
-                let deleteAction: (() -> Void)? = notification.category == .informational ? {
-                    Task { await deleteNotification(notification) }
-                } : nil
-                NotificationRow(
+                let row = NotificationRow(
                     notification: notification,
                     timeAgo: relativeTime(from: notification.createdAt),
                     onTap: { handleNotificationTap(notification) },
-                    onContact: contactAction,
-                    onDelete: deleteAction
+                    onContact: contactAction
                 )
                 .onAppear {
                     handleNotificationAppear(notification)
+                }
+
+                // Deletion is swipe-to-reveal, and only for informational updates —
+                // actionable rows must be resolved, never dismissed.
+                if notification.category == .informational {
+                    SwipeToDeleteRow(cornerRadius: 20) {
+                        Task { await deleteNotification(notification) }
+                    } content: {
+                        row
+                    }
+                } else {
+                    row
                 }
             }
         }
@@ -794,7 +802,10 @@ private struct NotificationRow: View {
     let timeAgo: String
     let onTap: () -> Void
     let onContact: (() -> Void)?
-    let onDelete: (() -> Void)?
+
+    /// Rounded-square family shared by avatar and thumbnail (Task: visual consistency).
+    private let avatarCornerRadius: CGFloat = AppRadius.thumb
+    private let thumbSize: CGFloat = 76
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -822,19 +833,10 @@ private struct NotificationRow: View {
                 Spacer(minLength: 8)
 
                 VStack(alignment: .trailing, spacing: 8) {
-                    HStack(spacing: 8) {
-                        if let onDelete {
-                            Button(role: .destructive, action: onDelete) {
-                                Image(systemName: "trash")
-                                    .font(.callout)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        if notification.isUnread {
-                            Circle()
-                                .fill(AppTheme.ColorToken.primary)
-                                .frame(width: 8, height: 8)
-                        }
+                    if notification.isUnread {
+                        Circle()
+                            .fill(AppTheme.ColorToken.primary)
+                            .frame(width: 8, height: 8)
                     }
 
                     if let url = itemImageURL {
@@ -867,11 +869,12 @@ private struct NotificationRow: View {
     @ViewBuilder
     private var leadingView: some View {
         if notification.counterpartyAvatarURL != nil || counterpartyInitials != nil {
+            // Rounded square, matching the thumbnail's corner family.
             avatarView
                 .frame(width: 44, height: 44)
-                .clipShape(Circle())
+                .clipShape(RoundedRectangle(cornerRadius: avatarCornerRadius, style: .continuous))
                 .overlay(
-                    Circle()
+                    RoundedRectangle(cornerRadius: avatarCornerRadius, style: .continuous)
                         .stroke(Color(.systemGray5), lineWidth: 1)
                 )
         } else {
@@ -898,7 +901,7 @@ private struct NotificationRow: View {
     @ViewBuilder
     private var avatarPlaceholder: some View {
         if let initials = counterpartyInitials {
-            Circle()
+            RoundedRectangle(cornerRadius: avatarCornerRadius, style: .continuous)
                 .fill(AppTheme.ColorToken.primary.opacity(0.15))
                 .overlay(
                     Text(initials)
@@ -906,7 +909,7 @@ private struct NotificationRow: View {
                         .foregroundColor(AppTheme.ColorToken.primary)
                 )
         } else {
-            Circle()
+            RoundedRectangle(cornerRadius: avatarCornerRadius, style: .continuous)
                 .fill(Color.gray.opacity(0.2))
                 .overlay(Image(systemName: "person.fill").foregroundColor(.gray))
         }
@@ -937,8 +940,8 @@ private struct NotificationRow: View {
                     .fill(Color.gray.opacity(0.1))
             }
         }
-        .frame(width: 56, height: 56)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(width: thumbSize, height: thumbSize)
+        .clipShape(RoundedRectangle(cornerRadius: AppRadius.thumb, style: .continuous))
     }
 
     @ViewBuilder

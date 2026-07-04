@@ -8,15 +8,16 @@ struct InformationalNotificationRow: View {
         HStack(alignment: .top, spacing: 12) {
             ZStack(alignment: .bottomTrailing) {
                 thumbnail
-                    .frame(width: 56, height: 56)
+                    .frame(width: 76, height: 76)
                     .clipShape(RoundedRectangle(cornerRadius: AppRadius.thumb, style: .continuous))
 
                 if notification.counterpartyAvatarURL != nil || notification.counterpartyName != nil {
+                    // Rounded square, same corner family as the thumbnail.
                     avatarBadge
-                        .frame(width: 24, height: 24)
+                        .frame(width: 26, height: 26)
                         .background(Color(.systemBackground))
-                        .clipShape(Circle())
-                        .overlay(Circle().stroke(Color(.systemGray4), lineWidth: 1))
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color(.systemGray4), lineWidth: 1))
                         .offset(x: 6, y: 6)
                 }
             }
@@ -121,14 +122,14 @@ struct InformationalNotificationRow: View {
                     avatarInitialsFallback
                 }
             }
-            .clipShape(Circle())
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         } else {
             avatarInitialsFallback
         }
     }
 
     private var avatarInitialsFallback: some View {
-        Circle()
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(Color.gray.opacity(0.2))
             .overlay(
                 Group {

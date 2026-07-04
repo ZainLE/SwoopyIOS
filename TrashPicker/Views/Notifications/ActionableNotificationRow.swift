@@ -117,6 +117,10 @@ struct ActionableNotificationRow: View {
         }
     }
     
+    /// Rounded square in the same corner family as the item thumbnail,
+    /// scaled down for the 32pt avatar.
+    private let avatarCornerRadius: CGFloat = 8
+
     @ViewBuilder
     private var requesterAvatar: some View {
         if let url = notification.counterpartyAvatarURL {
@@ -127,21 +131,23 @@ struct ActionableNotificationRow: View {
                         .resizable()
                         .scaledToFill()
                 default:
-                    Circle()
-                        .fill(Color.gray.opacity(0.2))
-                        .overlay(
-                            Image(systemName: "person.fill")
-                                .font(.system(size: 14))
-                                .foregroundColor(.gray)
-                        )
+                    avatarFallback
                 }
             }
-            .clipShape(Circle())
+            .clipShape(RoundedRectangle(cornerRadius: avatarCornerRadius, style: .continuous))
         } else {
-            Circle()
-                .fill(Color.gray.opacity(0.2))
-                .overlay(Image(systemName: "person.fill").font(.system(size: 14)).foregroundColor(.gray))
+            avatarFallback
         }
+    }
+
+    private var avatarFallback: some View {
+        RoundedRectangle(cornerRadius: avatarCornerRadius, style: .continuous)
+            .fill(Color.gray.opacity(0.2))
+            .overlay(
+                Image(systemName: "person.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(.gray)
+            )
     }
 
     private var conditionText: String {
