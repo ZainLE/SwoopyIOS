@@ -19,11 +19,6 @@ struct DuplicatePostSheet: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            Capsule()
-                .fill(Color.secondary.opacity(0.3))
-                .frame(width: 36, height: 5)
-                .padding(.top, 12)
-
             VStack(spacing: 8) {
                 Text("Is this the same item?")
                     .font(.system(size: 20, weight: .bold))
@@ -34,7 +29,7 @@ struct DuplicatePostSheet: View {
                     .foregroundColor(mutedColor)
                     .multilineTextAlignment(.center)
             }
-            .padding(.top, 12)
+            .padding(.top, 28)
 
             candidateCard
 
@@ -68,7 +63,8 @@ struct DuplicatePostSheet: View {
         .padding(.horizontal, 24)
         .padding(.bottom, 16)
         .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.hidden)
+        // System indicator is the one grabber app-wide; the custom capsule is gone.
+        .presentationDragIndicator(.visible)
         .interactiveDismissDisabled()
     }
 

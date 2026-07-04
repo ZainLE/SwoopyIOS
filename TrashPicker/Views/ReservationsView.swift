@@ -616,15 +616,13 @@ struct ReservationsView: View {
         @ViewBuilder
         private func actionSheet(for action: PendingReservationAction) -> some View {
             VStack(spacing: 14) {
-                Capsule()
-                    .fill(Color.secondary.opacity(0.35))
-                    .frame(width: 40, height: 4)
-                    .padding(.top, 8)
-
+                // The system drag indicator (.presentationDragIndicator(.visible))
+                // is the sheet's only grabber — no custom capsule.
                 Text(action.message)
                     .font(.body)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 12)
+                    .padding(.top, 18)
                     .padding(.bottom, 2)
 
                 switch action.kind {
