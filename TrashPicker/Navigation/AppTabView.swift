@@ -17,12 +17,33 @@ struct AppTabView: View {
     private let appGreen = Color(red: 0/255.0, green: 81/255.0, blue: 63/255.0)
 
     init() {
-        // The Profile tab badge must be brand green, not the system's danger red.
-        // UIKit's appearance proxy is the only lever SwiftUI exposes for this.
-        UITabBarItem.appearance().badgeColor = UIColor(
-            red: 0 / 255.0, green: 81 / 255.0, blue: 63 / 255.0, alpha: 1
-        )
+        _ = Self.configureBadgeAppearance
     }
+
+    /// The Profile tab badge must be brand green, never the system's danger red.
+    /// The legacy `UITabBarItem.appearance().badgeColor` proxy is ignored once the
+    /// modern UITabBarAppearance pipeline is in play, so the badge color has to be
+    /// set on every item-layout variant of a UITabBarAppearance instead. Static so
+    /// it runs once, before the tab bar is created.
+    private static let configureBadgeAppearance: Void = {
+        let brandGreen = UIColor(red: 0 / 255.0, green: 81 / 255.0, blue: 63 / 255.0, alpha: 1)
+        let badgeText: [NSAttributedString.Key: Any] = [.foregroundColor: UIColor.white]
+
+        let appearance = UITabBarAppearance()
+        for layout in [
+            appearance.stackedLayoutAppearance,
+            appearance.inlineLayoutAppearance,
+            appearance.compactInlineLayoutAppearance
+        ] {
+            for state in [layout.normal, layout.selected, layout.focused, layout.disabled] {
+                state.badgeBackgroundColor = brandGreen
+                state.badgeTextAttributes = badgeText
+            }
+        }
+
+        UITabBar.appearance().standardAppearance = appearance
+        UITabBar.appearance().scrollEdgeAppearance = appearance
+    }()
 
     /// Canonical notification count (visible actionable + visible unread updates)
     /// for the given tab's badge; only Profile carries one.
