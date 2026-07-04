@@ -306,23 +306,13 @@ final class NotificationsScreenViewModel: ObservableObject {
         purgeDismissedIds(using: cachedNotifications)
         let visibleNotifications = filterLocallyDismissed(from: cachedNotifications)
 
-        // CRITICAL FIX: Filter actionable to ONLY home pickups (exclude street pickups)
-        // Include both pending_approval AND accepted states (for Contact/Cancel buttons)
-        actionable = visibleNotifications.filter { notification in
-            // NEVER show street pickups in Action Required
-            guard notification.mode?.lowercased() != "street" else { return false }
-
-            // Only show if actionable category AND (pending OR accepted)
-            return notification.category == .actionable &&
-                   (notification.state == .pending_approval || notification.state == .accepted)
-        }
-
-        // Informational (the "Updates" tab): the exact complement of Action Required.
-        // Everything visible that is not in the other tab renders here — unknown or
-        // unsupported types fall through to a generic row instead of being dropped,
-        // so any notification that is counted is also shown.
-        let actionableIds = Set(actionable.map { $0.id })
-        informational = visibleNotifications.filter { !actionableIds.contains($0.id) }
+        // Both tabs derive from NotificationBadgeMath so the lists, the segmented
+        // control badges, and every app-wide badge count the exact same rows:
+        // Action Required = home pickups in pending/accepted; Updates = the exact
+        // complement of the visible set (unknown types fall through to a generic
+        // row instead of being dropped, so anything counted is also shown).
+        actionable = NotificationBadgeMath.actionRequired(in: visibleNotifications)
+        informational = NotificationBadgeMath.updates(in: visibleNotifications)
 
         // Badge services must see the same filtered set the lists render, otherwise
         // hidden items keep badges lit with nothing to show.

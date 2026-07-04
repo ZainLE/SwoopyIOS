@@ -1,10 +1,12 @@
 import SwiftUI
+import UIKit
 
 struct AppTabView: View {
     @Environment(AppRouter.self) var router
     @EnvironmentObject var svc: SupabaseService
     @EnvironmentObject var loc: LocationManager
     @EnvironmentObject var draftStore: UploadDraftStore
+    @EnvironmentObject var notificationService: ReservationNotificationService
 
     @State private var showUpload = false
     @State private var showCamera = false
@@ -13,6 +15,20 @@ struct AppTabView: View {
 
     // App green
     private let appGreen = Color(red: 0/255.0, green: 81/255.0, blue: 63/255.0)
+
+    init() {
+        // The Profile tab badge must be brand green, not the system's danger red.
+        // UIKit's appearance proxy is the only lever SwiftUI exposes for this.
+        UITabBarItem.appearance().badgeColor = UIColor(
+            red: 0 / 255.0, green: 81 / 255.0, blue: 63 / 255.0, alpha: 1
+        )
+    }
+
+    /// Canonical notification count (visible actionable + visible unread updates)
+    /// for the given tab's badge; only Profile carries one.
+    private func badgeCount(for tab: AppTab) -> Int {
+        tab == .profile ? notificationService.badgeCount : 0
+    }
 
     // Extracted binding to reduce type-checker work
     private var selectedTabBinding: Binding<AppTab> {
@@ -33,6 +49,7 @@ struct AppTabView: View {
                     } label: {
                         Label(tab.title, systemImage: tab.icon)
                     }
+                    .badge(badgeCount(for: tab))
                 }
             }
             .tint(appGreen)
@@ -56,6 +73,7 @@ struct AppTabView: View {
                         .tabItem {
                             Label(tab.title, systemImage: tab.icon)
                         }
+                        .badge(badgeCount(for: tab))
                         .tag(tab)
                 }
             }
@@ -144,4 +162,5 @@ struct AppTabView: View {
         .environmentObject(SupabaseService.shared)
         .environmentObject(LocationManager())
         .environmentObject(UploadDraftStore())
+        .environmentObject(ReservationNotificationService(api: ApiService(supabaseService: SupabaseService.shared)))
 }

@@ -48,7 +48,14 @@ final class NotificationService: NotificationProviding {
 
     func fetchAll() async throws -> [AppNotification] {
         let result = try await getUnifiedNotifications()
-        return result.notifications
+        let notifications = result.notifications
+        // Keep the canonical badge snapshot fresh no matter who fetched — legacy
+        // callers (profile screen) fetch through here and then write their own
+        // counts, which the service snaps back to this canonical derivation.
+        Task { @MainActor in
+            ReservationNotificationService.shared?.apply(notifications: notifications)
+        }
+        return notifications
     }
 
     func markAllRead() async throws {
