@@ -84,9 +84,11 @@ struct StreakPill: View {
                 .foregroundStyle(flameColor)
                 .scaleEffect(flameSwell ? 1.35 : 1)
 
+            // .primary, not brandDark: with no material backing, the count
+            // must read directly on the nav bar in both light and dark mode.
             Text("\(displayedStreak)")
                 .font(.system(size: 15, weight: .bold))
-                .foregroundColor(AppTheme.ColorToken.brandDark)
+                .foregroundColor(.primary)
                 .opacity(isLit ? 1 : 0.6)
                 .monospacedDigit()
                 .scaleEffect(numberDance ? 1.3 : 1)
@@ -207,9 +209,11 @@ struct StreakPill: View {
         showInfo = false
         eggRunning = true
 
-        if reduceMotion == false {
-            NotificationCenter.default.post(name: .streakEggBurst, object: nil)
-        }
+        // ALWAYS post — the overlay adapts to Reduce Motion itself. (Gating
+        // the post here is exactly how "haptics fire but no flames appear"
+        // happens.)
+        DLog("[STREAK EGG] posting burst notification")
+        NotificationCenter.default.post(name: .streakEggBurst, object: nil)
 
         Task { @MainActor in
             Haptics.play(.primaryAction)
@@ -244,24 +248,30 @@ struct StreakPill: View {
 
 // MARK: - Full-screen egg overlay
 
-/// Full-screen flame burst: warm flames rise and sweep the whole display for
-/// ~1.6s, then it dismisses itself (tap dismisses early). Rendered with
-/// TimelineView + Canvas so the particle field costs one draw pass per frame.
-/// The host skips presenting this entirely when Reduce Motion is on.
+/// Full-screen flame rain: dozens of flame icons fall across the ENTIRE
+/// screen top-to-bottom with gravity-feel acceleration, slight horizontal
+/// drift and rotation, in mixed sizes/opacities, then cleanly fade out.
+/// Runs ~1.6s (the span of the pill's haptic pattern) and dismisses itself;
+/// tapping dismisses early. Rendered with TimelineView + Canvas — one draw
+/// pass per frame regardless of flame count. Under Reduce Motion it renders
+/// a calmer variant (fewer flames, gentler fall, no spin) instead of hiding.
 struct StreakEggOverlay: View {
     let onFinished: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static let duration: Double = 1.6
 
     @State private var startDate: Date?
 
-    private struct Particle {
-        let xFraction: CGFloat     // horizontal lane
-        let delay: Double          // stagger, seconds
-        let speed: CGFloat         // screen-heights per second
-        let size: CGFloat          // font size
-        let swayAmplitude: CGFloat
-        let swayFrequency: Double
+    private struct Flame {
+        let xFraction: CGFloat   // horizontal lane, 0...1
+        let delay: Double        // stagger before this flame starts, seconds
+        let launchSpeed: CGFloat // initial downward speed, screen-heights/s
+        let size: CGFloat        // font size, pt
+        let drift: CGFloat       // horizontal drift, -1...1 (fraction of width/s)
+        let spin: Double         // radians/s, signed
+        let maxOpacity: Double
         let color: Color
     }
 
@@ -272,21 +282,33 @@ struct StreakEggOverlay: View {
         Color(hex: "FFC53D")
     ]
 
-    /// Deterministic pseudo-random field — same show every time, no RNG.
-    private static let particles: [Particle] = (0..<36).map { index in
-        let h1 = fract(Double(index) * 0.6180339887)        // golden-ratio hash
-        let h2 = fract(Double(index) * 0.7548776662 + 0.37)
-        let h3 = fract(Double(index) * 0.5698402910 + 0.71)
-        return Particle(
-            xFraction: CGFloat(h1),
-            delay: h2 * 0.45,
-            speed: 0.75 + CGFloat(h3) * 0.85,
-            size: 18 + CGFloat(h2) * 30,
-            swayAmplitude: 10 + CGFloat(h1) * 22,
-            swayFrequency: 3.5 + h3 * 3.0,
-            color: palette[index % palette.count]
-        )
+    /// Downward acceleration, screen-heights/s² — the "physics pulling them
+    /// down" feel. Tuned so a zero-speed flame crosses a full screen within
+    /// the show's duration.
+    private static let gravity: CGFloat = 1.15
+
+    /// Deterministic pseudo-random field (golden-ratio hashing) — same show
+    /// every time, no RNG needed.
+    private static func makeFlames(count: Int) -> [Flame] {
+        (0..<count).map { index in
+            let h1 = fract(Double(index) * 0.6180339887)
+            let h2 = fract(Double(index) * 0.7548776662 + 0.37)
+            let h3 = fract(Double(index) * 0.5698402910 + 0.71)
+            return Flame(
+                xFraction: CGFloat(h1),
+                delay: h2 * 0.5,
+                launchSpeed: 0.15 + CGFloat(h3) * 0.55,
+                size: 14 + CGFloat(h2) * 30,
+                drift: CGFloat(h3 - 0.5) * 2,
+                spin: (h1 - 0.5) * 2 * 4.0,
+                maxOpacity: 0.5 + h1 * 0.5,
+                color: palette[index % palette.count]
+            )
+        }
     }
+
+    private static let fullField: [Flame] = makeFlames(count: 48)
+    private static let calmField: [Flame] = makeFlames(count: 14)
 
     private static func fract(_ value: Double) -> Double {
         value - value.rounded(.down)
@@ -299,45 +321,51 @@ struct StreakEggOverlay: View {
                 let elapsed = timeline.date.timeIntervalSince(startDate)
                 let progress = min(elapsed / Self.duration, 1.0)
 
-                // Warm wash that breathes in and back out over the run.
-                let washOpacity = 0.18 * sin(progress * .pi)
-                context.fill(
-                    Path(CGRect(origin: .zero, size: size)),
-                    with: .color(Color(hex: "FF7A00").opacity(washOpacity))
-                )
-
-                // Global fade-out over the last quarter.
+                // Clean fade over the last quarter of the show.
                 let fadeOut = progress > 0.75 ? (1 - progress) / 0.25 : 1.0
 
-                for particle in Self.particles {
-                    let localTime = elapsed - particle.delay
-                    guard localTime > 0 else { continue }
+                let flames = reduceMotion ? Self.calmField : Self.fullField
+                let gravity = reduceMotion ? Self.gravity * 0.4 : Self.gravity
 
-                    let travel = CGFloat(localTime) * particle.speed * size.height
-                    let y = size.height + particle.size - travel
-                    guard y > -particle.size else { continue }
+                for flame in flames {
+                    let t = CGFloat(elapsed - flame.delay)
+                    guard t > 0 else { continue }
 
-                    let sway = CGFloat(sin(localTime * particle.swayFrequency * 2 * .pi))
-                        * particle.swayAmplitude
-                    let x = particle.xFraction * size.width + sway
+                    // y(t) = y0 + v0·t + ½·g·t² — starts just above the top.
+                    let yFraction = -0.1 + flame.launchSpeed * t + 0.5 * gravity * t * t
+                    let y = yFraction * size.height
+                    guard y < size.height + flame.size else { continue }
 
-                    let fadeIn = min(localTime / 0.15, 1.0)
-                    let opacity = fadeIn * fadeOut
+                    let x = flame.xFraction * size.width
+                        + flame.drift * 0.08 * size.width * t
+                    let rotation = reduceMotion ? 0 : flame.spin * Double(t)
 
-                    let flame = context.resolve(
+                    let fadeIn = min(Double(t) / 0.12, 1.0)
+                    let opacity = flame.maxOpacity * fadeIn * fadeOut
+                    guard opacity > 0.01 else { continue }
+
+                    let resolved = context.resolve(
                         Text(Image(systemName: "flame.fill"))
-                            .font(.system(size: particle.size, weight: .bold))
-                            .foregroundColor(particle.color.opacity(opacity))
+                            .font(.system(size: flame.size, weight: .bold))
+                            .foregroundColor(flame.color.opacity(opacity))
                     )
-                    context.draw(flame, at: CGPoint(x: x, y: y))
+
+                    var flameContext = context
+                    flameContext.translateBy(x: x, y: y)
+                    flameContext.rotate(by: .radians(rotation))
+                    flameContext.draw(resolved, at: .zero)
                 }
             }
         }
         .ignoresSafeArea()
         .contentShape(Rectangle())
         .onTapGesture { onFinished() }
+        .allowsHitTesting(true)
         .accessibilityHidden(true)
-        .onAppear { startDate = Date() }
+        .onAppear {
+            DLog("[STREAK EGG] overlay appeared, starting flame rain")
+            startDate = Date()
+        }
         .task {
             try? await Task.sleep(nanoseconds: UInt64(Self.duration * 1_000_000_000))
             onFinished()

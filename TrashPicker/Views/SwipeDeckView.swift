@@ -306,6 +306,26 @@ struct SwipeDeckView: View {
     // Use global helper on service: svc.hasAuthToken
 
     var body: some View {
+        ZStack {
+            deckScreen
+            // Streak easter egg: full-screen flame rain ABOVE everything on
+            // this screen (nav bar, toolbar, toasts included).
+            if showStreakEgg {
+                StreakEggOverlay {
+                    withAnimation(.easeOut(duration: 0.25)) { showStreakEgg = false }
+                }
+                .ignoresSafeArea()
+                .zIndex(999)
+                .transition(.opacity)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .streakEggBurst)) { _ in
+            DLog("[STREAK EGG] burst received → presenting full-screen overlay")
+            withAnimation(.easeIn(duration: 0.15)) { showStreakEgg = true }
+        }
+    }
+
+    private var deckScreen: some View {
         baseView
             .overlay { errorOverlay }
             .overlay { successOverlay }
@@ -370,20 +390,7 @@ struct SwipeDeckView: View {
         navigationStackView
             .toolbar { toolbarContent }
             .navigationBarTitleDisplayMode(.inline)
-            // Streak easter egg: the pill broadcasts, the whole home screen
-            // burns. Presented at screen level so it covers everything;
-            // StreakPill never posts this when Reduce Motion is on.
-            .onReceive(NotificationCenter.default.publisher(for: .streakEggBurst)) { _ in
-                withAnimation(.easeIn(duration: 0.15)) { showStreakEgg = true }
-            }
-            .overlay {
-                if showStreakEgg {
-                    StreakEggOverlay {
-                        withAnimation(.easeOut(duration: 0.25)) { showStreakEgg = false }
-                    }
-                    .transition(.opacity)
-                }
-            }
+            .overlay(alignment: .topLeading) { streakFlameOverlay }
             .onAppear { handleViewAppear() }
             .task {
                 if api == nil { api = ApiService(supabaseService: svc) }
@@ -403,6 +410,22 @@ struct SwipeDeckView: View {
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name("LocationAuthorizationChanged"))) { _ in
                 handleLocationAuthChange()
             }
+    }
+
+    /// The streak flame, rendered as a plain overlay in the nav-bar row rather
+    /// than a ToolbarItem — the system gives toolbar items automatic circular
+    /// button chrome (liquid glass on iOS 26) that both boxed the flame in a
+    /// circle and clipped away its count. An overlay has no chrome to remove.
+    /// Hidden while the leaderboard is pushed so it doesn't float over that
+    /// screen's bar; map/camera/upload are full-screen covers and hide it
+    /// anyway.
+    @ViewBuilder
+    private var streakFlameOverlay: some View {
+        if showLeaderboard == false {
+            StreakPill()
+                .padding(.leading, 16)
+                .padding(.top, 5)
+        }
     }
 
     private var navigationStackView: some View {
@@ -684,9 +707,12 @@ struct SwipeDeckView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .navigationBarLeading) {
-            StreakPill()
-        }
+        // The streak flame is deliberately NOT a ToolbarItem: the system wraps
+        // toolbar items in automatic button chrome (circular liquid glass on
+        // iOS 26) which both draws a circle around the flame and clips off the
+        // count. It renders via a topLeading overlay instead — see
+        // streakFlameOverlay. The trophy keeps its toolbar placement (and its
+        // circle) on purpose.
         ToolbarItem(placement: .navigationBarTrailing) {
             LeaderboardPill(isOpen: $showLeaderboard)
         }

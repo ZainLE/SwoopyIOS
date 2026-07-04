@@ -17,7 +17,7 @@ enum LeaderboardTier: String, CaseIterable {
 
     var color: Color {
         switch self {
-        case .starter: return Color(hex: "8E8E93")      // gray
+        case .starter: return Color(hex: "1E3A5F")      // deep cool blue
         case .contributor: return Color(hex: "6AA54A")  // green
         case .champion: return Color(hex: "2F6FD0")     // blue
         case .legend: return Color(hex: "C9A227")       // gold
