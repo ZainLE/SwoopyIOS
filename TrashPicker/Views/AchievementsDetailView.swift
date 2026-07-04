@@ -45,27 +45,15 @@ struct AchievementsDetailView: View {
 
     private var tierLadderCard: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(tier.color)
-                        .frame(width: 44, height: 44)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(tier.displayName) tier")
+                    .font(AppFont.h3)
+                    .foregroundColor(AppColor.text)
 
-                    Image(systemName: tier.icon)
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(.white)
-                }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("\(tier.displayName) tier")
-                        .font(AppFont.h3)
-                        .foregroundColor(AppColor.text)
-
-                    Text("Top 3 on the weekly leaderboard move up a tier — bottom 3 move down.")
-                        .font(AppFont.sub)
-                        .foregroundColor(AppColor.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text("Top 3 on the weekly leaderboard move up a tier — bottom 3 move down.")
+                    .font(AppFont.sub)
+                    .foregroundColor(AppColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             ladder

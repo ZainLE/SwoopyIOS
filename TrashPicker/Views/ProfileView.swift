@@ -1097,17 +1097,7 @@ private struct TierProgressCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(tier.color)
-                        .frame(width: 44, height: 44)
-
-                    Image(systemName: tier.icon)
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(.white)
-                }
-
+            HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(tier.displayName) tier")
                         .font(AppFont.body.weight(.semibold))
