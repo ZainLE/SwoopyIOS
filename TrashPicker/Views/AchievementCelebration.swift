@@ -24,39 +24,41 @@ extension Color {
     }
 }
 
-/// Visual identity for one achievement: a bright two-stop medallion gradient
-/// plus an adaptive accent used for small text in that badge's hue.
+/// Visual identity for one achievement: a rich solid medallion fill plus an
+/// adaptive accent used for small text in that badge's hue.
 struct AchievementTheme: Equatable {
-    let gradient: [Color]
+    let fill: Color
     let accent: Color
 }
 
-/// Bright, optimistic badge hues. Deliberately no red/crimson anywhere —
-/// nothing in this section should read as danger or an error.
+/// Deep, saturated solid badge hues — no gradients, and deliberately no
+/// red/crimson anywhere: nothing in this section should read as danger.
 enum AchievementPalette {
-    /// Brand green into the brand lime (#B4DD4E) — First Pickup.
+    /// Deep emerald — First Pickup.
     static let green = AchievementTheme(
-        gradient: [Color(hex: "12A150"), Color(hex: "B4DD4E")],
+        fill: Color(hex: "0E9153"),
         accent: Color(light: "0E8A4A", dark: "5FD98F")
     )
-    /// Teal into cyan — 10 Items Diverted and the impact stat.
+    /// Deep teal — 10 Items Diverted and the impact stat.
     static let teal = AchievementTheme(
-        gradient: [Color(hex: "0BAA9C"), Color(hex: "45D5EC")],
+        fill: Color(hex: "0B8E96"),
         accent: Color(light: "0A8F92", dark: "4AD7E0")
     )
-    /// Warm amber into orange (never red) — 3-Week Streak.
+    /// Warm amber (never red) — 3-Week Streak.
     static let amber = AchievementTheme(
-        gradient: [Color(hex: "FFC531"), Color(hex: "FF8A3D")],
+        fill: Color(hex: "E8890B"),
         accent: Color(light: "C06B00", dark: "FFB25C")
     )
     /// Trophy gold — Top 3 Finish.
     static let gold = AchievementTheme(
-        gradient: [Color(hex: "FFD75E"), Color(hex: "DFA320")],
+        fill: Color(hex: "D4A017"),
         accent: Color(light: "9E7A00", dark: "F2C94C")
     )
 
-    /// Teal→green wash for the lifetime impact stat icon.
-    static let impactGradient: [Color] = [Color(hex: "0BAA9C"), Color(hex: "12A150")]
+    /// Rich solid gold for the top-3 weekly rank chip, with a dark bronze
+    /// text color that stays readable on it in both appearances.
+    static let rankGold = Color(hex: "E3A81B")
+    static let rankGoldText = Color(hex: "4A3400")
 
     /// Confetti mix — the badge hues plus sky blue and violet for variety.
     static let confetti: [Color] = [
@@ -67,10 +69,9 @@ enum AchievementPalette {
 
 // MARK: - Medallion
 
-/// Glossy circular badge medallion. Earned: saturated gradient with a shine
-/// sweep across the top and a soft glow in the badge's hue. Locked: the same
-/// hue washed out with the icon dimmed, so the badge keeps its color identity
-/// while clearly reading as not-yet-unlocked.
+/// Circular badge medallion. Earned: a rich solid fill with a white glyph
+/// and a soft glow in the badge's hue. Locked: clearly grayed out — gray
+/// fill, gray glyph, no glow — so earned vs locked reads instantly.
 struct AchievementMedallion: View {
     let icon: String
     let theme: AchievementTheme
@@ -80,39 +81,21 @@ struct AchievementMedallion: View {
     var body: some View {
         ZStack {
             Circle()
-                .fill(
-                    LinearGradient(
-                        colors: earned ? theme.gradient : theme.gradient.map { $0.opacity(0.22) },
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+                .fill(earned ? theme.fill : Color(.systemGray5))
 
-            // Gloss: a bright wash fading out halfway down the orb.
-            Circle()
-                .fill(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .white.opacity(earned ? 0.4 : 0.12), location: 0),
-                            .init(color: .white.opacity(0), location: 0.55)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .padding(size * 0.05)
-
-            Circle()
-                .strokeBorder(Color.white.opacity(earned ? 0.35 : 0.12), lineWidth: 1)
+            if earned {
+                Circle()
+                    .strokeBorder(Color.white.opacity(0.3), lineWidth: 1)
+            }
 
             Image(systemName: icon)
                 .font(.system(size: size * 0.42, weight: .semibold))
-                .foregroundColor(earned ? .white : theme.accent.opacity(0.75))
+                .foregroundColor(earned ? .white : Color(.systemGray))
                 .shadow(color: .black.opacity(earned ? 0.18 : 0), radius: 1, y: 1)
         }
         .frame(width: size, height: size)
         .shadow(
-            color: earned ? theme.gradient[0].opacity(0.45) : .clear,
+            color: earned ? theme.fill.opacity(0.45) : .clear,
             radius: size * 0.16,
             y: size * 0.05
         )
@@ -270,15 +253,9 @@ struct AchievementCelebrationOverlay: View {
                         .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 13)
-                        .background(
-                            LinearGradient(
-                                colors: unlock.theme.gradient,
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
+                        .background(unlock.theme.fill)
                         .clipShape(Capsule())
-                        .shadow(color: unlock.theme.gradient[0].opacity(0.35), radius: 8, y: 4)
+                        .shadow(color: unlock.theme.fill.opacity(0.35), radius: 8, y: 4)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Dismiss celebration")

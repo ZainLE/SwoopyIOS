@@ -444,8 +444,8 @@ struct ProfileView: View {
     }
 
     /// All badges the app knows about, with earned state from the server
-    /// profile. Unearned badges are shown dimmed so the section always
-    /// explains what can be unlocked instead of collapsing to a bare label.
+    /// profile. Displayed on the Achievements detail page and used for
+    /// unlock-celebration detection here.
     private var achievementBadges: [ProfileAchievementBadge] {
         let profile = gamificationProfile
         return [
@@ -494,36 +494,23 @@ struct ProfileView: View {
         let badges = achievementBadges
 
         Section {
-            NavigationLink(destination: LeaderboardView()) {
+            NavigationLink(destination: AchievementsDetailView(tier: tier, badges: badges)) {
                 TierProgressCard(
                     tier: tier,
                     weeklyRank: weeklyStanding?.rank,
-                    weeklyPickups: weeklyStanding?.weeklyPickups
+                    weeklyPickups: weeklyStanding?.weeklyPickups,
+                    givenCount: givenCount
                 )
             }
             .listRowBackground(
                 ZStack {
                     Color(.secondarySystemGroupedBackground)
-                    LinearGradient(
-                        colors: [tier.color.opacity(0.16), tier.color.opacity(0.02)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
+                    tier.color.opacity(0.08)
                 }
             )
-
-            if let givenCount, givenCount >= 1 {
-                ImpactStatRow(count: givenCount)
-            }
-
-            AchievementBadgeGrid(badges: badges)
         } header: {
             Text("Achievements")
                 .font(AppFont.body.weight(.semibold))
-        } footer: {
-            if badges.allSatisfy({ $0.earned == false }) {
-                Text("Badges unlock as your finds get picked up — the first confirmed pickup earns your first one.")
-            }
         }
     }
 
@@ -1097,82 +1084,28 @@ struct ProfileView: View {
 
 // MARK: - Achievements
 
-private struct ProfileAchievementBadge: Identifiable {
-    let id: String
-    let title: String
-    let icon: String
-    let hint: String
-    let meaning: String
-    let theme: AchievementTheme
-    let earned: Bool
-}
-
-/// Lifetime impact stat shown between the tier card and the badge grid:
-/// how many of the user's finds have been picked up and given a second life.
-private struct ImpactStatRow: View {
-    let count: Int
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: AchievementPalette.impactGradient,
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 36, height: 36)
-
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(.white)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("You've helped divert \(count) item\(count == 1 ? "" : "s")")
-                    .font(AppFont.body.weight(.semibold))
-                    .foregroundColor(AppColor.text)
-
-                Text("Finds of yours picked up and given a second life")
-                    .font(AppFont.sub)
-                    .foregroundColor(AppColor.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("You've helped divert \(count) item\(count == 1 ? "" : "s")")
-    }
-}
-
 /// Tier summary card for the profile's Achievements section. Tiers move via
 /// the weekly leaderboard (top 3 promote, bottom 3 demote on Monday), so
 /// progress is shown as a tier ladder plus the caller's current weekly
-/// standing rather than a numeric threshold.
+/// standing, with the lifetime impact count along the bottom. Tapping the
+/// card pushes the Achievements detail page.
 private struct TierProgressCard: View {
     let tier: LeaderboardTier
     let weeklyRank: Int?
     let weeklyPickups: Int?
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var shimmerPhase: CGFloat = -1
+    let givenCount: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 ZStack {
                     Circle()
-                        .fill(tier.color.opacity(0.15))
-                        .overlay(Circle().strokeBorder(tier.color.opacity(0.3), lineWidth: 1))
+                        .fill(tier.color)
                         .frame(width: 44, height: 44)
 
                     Image(systemName: tier.icon)
                         .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(tier.color)
+                        .foregroundColor(.white)
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
@@ -1189,58 +1122,54 @@ private struct TierProgressCard: View {
                 Spacer(minLength: 8)
 
                 if let weeklyRank {
-                    let rankColor = weeklyRank <= 3 ? AchievementPalette.gold.accent : AchievementPalette.green.accent
-                    VStack(spacing: 1) {
-                        Text("#\(weeklyRank)")
-                            .font(.system(size: 17, weight: .bold))
-                            .foregroundColor(rankColor)
-
-                        Text("this week")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(rankColor.opacity(0.85))
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(rankColor.opacity(0.14))
-                    )
+                    rankChip(weeklyRank)
                 }
             }
 
             ladder
+
+            if let givenCount, givenCount >= 1 {
+                Divider()
+
+                HStack(spacing: 10) {
+                    ZStack {
+                        Circle()
+                            .fill(AchievementPalette.teal.fill)
+                            .frame(width: 26, height: 26)
+
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.white)
+                    }
+
+                    Text("You've helped divert \(givenCount) item\(givenCount == 1 ? "" : "s")")
+                        .font(AppFont.sub.weight(.semibold))
+                        .foregroundColor(AppColor.text)
+                }
+            }
         }
         .padding(.vertical, 6)
-        .overlay(shimmerOverlay)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilitySummary)
     }
 
-    /// A soft light band that periodically sweeps across the card. The
-    /// animated travel is much wider than the card, so the visible sweep is
-    /// brief with a long rest between passes. Skipped under Reduce Motion.
-    @ViewBuilder
-    private var shimmerOverlay: some View {
-        if !reduceMotion {
-            GeometryReader { geo in
-                LinearGradient(
-                    colors: [.white.opacity(0), .white.opacity(0.2), .white.opacity(0)],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: geo.size.width * 0.4)
-                .rotationEffect(.degrees(16))
-                .offset(x: shimmerPhase * geo.size.width * 2.0)
-                .onAppear {
-                    shimmerPhase = -1
-                    withAnimation(.linear(duration: 4.0).repeatForever(autoreverses: false)) {
-                        shimmerPhase = 1
-                    }
-                }
-            }
-            .allowsHitTesting(false)
-            .clipped()
+    /// Solid chip: rich gold for a top-3 weekly rank, brand green otherwise.
+    private func rankChip(_ rank: Int) -> some View {
+        let isTop3 = rank <= 3
+        return VStack(spacing: 1) {
+            Text("#\(rank)")
+                .font(.system(size: 17, weight: .bold))
+
+            Text("this week")
+                .font(.system(size: 11, weight: .semibold))
         }
+        .foregroundColor(isTop3 ? AchievementPalette.rankGoldText : .white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(isTop3 ? AchievementPalette.rankGold : AppColor.brandGreen)
+        )
     }
 
     private var subtitle: String {
@@ -1253,14 +1182,13 @@ private struct TierProgressCard: View {
         return "Top of the ladder — top 3 keeps you here"
     }
 
-    /// Four-step ladder, filled up to the current tier in each tier's color.
-    /// Steps not yet reached keep a faint wash of their own tier color so the
-    /// ladder previews what's ahead instead of collapsing to gray.
+    /// Four-step ladder, filled up to the current tier in each tier's solid
+    /// color; steps not yet reached stay gray so progress reads instantly.
     private var ladder: some View {
         HStack(spacing: 6) {
             ForEach(LeaderboardTier.allCases, id: \.self) { step in
                 Capsule()
-                    .fill(step.ladderIndex <= tier.ladderIndex ? step.color : step.color.opacity(0.2))
+                    .fill(step.ladderIndex <= tier.ladderIndex ? step.color : Color(.systemGray4))
                     .frame(height: 6)
                     .frame(maxWidth: .infinity)
             }
@@ -1272,105 +1200,11 @@ private struct TierProgressCard: View {
         if let weeklyRank {
             parts.append("ranked #\(weeklyRank) this week")
         }
-        parts.append("opens leaderboard")
+        if let givenCount, givenCount >= 1 {
+            parts.append("\(givenCount) item\(givenCount == 1 ? "" : "s") diverted")
+        }
+        parts.append("opens achievements")
         return parts.joined(separator: ", ")
-    }
-}
-
-/// Two-column grid of badge medallions; unearned ones keep their hue but are
-/// washed out and padlocked, so they read as goals worth chasing rather than
-/// gray placeholders. Cards spring in with a slight stagger when the section
-/// first appears (skipped under Reduce Motion).
-private struct AchievementBadgeGrid: View {
-    let badges: [ProfileAchievementBadge]
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var appeared = false
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 10),
-        GridItem(.flexible(), spacing: 10)
-    ]
-
-    var body: some View {
-        LazyVGrid(columns: columns, spacing: 10) {
-            ForEach(Array(badges.enumerated()), id: \.element.id) { index, badge in
-                AchievementBadgeCard(badge: badge)
-                    .scaleEffect(appeared ? 1 : 0.88)
-                    .opacity(appeared ? 1 : 0)
-                    .animation(
-                        reduceMotion
-                            ? nil
-                            : .spring(response: 0.45, dampingFraction: 0.75).delay(Double(index) * 0.07),
-                        value: appeared
-                    )
-            }
-        }
-        .padding(.vertical, 6)
-        .onAppear { appeared = true }
-    }
-}
-
-private struct AchievementBadgeCard: View {
-    let badge: ProfileAchievementBadge
-
-    var body: some View {
-        VStack(spacing: 8) {
-            ZStack(alignment: .bottomTrailing) {
-                AchievementMedallion(icon: badge.icon, theme: badge.theme, size: 56, earned: badge.earned)
-
-                if !badge.earned {
-                    ZStack {
-                        Circle()
-                            .fill(Color(.secondarySystemGroupedBackground))
-
-                        Image(systemName: "lock.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(badge.theme.accent)
-                    }
-                    .frame(width: 20, height: 20)
-                    .overlay(Circle().strokeBorder(badge.theme.accent.opacity(0.35), lineWidth: 1))
-                    .offset(x: 3, y: 3)
-                }
-            }
-
-            VStack(spacing: 2) {
-                Text(badge.title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(badge.earned ? AppColor.text : AppColor.muted)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-
-                Text(badge.earned ? "Unlocked" : badge.hint)
-                    .font(.system(size: 11, weight: badge.earned ? .semibold : .regular))
-                    .foregroundColor(badge.earned ? badge.theme.accent : AppColor.muted)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .frame(minHeight: 26, alignment: .top)
-            }
-        }
-        .padding(.vertical, 12)
-        .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            badge.theme.accent.opacity(badge.earned ? 0.16 : 0.07),
-                            badge.theme.accent.opacity(badge.earned ? 0.05 : 0.02)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(badge.theme.accent.opacity(badge.earned ? 0.35 : 0.15), lineWidth: 1)
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(badge.title), \(badge.earned ? "unlocked" : "locked — \(badge.hint)")")
     }
 }
 
